@@ -7,6 +7,8 @@ import { useNavigate } from "react-router";
 import { apiRequest } from "../../api";
 import { encodeFilesToStoredDocuments } from "../../document-utils";
 
+type WeightKey = "price" | "quality" | "experience" | "timeline";
+
 export function TenderCreation() {
   const navigate = useNavigate();
   const [formData, setFormData] = useState({
@@ -19,7 +21,7 @@ export function TenderCreation() {
   const [documents, setDocuments] = useState<string[]>([]);
   const [documentNames, setDocumentNames] = useState<string[]>([]);
 
-  const [weights, setWeights] = useState({
+  const [weights, setWeights] = useState<Record<WeightKey, number>>({
     price: 40,
     quality: 25,
     experience: 20,
@@ -38,9 +40,9 @@ export function TenderCreation() {
     general: "General",
   };
 
-  const handleWeightChange = (key: string, value: number) => {
-    const newWeights = { ...weights, [key]: value };
-    const otherKeys = Object.keys(weights).filter((k) => k !== key);
+  const handleWeightChange = (key: WeightKey, value: number) => {
+    const newWeights: Record<WeightKey, number> = { ...weights, [key]: value };
+    const otherKeys = (Object.keys(weights) as WeightKey[]).filter((k) => k !== key);
     const otherTotal = Object.values(newWeights).reduce((sum, val) => sum + val, 0) - value;
     
     // Calculate how much we need to distribute among other fields
@@ -66,7 +68,9 @@ export function TenderCreation() {
       const currentTotal = Object.values(newWeights).reduce((sum, val) => sum + val, 0);
       if (currentTotal !== 100) {
         const firstOtherKey = otherKeys[0];
-        newWeights[firstOtherKey] = Math.max(0, newWeights[firstOtherKey] + (100 - currentTotal));
+        if (firstOtherKey) {
+          newWeights[firstOtherKey] = Math.max(0, newWeights[firstOtherKey] + (100 - currentTotal));
+        }
       }
     }
     
@@ -167,9 +171,9 @@ export function TenderCreation() {
                 </div>
 
                 <div className="md:col-span-2">
-                  <label className="block text-sm text-gray-700 mb-2">Submission Deadline</label>
+                  <label className="block text-sm text-gray-700 mb-2">Submission Deadline (Date & Time)</label>
                   <input
-                    type="date"
+                    type="datetime-local"
                     value={formData.deadline}
                     onChange={(e) => setFormData({ ...formData, deadline: e.target.value })}
                     className="w-full px-4 py-2.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89] bg-white"
@@ -248,7 +252,7 @@ export function TenderCreation() {
               )}
 
               <div className="space-y-4">
-                {Object.entries(weights).map(([key, value]) => (
+                {(Object.entries(weights) as Array<[WeightKey, number]>).map(([key, value]) => (
                   <div key={key}>
                     <div className="flex items-center justify-between mb-2">
                       <label className="text-sm text-gray-700 capitalize">{key}</label>

@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { MessageSquare, Send, X, Bot } from "lucide-react";
 
 interface AIAssistantProps {
-  role: "cpo" | "po" | "committee" | "bidder";
+  role: "cpo" | "po" | "committee" | "vendor" | "bidder";
 }
 
 interface Message {
@@ -347,6 +347,7 @@ export function AIAssistant({ role }: AIAssistantProps) {
   // Role-specific welcome messages
   const getWelcomeMessage = () => {
     switch (role) {
+      case "vendor":
       case "bidder":
         return "Hello! I can help you find contracts, understand tender requirements, check your performance scores, and guide you through the bidding process. What would you like to know?";
       case "po":
@@ -390,7 +391,7 @@ export function AIAssistant({ role }: AIAssistantProps) {
       const lowerMessage = messageText.toLowerCase();
 
       // Role-specific responses
-      if (role === "bidder") {
+      if (role === "bidder" || role === "vendor") {
         if (lowerMessage.includes("find") || lowerMessage.includes("search") || lowerMessage.includes("contract")) {
           response = `**Finding Contracts for You**\n\nI found several relevant opportunities:\n\n📋 **IT Infrastructure Upgrade** (TND-2026-048)\n- Budget: $500,000 | Deadline: March 15, 2026\n- Category: Supply | Department: IT\n- Status: Open for Bidding\n\n📋 **Hospital Equipment Supply** (TND-2026-049)\n- Budget: $750,000 | Deadline: March 18, 2026\n- Category: Supply | Department: Health\n- Status: Open for Bidding\n\n📋 **Bridge Construction** (TND-2026-050)\n- Budget: $2,500,000 | Deadline: March 20, 2026\n- Category: Work | Department: Infrastructure\n- Status: Open for Bidding\n\n💡 **Tip:** Visit the Contract Search page for advanced filtering by category, budget range, and department.`;
         } else if (lowerMessage.includes("submit") || lowerMessage.includes("bid")) {
@@ -417,7 +418,7 @@ export function AIAssistant({ role }: AIAssistantProps) {
           response = demoResponses.evaluation;
         } else if (lowerMessage.includes("milestone") || lowerMessage.includes("progress")) {
           response = `**Updating Milestone Progress**\n\n**As Committee Member, you can:**\n📝 Update progress status (0-100%)\n💬 Add progress notes and comments\n📅 Report completion dates\n⚠️ Flag delays or issues\n\n**Update Process:**\n1. Navigate to Milestones page\n2. Select the milestone to update\n3. Set progress percentage\n4. Add detailed notes\n5. Submit update\n\n**Current Milestones Awaiting Update:**\n• Road Construction - Foundation Work (80%)\n• Hospital Equipment - Delivery Phase (45%)\n• IT Infrastructure - Installation (60%)\n\n💡 **Tip:** Provide detailed notes for any delays or issues encountered.`;
-        } else if (lowerMessage.includes("risk") || lowerMessage.includes("bidder")) {
+        } else if (lowerMessage.includes("risk") || lowerMessage.includes("bidder") || lowerMessage.includes("vendor")) {
           response = demoResponses.risk;
         } else {
           response = `I can help you with:\n\n🎯 **Bid Evaluation** - Review AI scores and recommendations\n📊 **Milestone Updates** - Track and report progress\n🔍 **Risk Assessment** - Analyze bidder performance history\n✅ **Quality Review** - Compliance and technical evaluation\n\nTry asking: "Explain evaluation for TND-2026-047" or "How to update milestones?"`;
@@ -441,7 +442,7 @@ export function AIAssistant({ role }: AIAssistantProps) {
         } else if (lowerMessage.includes("penalty") || lowerMessage.includes("clause")) {
           response = demoResponses.penalty;
         } else {
-          response = `I can assist you with:\n\n• **Project Delay Analysis** - Real-time tracking and penalty calculations\n• **Penalty Clause References** - Contract terms and conditions lookup\n• **Bidder Risk Assessment** - Historical performance and compliance data\n• **AI Evaluation Explanations** - Detailed scoring breakdowns\n• **Audit Trail Queries** - Complete activity logs and compliance records\n\nPlease ask a specific question based on your role as ${role.toUpperCase()}.`;
+          response = `I can assist you with:\n\n• **Project Delay Analysis** - Real-time tracking and penalty calculations\n• **Penalty Clause References** - Contract terms and conditions lookup\n• **Vendor Risk Assessment** - Historical performance and compliance data\n• **AI Evaluation Explanations** - Detailed scoring breakdowns\n• **Audit Trail Queries** - Complete activity logs and compliance records\n\nPlease ask a specific question based on your role as ${role.toUpperCase()}.`;
         }
       }
 

@@ -43,7 +43,7 @@ export function Login() {
     CPO: "/cpo",
     PO: "/po",
     Committee: "/committee",
-    Vendor: "/bidder",
+    Vendor: "/vendor",
   } as const;
 
   useEffect(() => {
@@ -133,7 +133,7 @@ export function Login() {
         body: { name: fullName, email: username, password },
       });
       saveAuthUser(data);
-      navigate("/bidder");
+      navigate("/vendor");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Signup failed");
     } finally {

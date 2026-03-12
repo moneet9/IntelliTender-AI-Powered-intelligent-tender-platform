@@ -3,7 +3,7 @@ import { useNavigate } from "react-router";
 import { clearAuthUser, getAuthUser } from "../../api";
 
 interface HeaderProps {
-  role: "cpo" | "po" | "committee" | "bidder";
+  role: "cpo" | "po" | "committee" | "vendor" | "bidder";
   userName?: string;
 }
 
@@ -11,14 +11,16 @@ const roleBadges = {
   cpo: { label: "CPO", color: "bg-[#0B3C5D]" },
   po: { label: "PO", color: "bg-[#1D4E89]" },
   committee: { label: "Committee", color: "bg-[#2E8B57]" },
-  bidder: { label: "Bidder", color: "bg-gray-600" },
+  vendor: { label: "Vendor", color: "bg-gray-600" },
+  bidder: { label: "Vendor", color: "bg-gray-600" },
 };
 
 const roleNames = {
   cpo: "Chief Procurement Officer",
   po: "Procurement Officer",
   committee: "Committee Member",
-  bidder: "Bidder",
+  vendor: "Vendor",
+  bidder: "Vendor",
 };
 
 export function Header({ role, userName = "Vikram Patel" }: HeaderProps) {

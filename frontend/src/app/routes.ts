@@ -4,7 +4,6 @@ import { Login } from "./components/pages/Login";
 import { CPODashboard } from "./components/pages/CPODashboard";
 import { PODashboard } from "./components/pages/PODashboard";
 import { CommitteeDashboard } from "./components/pages/CommitteeDashboard";
-import { BidderDashboard } from "./components/pages/BidderDashboard";
 import { TenderCreation } from "./components/pages/TenderCreation";
 import { AIEvaluation } from "./components/pages/AIEvaluation";
 import { BidderProfile } from "./components/pages/BidderProfile";
@@ -14,6 +13,9 @@ import { ContractSearch } from "./components/pages/ContractSearch";
 import { CreatePO } from "./components/pages/CreatePO";
 import { CreateCommittee } from "./components/pages/CreateCommittee";
 import { ChangePassword } from "./components/pages/ChangePassword";
+import { VendorDashboard } from "./components/pages/VendorDashboard";
+import { VendorBids } from "./components/pages/VendorBids";
+import { VendorContracts } from "./components/pages/VendorContracts";
 
 export const router = createBrowserRouter([
   {
@@ -83,13 +85,39 @@ export const router = createBrowserRouter([
     path: "/committee/milestones",
     Component: CommitteeMilestones,
   },
-  // Bidder Routes
+  // Vendor Routes
+  {
+    path: "/vendor",
+    Component: VendorDashboard,
+  },
+  {
+    path: "/vendor/contract-search",
+    Component: ContractSearch,
+  },
+  {
+    path: "/vendor/bids",
+    Component: VendorBids,
+  },
+  {
+    path: "/vendor/contracts",
+    Component: VendorContracts,
+  },
+
+  // Legacy Bidder Routes (compatibility)
   {
     path: "/bidder",
-    Component: BidderDashboard,
+    Component: VendorDashboard,
   },
   {
     path: "/bidder/contract-search",
     Component: ContractSearch,
+  },
+  {
+    path: "/bidder/bids",
+    Component: VendorBids,
+  },
+  {
+    path: "/bidder/contracts",
+    Component: VendorContracts,
   },
 ]);

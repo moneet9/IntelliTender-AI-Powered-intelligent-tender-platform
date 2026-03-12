@@ -1,5 +1,6 @@
 import { Link, useLocation } from "react-router";
 import {
+  type LucideIcon,
   LayoutDashboard,
   FileText,
   Users,
@@ -12,13 +13,27 @@ import {
 } from "lucide-react";
 
 interface SidebarProps {
-  role: "cpo" | "po" | "committee" | "bidder";
+  role: "cpo" | "po" | "committee" | "vendor" | "bidder";
 }
+
+type NavItem = {
+  path: string;
+  icon: LucideIcon;
+  label: string;
+  aliases?: string[];
+};
 
 export function Sidebar({ role }: SidebarProps) {
   const location = useLocation();
 
-  const roleConfig = {
+  const vendorItems: NavItem[] = [
+    { path: "/vendor", icon: LayoutDashboard, label: "Dashboard", aliases: ["/bidder"] },
+    { path: "/vendor/contract-search", icon: Search, label: "Search Tenders", aliases: ["/bidder/contract-search"] },
+    { path: "/vendor/bids", icon: ClipboardList, label: "My Bids", aliases: ["/bidder/bids"] },
+    { path: "/vendor/contracts", icon: Calendar, label: "Contracts", aliases: ["/bidder/contracts"] },
+  ];
+
+  const roleConfig: Record<SidebarProps["role"], { items: NavItem[] }> = {
     cpo: {
       items: [
         { path: "/cpo", icon: LayoutDashboard, label: "Dashboard" },
@@ -33,7 +48,7 @@ export function Sidebar({ role }: SidebarProps) {
         { path: "/po/create-committee", icon: UserPlus, label: "Create Committee" },
         { path: "/po/milestones", icon: Calendar, label: "Milestones" },
         { path: "/po/evaluation", icon: ClipboardList, label: "Tender Evaluation" },
-        { path: "/po/bidders", icon: Users, label: "Bidder Profiles" },
+        { path: "/po/bidders", icon: Users, label: "Vendor Profiles" },
       ],
     },
     committee: {
@@ -43,11 +58,11 @@ export function Sidebar({ role }: SidebarProps) {
         { path: "/committee/milestones", icon: Calendar, label: "Milestones" },
       ],
     },
+    vendor: {
+      items: vendorItems,
+    },
     bidder: {
-      items: [
-        { path: "/bidder", icon: LayoutDashboard, label: "Dashboard" },
-        { path: "/bidder/contract-search", icon: Search, label: "Search Contracts" },
-      ],
+      items: vendorItems,
     },
   };
 
@@ -70,7 +85,7 @@ export function Sidebar({ role }: SidebarProps) {
       <nav className="flex-1 p-4">
         <div className="space-y-1">
           {items.map((item) => {
-            const isActive = location.pathname === item.path;
+            const isActive = location.pathname === item.path || (item.aliases || []).includes(location.pathname);
             return (
               <Link
                 key={item.path}
