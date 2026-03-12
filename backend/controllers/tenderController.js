@@ -1,14 +1,47 @@
 import { Tender, Contract, User } from '../models/model.js';
 
+const mapBidWithVendorDetails = (bid) => {
+    const vendor = bid.vendorId && typeof bid.vendorId === 'object' ? bid.vendorId : null;
+
+    return {
+        _id: bid._id,
+        vendorId: vendor?._id || bid.vendorId,
+        vendorName: bid.vendorName || vendor?.name || 'Vendor',
+        vendorDetails: vendor
+            ? {
+                _id: vendor._id,
+                name: vendor.name,
+                email: vendor.email,
+                phone: vendor.phone || '',
+                department: vendor.department || '',
+                specialization: vendor.specialization || '',
+                accountStatus: vendor.accountStatus || 'Active',
+            }
+            : null,
+        proposedAmount: bid.proposedAmount,
+        proposalDocument: bid.proposalDocument,
+        status: bid.status,
+        technicalScore: bid.technicalScore,
+        financialScore: bid.financialScore,
+        comments: bid.comments,
+        evaluatedBy: bid.evaluatedBy,
+        evaluatedDate: bid.evaluatedDate,
+        createdAt: bid.createdAt,
+        updatedAt: bid.updatedAt,
+    };
+};
+
 // --- TENDER MANAGEMENT ---
 export const createTender = async (req, res) => {
     try {
-        const { title, description, budget, deadline } = req.body;
+        const { title, description, category, budget, deadline, documents } = req.body;
         const tender = await Tender.create({
             title,
             description,
+            category: category || 'General',
             budget,
             deadline,
+            documents: Array.isArray(documents) ? documents : [],
             createdBy: req.user.id
         });
         res.status(201).json(tender);
@@ -24,7 +57,7 @@ export const getTenders = async (req, res) => {
 
 export const getTenderById = async (req, res) => {
     try {
-        const tender = await Tender.findById(req.params.id);
+        const tender = await Tender.findById(req.params.id).populate('createdBy', 'name');
         if (!tender) return res.status(404).json({ message: 'Tender not found' });
         res.json(tender);
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -74,6 +107,10 @@ export const submitBid = async (req, res) => {
             return res.status(400).json({ message: 'Valid proposedAmount is required' });
         }
 
+        if (!req.body.proposalDocument || typeof req.body.proposalDocument !== 'string') {
+            return res.status(400).json({ message: 'Proposal document upload is required' });
+        }
+
         const vendor = await User.findById(req.user.id);
         if (!vendor) return res.status(404).json({ message: 'Vendor not found' });
 
@@ -81,7 +118,7 @@ export const submitBid = async (req, res) => {
             vendorId: req.user.id,
             vendorName: vendor.name,
             proposedAmount: req.body.proposedAmount,
-            proposalDocument: req.body.proposalDocument || 'mock_doc_link'
+            proposalDocument: req.body.proposalDocument
         });
         
         await tender.save();
@@ -91,9 +128,13 @@ export const submitBid = async (req, res) => {
 
 export const getBidsByTender = async (req, res) => {
     try {
-        const tender = await Tender.findById(req.params.id);
+        const tender = await Tender.findById(req.params.id).populate(
+            'bids.vendorId',
+            'name email phone department specialization accountStatus'
+        );
         if (!tender) return res.status(404).json({ message: 'Tender not found' });
-        res.json(tender.bids);
+
+        res.json(tender.bids.map(mapBidWithVendorDetails));
     } catch (e) {
         res.status(500).json({ error: e.message });
     }

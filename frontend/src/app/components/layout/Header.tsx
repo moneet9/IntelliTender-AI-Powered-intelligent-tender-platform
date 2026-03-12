@@ -1,5 +1,6 @@
 import { Bell, User, LogOut } from "lucide-react";
 import { useNavigate } from "react-router";
+import { clearAuthUser, getAuthUser } from "../../api";
 
 interface HeaderProps {
   role: "cpo" | "po" | "committee" | "bidder";
@@ -23,9 +24,12 @@ const roleNames = {
 export function Header({ role, userName = "Vikram Patel" }: HeaderProps) {
   const navigate = useNavigate();
   const badge = roleBadges[role];
+  const authUser = getAuthUser();
+  const resolvedUserName = userName || authUser?.name || "User";
 
   const handleLogout = () => {
-    navigate("/");
+    clearAuthUser();
+    navigate("/login");
   };
 
   return (
@@ -49,7 +53,7 @@ export function Header({ role, userName = "Vikram Patel" }: HeaderProps) {
         {/* Profile */}
         <div className="flex items-center gap-3 pl-4 border-l border-gray-200">
           <div className="text-right">
-            <div className="text-sm text-gray-800">{userName}</div>
+            <div className="text-sm text-gray-800">{resolvedUserName}</div>
             <div className="text-xs text-gray-500">{roleNames[role]}</div>
           </div>
           <div className="w-10 h-10 bg-[#1D4E89] rounded-full flex items-center justify-center">

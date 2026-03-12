@@ -15,30 +15,38 @@ import {
   AlertDialogTitle,
 } from "../ui/alert-dialog";
 
+type CommitteeMember = {
+  _id: string;
+  name: string;
+  designation?: string;
+  specialization?: string;
+  createdAt?: string;
+};
+
 export function CreateCommittee() {
   const [formData, setFormData] = useState({
     fullName: "",
     email: "",
     phone: "",
-    specialization: ""
+    designation: ""
   });
   const [showSuccess, setShowSuccess] = useState(false);
-  const [committeeList, setCommitteeList] = useState<any[]>([]);
+  const [committeeList, setCommitteeList] = useState<CommitteeMember[]>([]);
   const [error, setError] = useState("");
   const [deleteMember, setDeleteMember] = useState<{ id: string; name: string } | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
-  const specializations = [
-    "Technical Evaluation - IT & Software",
-    "Technical Evaluation - Infrastructure",
-    "Technical Evaluation - Medical Equipment",
-    "Financial Analysis & Compliance",
-    "Quality Assurance & Standards",
-    "Legal & Contract Review",
-    "Risk Assessment & Management",
-    "Engineering & Construction",
-    "Environmental Impact Assessment",
-    "General Administration"
+  const designations = [
+    "Electrical Engineer",
+    "Chemical Engineer",
+    "Account Officer",
+    "Civil Engineer",
+    "Risk Analyst",
+    "Mechanical Engineer",
+    "Procurement Analyst",
+    "Quality Assurance Officer",
+    "Legal Advisor",
+    "Compliance Officer"
   ];
 
   const loadCommittees = async () => {
@@ -64,7 +72,7 @@ export function CreateCommittee() {
           name: formData.fullName,
           email: formData.email,
           phone: formData.phone,
-          specialization: formData.specialization,
+          designation: formData.designation,
           password: "Password@123",
         },
       });
@@ -73,7 +81,7 @@ export function CreateCommittee() {
         fullName: "",
         email: "",
         phone: "",
-        specialization: ""
+        designation: ""
       });
       await loadCommittees();
       setTimeout(() => setShowSuccess(false), 3000);
@@ -196,22 +204,22 @@ export function CreateCommittee() {
                   </div>
                 </div>
 
-                {/* Specialization */}
+                {/* Designation */}
                 <div>
                   <label className="block text-sm text-gray-700 mb-2 flex items-center gap-2">
                     <Briefcase className="w-4 h-4" />
-                    Area of Specialization
+                    Designation
                   </label>
                   <select
-                    name="specialization"
-                    value={formData.specialization}
+                    name="designation"
+                    value={formData.designation}
                     onChange={handleChange}
                     className="w-full px-4 py-2.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89] bg-white"
                     required
                   >
-                    <option value="">Select Specialization</option>
-                    {specializations.map((spec) => (
-                      <option key={spec} value={spec}>{spec}</option>
+                    <option value="">Select Designation</option>
+                    {designations.map((designation) => (
+                      <option key={designation} value={designation}>{designation}</option>
                     ))}
                   </select>
                 </div>
@@ -231,7 +239,7 @@ export function CreateCommittee() {
                       fullName: "",
                       email: "",
                       phone: "",
-                      specialization: ""
+                      designation: ""
                     })}
                     className="px-6 py-3 border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 transition-colors"
                   >
@@ -250,10 +258,10 @@ export function CreateCommittee() {
                   <div key={member._id} className="flex items-center justify-between p-3 bg-gray-50 rounded-md">
                     <div>
                       <p className="text-sm text-gray-900">{member.name}</p>
-                      <p className="text-xs text-gray-600">{member.specialization || "N/A"}</p>
+                      <p className="text-xs text-gray-600">{member.designation || member.specialization || "N/A"}</p>
                     </div>
                     <div className="flex items-center gap-3">
-                      <span className="text-xs text-gray-500">{new Date(member.createdAt).toLocaleDateString()}</span>
+                      <span className="text-xs text-gray-500">{member.createdAt ? new Date(member.createdAt).toLocaleDateString() : ""}</span>
                       <button
                         onClick={() => setDeleteMember({ id: member._id, name: member.name })}
                         className="text-xs px-3 py-1 rounded bg-red-100 text-red-700 hover:bg-red-200"

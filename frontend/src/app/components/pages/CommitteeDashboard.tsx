@@ -1,8 +1,10 @@
 import { Sidebar } from "../layout/Sidebar";
 import { Header } from "../layout/Header";
 import { AIAssistant } from "../AIAssistant";
+import { ChangePassword } from "./ChangePassword";
 import { Upload } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router";
 import { apiRequest } from "../../api";
 
 type Tender = {
@@ -23,7 +25,8 @@ type Bid = {
 };
 
 export function CommitteeDashboard() {
-  const [activeTab, setActiveTab] = useState<"evaluation" | "monitoring">("evaluation");
+  const navigate = useNavigate();
+  const [activeTab, setActiveTab] = useState<"evaluation" | "monitoring" | "settings">("evaluation");
   const [tenders, setTenders] = useState<Tender[]>([]);
   const [selectedTenderId, setSelectedTenderId] = useState<string>("");
   const [bids, setBids] = useState<Bid[]>([]);
@@ -97,9 +100,7 @@ export function CommitteeDashboard() {
   return (
     <div className="flex h-screen bg-[#F4F6F9]">
       <Sidebar role="committee" />
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <Header role="committee" userName="Anil Verma" />
-        <div className="flex-1 overflow-auto p-6">
+      <div className="flex-1 overflow-auto p-6">
           <div className="mb-6">
             <h1 className="text-2xl text-[#0B3C5D] mb-1">Committee Dashboard</h1>
             <p className="text-sm text-gray-600">Technical Evaluation & Contract Monitoring</p>
@@ -128,8 +129,20 @@ export function CommitteeDashboard() {
               >
                 Contract Monitoring
               </button>
+              <button
+                onClick={() => setActiveTab("settings")}
+                className={`pb-3 px-1 text-sm transition-colors ${
+                  activeTab === "settings"
+                    ? "border-b-2 border-[#1D4E89] text-[#1D4E89]"
+                    : "text-gray-600 hover:text-gray-800"
+                }`}
+              >
+                Settings
+              </button>
             </div>
           </div>
+
+          {activeTab === "settings" && <ChangePassword />}
 
           {activeTab === "evaluation" && (
             <>
@@ -251,7 +264,7 @@ export function CommitteeDashboard() {
           )}
 
           {activeTab === "monitoring" && (
-            <div className="space-y-6">
+            <>
               {/* Supply Contract Monitoring */}
               <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-100">
                 <h3 className="text-lg text-[#0B3C5D] mb-4">Supply Contract Monitoring</h3>
@@ -366,11 +379,10 @@ export function CommitteeDashboard() {
                   </p>
                 </div>
               </div>
-            </div>
+            </>
           )}
-        </div>
+        <AIAssistant role="committee" />
       </div>
-      <AIAssistant role="committee" />
     </div>
   );
 }

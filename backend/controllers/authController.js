@@ -145,15 +145,15 @@ const getMailTransporter = () => {
     });
 };
 
-const sendOtpEmail = async ({ toEmail, otp }) => {
+const sendOtpEmail = async ({ toEmail, otp, subject, purposeLabel }) => {
     const emailUser = process.env.EMAIL_USER || process.env.email;
     const transporter = getMailTransporter();
     await transporter.sendMail({
         from: emailUser,
         to: toEmail,
-        subject: 'IntelliTender Password Reset OTP',
-        text: `Your IntelliTender OTP is ${otp}. It will expire in 10 minutes.`,
-        html: `<p>Your IntelliTender OTP is <strong>${otp}</strong>.</p><p>It will expire in 10 minutes.</p>`,
+        subject,
+        text: `Your IntelliTender OTP for ${purposeLabel} is ${otp}. It will expire in 2 minutes.`,
+        html: `<p>Your IntelliTender OTP for <strong>${purposeLabel}</strong> is <strong>${otp}</strong>.</p><p>It will expire in 2 minutes.</p>`,
     });
 };
 
@@ -175,10 +175,15 @@ export const requestPasswordResetOtp = async (req, res) => {
 
         const otp = createOtpCode();
         user.passwordResetOtp = await bcrypt.hash(otp, 10);
-        user.passwordResetOtpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
+        user.passwordResetOtpExpiresAt = new Date(Date.now() + 2 * 60 * 1000);
         await user.save();
 
-        await sendOtpEmail({ toEmail: email, otp });
+        await sendOtpEmail({
+            toEmail: email,
+            otp,
+            subject: 'IntelliTender Password Reset OTP',
+            purposeLabel: 'password reset',
+        });
 
         res.json({ message: 'OTP sent successfully to your email.' });
     } catch (error) {
@@ -210,6 +215,9 @@ export const resetPasswordWithOtp = async (req, res) => {
         user.password = await bcrypt.hash(newPassword, 10);
         user.passwordResetOtp = null;
         user.passwordResetOtpExpiresAt = null;
+        user.changePasswordOtp = null;
+        user.changePasswordOtpExpiresAt = null;
+        user.pendingPasswordHash = null;
         await user.save();
 
         res.json({ message: 'Password reset successful. Please login with new password.' });
@@ -233,7 +241,56 @@ export const changePassword = async (req, res) => {
             return res.status(400).json({ message: 'Current password is incorrect' });
         }
 
-        user.password = await bcrypt.hash(newPassword, 10);
+        const otp = createOtpCode();
+        user.pendingPasswordHash = await bcrypt.hash(newPassword, 10);
+        user.changePasswordOtp = await bcrypt.hash(otp, 10);
+        user.changePasswordOtpExpiresAt = new Date(Date.now() + 2 * 60 * 1000);
+        await user.save();
+
+        await sendOtpEmail({
+            toEmail: user.email,
+            otp,
+            subject: 'IntelliTender Change Password OTP',
+            purposeLabel: 'password change confirmation',
+        });
+
+        res.json({ message: 'OTP sent to your email. Verify OTP to complete password change.' });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+export const verifyChangePasswordOtp = async (req, res) => {
+    try {
+        const { otp } = req.body;
+        if (!otp) {
+            return res.status(400).json({ message: 'otp is required' });
+        }
+
+        const user = await User.findById(req.user.id);
+        if (!user) return res.status(404).json({ message: 'User not found' });
+
+        if (!user.changePasswordOtp || !user.changePasswordOtpExpiresAt || !user.pendingPasswordHash) {
+            return res.status(400).json({ message: 'No pending OTP request found' });
+        }
+
+        if (new Date(user.changePasswordOtpExpiresAt) < new Date()) {
+            user.changePasswordOtp = null;
+            user.changePasswordOtpExpiresAt = null;
+            user.pendingPasswordHash = null;
+            await user.save();
+            return res.status(400).json({ message: 'OTP expired. Request a new OTP.' });
+        }
+
+        const otpMatches = await bcrypt.compare(otp, user.changePasswordOtp);
+        if (!otpMatches) {
+            return res.status(400).json({ message: 'Invalid OTP' });
+        }
+
+        user.password = user.pendingPasswordHash;
+        user.changePasswordOtp = null;
+        user.changePasswordOtpExpiresAt = null;
+        user.pendingPasswordHash = null;
         await user.save();
 
         res.json({ message: 'Password changed successfully' });

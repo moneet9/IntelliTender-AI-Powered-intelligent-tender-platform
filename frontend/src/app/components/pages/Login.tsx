@@ -30,6 +30,7 @@ export function Login() {
   const [newPassword, setNewPassword] = useState("");
   const [confirmNewPassword, setConfirmNewPassword] = useState("");
   const [forgotMessage, setForgotMessage] = useState("");
+  const [otpExpiresAt, setOtpExpiresAt] = useState<Date | null>(null);
 
   const roleMap = {
     cpo: "CPO",
@@ -46,10 +47,10 @@ export function Login() {
   } as const;
 
   useEffect(() => {
-    if (!frozenUntil) return;
+    if (!frozenUntil && !otpExpiresAt) return;
     const id = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [frozenUntil]);
+  }, [frozenUntil, otpExpiresAt]);
 
   const countdown = useMemo(() => {
     if (!frozenUntil) return "";
@@ -60,6 +61,17 @@ export function Login() {
     const seconds = Math.floor((remaining % (1000 * 60)) / 1000);
     return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
   }, [frozenUntil, nowMs]);
+
+  const otpCountdown = useMemo(() => {
+    if (!otpExpiresAt) return "";
+    const remaining = new Date(otpExpiresAt).getTime() - nowMs;
+    if (remaining <= 0) return "00:00";
+    const minutes = Math.floor(remaining / (1000 * 60));
+    const seconds = Math.floor((remaining % (1000 * 60)) / 1000);
+    return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }, [otpExpiresAt, nowMs]);
+
+  const isOtpExpired = otpExpiresAt ? new Date(otpExpiresAt).getTime() < nowMs : false;
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -144,7 +156,8 @@ export function Login() {
         method: "POST",
         body: { email: forgotEmail },
       });
-      setForgotMessage(response.message || "OTP sent.");
+      setForgotMessage(response.message || "OTP sent to your email");
+      setOtpExpiresAt(new Date(Date.now() + 2 * 60 * 1000));
       setShowOtp(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to send OTP");
@@ -167,6 +180,11 @@ export function Login() {
       return;
     }
 
+    if (isOtpExpired) {
+      setError("OTP has expired. Please request a new one.");
+      return;
+    }
+
     setLoading(true);
     try {
       const response = await apiRequest<{ message: string }>("/api/auth/forgot-password/reset", {
@@ -177,7 +195,7 @@ export function Login() {
           newPassword,
         },
       });
-      setForgotMessage(response.message || "Password updated.");
+      setForgotMessage(response.message || "Password updated. Please login with your new password.");
       setShowOtp(false);
       setShowForgotRequest(false);
       setMode("login");
@@ -186,6 +204,7 @@ export function Login() {
       setConfirmNewPassword("");
       setPassword("");
       setUsername(forgotEmail);
+      setOtpExpiresAt(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "OTP verification failed");
     } finally {
@@ -206,14 +225,20 @@ export function Login() {
           <CardContent>
             <form onSubmit={handleVerifyOtp} className="space-y-4">
               <div className="space-y-2">
-                <Label htmlFor="otp">Verification Code</Label>
+                <div className="flex justify-between items-center">
+                  <Label htmlFor="otp">Verification Code</Label>
+                  <span className={`text-sm font-semibold ${isOtpExpired ? "text-red-600" : "text-orange-600"}`}>
+                    {otpCountdown}
+                  </span>
+                </div>
                 <Input
                   id="otp"
                   placeholder="000000"
                   value={otp}
-                  onChange={(e) => setOtp(e.target.value)}
+                  onChange={(e) => setOtp(e.target.value.replace(/\D/g, ""))}
                   maxLength={6}
-                  className="text-center text-2xl tracking-widest"
+                  className="text-center text-2xl tracking-widest font-bold"
+                  disabled={isOtpExpired}
                 />
               </div>
 
@@ -225,6 +250,7 @@ export function Login() {
                   placeholder="Enter new password"
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
+                  disabled={isOtpExpired}
                 />
               </div>
 
@@ -236,22 +262,40 @@ export function Login() {
                   placeholder="Confirm new password"
                   value={confirmNewPassword}
                   onChange={(e) => setConfirmNewPassword(e.target.value)}
+                  disabled={isOtpExpired}
                 />
               </div>
+
+              {isOtpExpired && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-md">
+                  <p className="text-sm text-red-700">OTP has expired. Please request a new one.</p>
+                </div>
+              )}
 
               {error && <p className="text-sm text-red-600">{error}</p>}
               {forgotMessage && <p className="text-sm text-green-700">{forgotMessage}</p>}
 
-              <Button type="submit" className="w-full bg-[#0B3C5D] hover:bg-[#1D4E89]" disabled={loading}>
-                {loading ? "Verifying..." : "Verify & Continue"}
+              <Button 
+                type="submit" 
+                className="w-full bg-[#0B3C5D] hover:bg-[#1D4E89]" 
+                disabled={loading || isOtpExpired}
+              >
+                {loading ? "Verifying..." : "Verify & Change Password"}
               </Button>
               <Button
                 type="button"
                 variant="ghost"
                 className="w-full"
-                onClick={() => setShowOtp(false)}
+                onClick={() => {
+                  setShowOtp(false);
+                  setOtp("");
+                  setNewPassword("");
+                  setConfirmNewPassword("");
+                  setOtpExpiresAt(null);
+                  setError("");
+                }}
               >
-                Back to Login
+                Request New OTP
               </Button>
             </form>
           </CardContent>
@@ -427,10 +471,10 @@ export function Login() {
             {error && !warningType && <p className="text-sm text-red-600">{error}</p>}
 
             {mode === "login" && (
-              <div className="flex items-center justify-between text-sm">
+              <div className="text-center">
                 <button
                   type="button"
-                  className="text-[#1D4E89] hover:underline"
+                  className="text-[#1D4E89] hover:underline text-sm"
                   onClick={() => {
                     setShowForgotRequest(true);
                     setForgotEmail(username);
@@ -440,9 +484,6 @@ export function Login() {
                 >
                   Forgot Password?
                 </button>
-                <Link to="/change-password" className="text-[#1D4E89] hover:underline">
-                  Change Password
-                </Link>
               </div>
             )}
 

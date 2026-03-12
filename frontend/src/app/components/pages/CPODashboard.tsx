@@ -1,6 +1,7 @@
 import { Sidebar } from "../layout/Sidebar";
 import { Header } from "../layout/Header";
 import { AIAssistant } from "../AIAssistant";
+import { ChangePassword } from "./ChangePassword";
 import {
   FileText,
   ClipboardCheck,
@@ -45,6 +46,7 @@ const recentAudits = [
 ];
 
 export function CPODashboard() {
+  const [activeTab, setActiveTab] = useState<"overview" | "settings">("overview");
   const [tenders, setTenders] = useState<any[]>([]);
   const [selectedTenderId, setSelectedTenderId] = useState("");
   const [evaluatedBids, setEvaluatedBids] = useState<any[]>([]);
@@ -129,15 +131,38 @@ export function CPODashboard() {
   return (
     <div className="flex h-screen bg-[#F4F6F9]">
       <Sidebar role="cpo" />
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <Header role="cpo" userName="Priya Sharma" />
-        <div className="flex-1 overflow-auto p-6">
+      <div className="flex-1 overflow-auto p-6">
           <div className="mb-6">
-            <h1 className="text-2xl text-[#0B3C5D] mb-1">CPO Dashboard</h1>
-            <p className="text-sm text-gray-600">Oversight & Strategic Analytics</p>
+            <h1 className="text-2xl text-[#0B3C5D] mb-4">CPO Dashboard</h1>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setActiveTab("overview")}
+                className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                  activeTab === "overview"
+                    ? "bg-[#0B3C5D] text-white"
+                    : "bg-white text-[#0B3C5D] border border-gray-300 hover:bg-gray-50"
+                }`}
+              >
+                Overview
+              </button>
+              <button
+                onClick={() => setActiveTab("settings")}
+                className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                  activeTab === "settings"
+                    ? "bg-[#0B3C5D] text-white"
+                    : "bg-white text-[#0B3C5D] border border-gray-300 hover:bg-gray-50"
+                }`}
+              >
+                Settings
+              </button>
+            </div>
           </div>
 
-          {/* Stats Grid */}
+          {activeTab === "settings" && <ChangePassword />}
+
+          {activeTab === "overview" && (
+            <>
+              <p className="text-sm text-gray-600 mb-6">Oversight & Strategic Analytics</p>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
             {statsData.map((stat) => (
               <div key={stat.label} className="bg-white rounded-lg shadow-sm p-5 border border-gray-100">
@@ -318,9 +343,13 @@ export function CPODashboard() {
               </button>
             </div>
           </div>
-        </div>
+          <div className="mt-8 text-center text-xs text-gray-500 border-t border-gray-200 pt-6">
+            © 2026 Government Procurement Authority
+          </div>
+            </>
+          )}
+        <AIAssistant role="cpo" />
       </div>
-      <AIAssistant role="cpo" />
     </div>
   );
 }

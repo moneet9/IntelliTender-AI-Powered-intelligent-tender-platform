@@ -9,6 +9,7 @@ const sanitizeUser = (user) => ({
   phone: user.phone,
   department: user.department,
   specialization: user.specialization,
+  designation: user.designation,
   managerPo: user.managerPo,
   accountStatus: user.accountStatus,
   frozenUntil: user.frozenUntil,
@@ -78,9 +79,14 @@ export const deletePO = async (req, res) => {
 
 export const createCommitteeMember = async (req, res) => {
   try {
-    const { name, email, password, phone, specialization } = req.body;
+    const { name, email, password, phone, designation, specialization } = req.body;
     if (!name || !email) {
       return res.status(400).json({ message: 'name and email are required' });
+    }
+
+    const designationValue = (designation || specialization || '').trim();
+    if (!designationValue) {
+      return res.status(400).json({ message: 'designation is required' });
     }
 
     const exists = await User.findOne({ email });
@@ -95,7 +101,8 @@ export const createCommitteeMember = async (req, res) => {
       password: hashedPassword,
       role: 'Committee',
       phone,
-      specialization,
+      specialization: specialization || designationValue,
+      designation: designationValue,
       managerPo: req.user.id,
     });
 

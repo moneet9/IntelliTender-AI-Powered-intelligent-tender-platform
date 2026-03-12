@@ -77,7 +77,7 @@ export const router = createBrowserRouter([
   },
   {
     path: "/committee/monitoring",
-    Component: CommitteeDashboard,
+    Component: CommitteeMilestones,
   },
   {
     path: "/committee/milestones",

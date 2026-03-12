@@ -2,18 +2,22 @@ import { useState } from "react";
 import { Sidebar } from "../layout/Sidebar";
 import { Header } from "../layout/Header";
 import { AIAssistant } from "../AIAssistant";
-import { Upload, Plus, X, AlertCircle } from "lucide-react";
+import { Upload, AlertCircle, FileText } from "lucide-react";
 import { useNavigate } from "react-router";
 import { apiRequest } from "../../api";
+import { encodeFilesToStoredDocuments } from "../../document-utils";
 
 export function TenderCreation() {
   const navigate = useNavigate();
   const [formData, setFormData] = useState({
     title: "",
     category: "supply",
+    description: "",
     budget: "",
     deadline: "",
   });
+  const [documents, setDocuments] = useState<string[]>([]);
+  const [documentNames, setDocumentNames] = useState<string[]>([]);
 
   const [weights, setWeights] = useState({
     price: 40,
@@ -26,6 +30,13 @@ export function TenderCreation() {
   const isWeightValid = totalWeight === 100;
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  const categoryLabelMap: Record<string, string> = {
+    supply: "Supply",
+    work: "Work",
+    service: "Service",
+    general: "General",
+  };
 
   const handleWeightChange = (key: string, value: number) => {
     const newWeights = { ...weights, [key]: value };
@@ -73,9 +84,11 @@ export function TenderCreation() {
         method: "POST",
         body: {
           title: formData.title,
-          description: `${formData.category} tender`,
+          description: formData.description,
+          category: categoryLabelMap[formData.category] || "General",
           budget: Number(formData.budget),
           deadline: formData.deadline,
+          documents,
         },
       });
       navigate("/po");
@@ -124,6 +137,8 @@ export function TenderCreation() {
                   >
                     <option value="supply">Supply</option>
                     <option value="work">Work</option>
+                    <option value="service">Service</option>
+                    <option value="general">General</option>
                   </select>
                 </div>
 
@@ -135,6 +150,18 @@ export function TenderCreation() {
                     onChange={(e) => setFormData({ ...formData, budget: e.target.value })}
                     className="w-full px-4 py-2.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89] bg-white"
                     placeholder="e.g., 500000"
+                    required
+                  />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-sm text-gray-700 mb-2">Tender Description</label>
+                  <textarea
+                    value={formData.description}
+                    onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                    className="w-full px-4 py-2.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89] bg-white"
+                    placeholder="Scope of work, mandatory requirements, and deliverables"
+                    rows={4}
                     required
                   />
                 </div>
@@ -155,12 +182,46 @@ export function TenderCreation() {
             {/* Document Upload */}
             <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-100 mb-6">
               <h3 className="text-lg text-[#0B3C5D] mb-4">Tender Documents</h3>
-              <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-[#1D4E89] transition-colors cursor-pointer">
+              <label className="block border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-[#1D4E89] transition-colors cursor-pointer">
                 <Upload className="w-10 h-10 text-gray-400 mx-auto mb-3" />
-                <p className="text-sm text-gray-600 mb-1">Click to upload or drag and drop</p>
+                <p className="text-sm text-gray-600 mb-1">Upload bid documents, specifications, or compliance sheets</p>
                 <p className="text-xs text-gray-500">PDF, DOC, DOCX (Max 10MB)</p>
-                <input type="file" className="hidden" accept=".pdf,.doc,.docx" />
-              </div>
+                <input
+                  type="file"
+                  className="hidden"
+                  accept=".pdf,.doc,.docx"
+                  multiple
+                  onChange={async (e) => {
+                    const files = e.target.files;
+                    if (!files?.length) return;
+
+                    const oversizedFile = Array.from(files).find((file) => file.size > 10 * 1024 * 1024);
+                    if (oversizedFile) {
+                      setError(`${oversizedFile.name} exceeds the 10MB limit`);
+                      return;
+                    }
+
+                    try {
+                      setError("");
+                      const encodedDocuments = await encodeFilesToStoredDocuments(files);
+                      setDocuments(encodedDocuments);
+                      setDocumentNames(Array.from(files).map((file) => file.name));
+                    } catch {
+                      setError("Failed to process uploaded tender documents");
+                    }
+                  }}
+                />
+              </label>
+              {!!documentNames.length && (
+                <div className="mt-4 space-y-2">
+                  {documentNames.map((name) => (
+                    <div key={name} className="flex items-center gap-2 text-sm text-gray-700">
+                      <FileText className="w-4 h-4 text-[#1D4E89]" />
+                      <span>{name}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Evaluation Weights */}
