@@ -19,12 +19,22 @@ const userSchema = new mongoose.Schema({
     pendingPasswordHash: { type: String },
 }, { timestamps: true });
 
+const committeeEvaluationSchema = new mongoose.Schema({
+    committeeMemberId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    technicalScore: { type: Number, required: true },
+    financialScore: { type: Number, required: true },
+    comments: { type: String, default: '' },
+    evaluatedDate: { type: Date, default: Date.now },
+}, { _id: false });
+
 const bidSchema = new mongoose.Schema({
     vendorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     vendorName: { type: String },
     proposedAmount: { type: Number, required: true },
+    proposalDocumentId: { type: mongoose.Schema.Types.ObjectId, ref: 'BidDocument' },
     proposalDocument: { type: String }, // Can be a URL, base64 string, or just mock string
     status: { type: String, enum: ['Pending', 'Evaluated', 'Selected', 'Rejected'], default: 'Pending' },
+    committeeEvaluations: { type: [committeeEvaluationSchema], default: [] },
     technicalScore: { type: Number },
     financialScore: { type: Number },
     comments: { type: String },
@@ -42,10 +52,18 @@ const tenderSchema = new mongoose.Schema({
     },
     budget: { type: Number, required: true },
     deadline: { type: Date, required: true },
-    status: { type: String, enum: ['Draft', 'Published', 'Closed', 'Awarded'], default: 'Draft' },
+    status: { type: String, enum: ['Draft', 'Published', 'Closed', 'Awarded', 'Completed'], default: 'Published' },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     documents: [{ type: String }],
     bids: [bidSchema] // Embed bid array directly in Tender as requested
+}, { timestamps: true });
+
+const bidDocumentSchema = new mongoose.Schema({
+    tenderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Tender', required: true, index: true },
+    vendorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+    name: { type: String, required: true },
+    content: { type: String, required: true },
+    mimeType: { type: String },
 }, { timestamps: true });
 
 const milestoneChecklistItemSchema = new mongoose.Schema({
@@ -103,7 +121,7 @@ const progressReportSchema = new mongoose.Schema({
 const contractSchema = new mongoose.Schema({
     tenderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Tender', required: true },
     vendorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    status: { type: String, enum: ['Awarded', 'Signed', 'Completed'], default: 'Awarded' },
+    status: { type: String, enum: ['Awarded', 'Signed', 'Completed', 'Cancelled'], default: 'Awarded' },
     timelineDefined: { type: Boolean, default: false },
     timelineStartDate: { type: Date },
     timelineEndDate: { type: Date },
@@ -114,3 +132,4 @@ const contractSchema = new mongoose.Schema({
 export const User = mongoose.model('User', userSchema);
 export const Tender = mongoose.model('Tender', tenderSchema);
 export const Contract = mongoose.model('Contract', contractSchema);
+export const BidDocument = mongoose.model('BidDocument', bidDocumentSchema);

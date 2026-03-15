@@ -58,7 +58,7 @@ type ProgressReport = {
 type TenderRecord = {
   _id: string;
   title: string;
-  status: "Draft" | "Published" | "Closed" | "Awarded";
+  status: "Draft" | "Published" | "Closed" | "Awarded" | "Completed";
 };
 
 type CommitteeMember = {
@@ -70,7 +70,7 @@ type CommitteeMember = {
 
 type ContractRecord = {
   _id: string;
-  status: "Awarded" | "Signed" | "Completed";
+  status: "Awarded" | "Signed" | "Completed" | "Cancelled";
   timelineDefined?: boolean;
   timelineStartDate?: string;
   timelineEndDate?: string;
@@ -172,10 +172,31 @@ export function MilestoneTracking({ userRole = "committee" }: MilestoneTrackingP
   });
 
   const [pdfViewer, setPdfViewer] = useState<{ url: string; name: string } | null>(null);
+  const [statusUpdating, setStatusUpdating] = useState(false);
+
+  // Contract search & filter
+  const [contractSearch, setContractSearch] = useState("");
+  const [contractStatusFilter, setContractStatusFilter] = useState("All");
+
+  // Milestone search & filter
+  const [milestoneSearch, setMilestoneSearch] = useState("");
+  const [milestoneStatusFilter, setMilestoneStatusFilter] = useState("All");
 
   const canDefineTimeline = userRole === "po";
   const canUpdateMilestones = userRole === "committee" || userRole === "po";
   const canViewHistory = userRole === "po" || userRole === "cpo";
+  const canChangeContractStatus = userRole === "po";
+
+  const filteredContracts = useMemo(() => {
+    return contracts.filter((c) => {
+      const q = contractSearch.trim().toLowerCase();
+      const matchSearch = !q ||
+        (c.tenderId?.title || "").toLowerCase().includes(q) ||
+        (c.vendorId?.name || "").toLowerCase().includes(q);
+      const matchStatus = contractStatusFilter === "All" || c.status === contractStatusFilter;
+      return matchSearch && matchStatus;
+    });
+  }, [contracts, contractSearch, contractStatusFilter]);
 
   const getCommitteeAssigneeLabel = (member: CommitteeMember) => {
     const designation = member.designation || member.specialization || "No designation";
@@ -233,7 +254,7 @@ export function MilestoneTracking({ userRole = "committee" }: MilestoneTrackingP
   useEffect(() => {
     if (userRole !== "po") return;
     apiRequest<TenderRecord[]>("/api/tenders")
-      .then((data) => setTenders((data || []).filter((t) => t.status === "Published" || t.status === "Closed" || t.status === "Awarded")))
+      .then((data) => setTenders((data || []).filter((t) => t.status === "Published" || t.status === "Closed" || t.status === "Awarded" || t.status === "Completed")))
       .catch(() => {});
   }, [userRole]);
 
@@ -258,6 +279,18 @@ export function MilestoneTracking({ userRole = "committee" }: MilestoneTrackingP
     () => selectedContract?.milestones?.find((milestone) => milestone._id === selectedMilestoneId) || null,
     [selectedContract, selectedMilestoneId]
   );
+
+  const filteredMilestones = useMemo(() => {
+    const milestones = selectedContract?.milestones || [];
+    return milestones.filter((m) => {
+      const q = milestoneSearch.trim().toLowerCase();
+      const matchSearch = !q ||
+        m.title.toLowerCase().includes(q) ||
+        (m.assignedTo || "").toLowerCase().includes(q);
+      const matchStatus = milestoneStatusFilter === "All" || m.status === milestoneStatusFilter;
+      return matchSearch && matchStatus;
+    });
+  }, [selectedContract, milestoneSearch, milestoneStatusFilter]);
 
   // Contract matching the tender selected in the + panel
   const addPanelContract = useMemo(
@@ -401,6 +434,25 @@ export function MilestoneTracking({ userRole = "committee" }: MilestoneTrackingP
             imageNames: prev.imageNames.filter((_, fileIndex) => fileIndex !== index),
           }
     );
+  };
+
+  const updateContractStatus = async (newStatus: "Completed" | "Cancelled") => {
+    if (!selectedContractId) return;
+    setError("");
+    setSuccess("");
+    setStatusUpdating(true);
+    try {
+      await apiRequest(`/api/contracts/${selectedContractId}/status`, {
+        method: "PUT",
+        body: { status: newStatus },
+      });
+      setSuccess(`Contract marked as ${newStatus}.`);
+      await loadContracts();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Failed to set contract ${newStatus}`);
+    } finally {
+      setStatusUpdating(false);
+    }
   };
 
   const submitTimeline = async (e: React.FormEvent) => {
@@ -645,19 +697,52 @@ export function MilestoneTracking({ userRole = "committee" }: MilestoneTrackingP
           )}
 
           <div className="bg-white rounded-lg border border-gray-100 p-4 mb-6">
-            <label className="block text-sm text-gray-700 mb-2">Select Contract</label>
+            <label className="block text-sm text-gray-700 mb-3">Select Contract</label>
+            <div className="flex flex-wrap gap-3 mb-3">
+              <input
+                type="text"
+                value={contractSearch}
+                onChange={(e) => setContractSearch(e.target.value)}
+                placeholder="Search by tender or vendor…"
+                className="flex-1 min-w-[180px] max-w-xs px-3 py-1.5 border border-gray-300 rounded-md text-sm bg-white"
+              />
+              <select
+                value={contractStatusFilter}
+                onChange={(e) => setContractStatusFilter(e.target.value)}
+                className="px-3 py-1.5 border border-gray-300 rounded-md text-sm bg-white"
+              >
+                <option value="All">All Statuses</option>
+                <option value="Awarded">Awarded</option>
+                <option value="Signed">Signed</option>
+                <option value="Completed">Completed</option>
+                <option value="Cancelled">Cancelled</option>
+              </select>
+              {(contractSearch || contractStatusFilter !== "All") && (
+                <button
+                  onClick={() => { setContractSearch(""); setContractStatusFilter("All"); }}
+                  className="text-xs text-gray-500 hover:text-gray-700 underline self-center"
+                >
+                  Clear
+                </button>
+              )}
+              <span className="text-xs text-gray-400 self-center">
+                {filteredContracts.length} of {contracts.length}
+              </span>
+            </div>
             <select
               value={selectedContractId}
               onChange={(e) => {
                 setSelectedContractId(e.target.value);
                 setSelectedMilestoneId("");
+                setMilestoneSearch("");
+                setMilestoneStatusFilter("All");
               }}
               className="w-full md:w-[480px] px-3 py-2 border border-gray-300 rounded-md bg-white"
             >
               <option value="">Choose a contract</option>
-              {contracts.map((contract) => (
+              {filteredContracts.map((contract) => (
                 <option key={contract._id} value={contract._id}>
-                  {(contract.tenderId?.title || "Untitled Tender") + " - " + (contract.vendorId?.name || "Vendor")}
+                  {(contract.tenderId?.title || "Untitled Tender") + " - " + (contract.vendorId?.name || "Vendor") + " (" + contract.status + ")"}
                 </option>
               ))}
             </select>
@@ -672,7 +757,35 @@ export function MilestoneTracking({ userRole = "committee" }: MilestoneTrackingP
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
                 <div className="bg-white rounded-lg border border-gray-100 p-4">
                   <p className="text-sm text-gray-600">Contract Status</p>
-                  <p className="text-2xl text-[#0B3C5D]">{selectedContract.status}</p>
+                  <p className={`text-2xl mb-3 ${selectedContract.status === "Cancelled" ? "text-red-600" : selectedContract.status === "Completed" ? "text-green-700" : "text-[#0B3C5D]"}`}>
+                    {selectedContract.status}
+                  </p>
+                  {canChangeContractStatus && selectedContract.status !== "Completed" && selectedContract.status !== "Cancelled" && (
+                    <div className="flex flex-col gap-2">
+                      {summary.total > 0 && summary.completed === summary.total && (
+                        <button
+                          type="button"
+                          disabled={statusUpdating}
+                          onClick={() => updateContractStatus("Completed")}
+                          className="w-full px-3 py-1.5 rounded bg-green-600 hover:bg-green-700 text-white text-xs font-medium transition-colors disabled:opacity-50"
+                        >
+                          {statusUpdating ? "Updating…" : "Mark Complete"}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        disabled={statusUpdating}
+                        onClick={() => {
+                          if (window.confirm("Cancel this contract? This cannot be undone.")) {
+                            updateContractStatus("Cancelled");
+                          }
+                        }}
+                        className="w-full px-3 py-1.5 rounded bg-red-100 hover:bg-red-200 text-red-700 text-xs font-medium transition-colors disabled:opacity-50"
+                      >
+                        Cancel Contract
+                      </button>
+                    </div>
+                  )}
                 </div>
                 <div className="bg-white rounded-lg border border-gray-100 p-4">
                   <p className="text-sm text-gray-600">Total Milestones</p>
@@ -829,19 +942,50 @@ export function MilestoneTracking({ userRole = "committee" }: MilestoneTrackingP
               {selectedContract.timelineDefined && (
                 <>
                   <div className="bg-white rounded-xl border border-gray-100 p-6 mb-6 shadow-sm">
-                    <div className="flex items-center justify-between mb-6">
+                    <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
                       <h3 className="text-lg font-semibold text-[#0B3C5D]">Project Timeline</h3>
-                      <span className="text-xs text-gray-500 bg-gray-50 px-3 py-1 rounded-full border border-gray-200">
-                        {(selectedContract.milestones || []).length} milestones
-                      </span>
+                      <div className="flex flex-wrap items-center gap-3">
+                        <input
+                          type="text"
+                          value={milestoneSearch}
+                          onChange={(e) => setMilestoneSearch(e.target.value)}
+                          placeholder="Search milestone or assignee…"
+                          className="min-w-[170px] max-w-xs px-3 py-1.5 border border-gray-300 rounded-md text-sm bg-white"
+                        />
+                        <select
+                          value={milestoneStatusFilter}
+                          onChange={(e) => setMilestoneStatusFilter(e.target.value)}
+                          className="px-3 py-1.5 border border-gray-300 rounded-md text-sm bg-white"
+                        >
+                          <option value="All">All Statuses</option>
+                          <option value="Not Started">Not Started</option>
+                          <option value="In Progress">In Progress</option>
+                          <option value="Completed">Completed</option>
+                          <option value="Delayed">Delayed</option>
+                        </select>
+                        {(milestoneSearch || milestoneStatusFilter !== "All") && (
+                          <button
+                            onClick={() => { setMilestoneSearch(""); setMilestoneStatusFilter("All"); }}
+                            className="text-xs text-gray-500 hover:text-gray-700 underline"
+                          >
+                            Clear
+                          </button>
+                        )}
+                        <span className="text-xs text-gray-400">
+                          {filteredMilestones.length} of {(selectedContract.milestones || []).length}
+                        </span>
+                      </div>
                     </div>
                     {!selectedContract.milestones?.length && (
                       <p className="text-sm text-gray-500 text-center py-8">No milestones defined for this contract.</p>
                     )}
+                    {!!selectedContract.milestones?.length && filteredMilestones.length === 0 && (
+                      <p className="text-sm text-gray-400 text-center py-8">No milestones match your search.</p>
+                    )}
                     <div className="relative">
                       <div className="absolute left-5 top-5 bottom-0 w-px bg-gray-200" />
                       <div className="space-y-4">
-                        {(selectedContract.milestones || []).map((milestone, index) => {
+                        {filteredMilestones.map((milestone, index) => {
                           const styles = STATUS_STYLES[milestone.status];
                           return (
                             <div key={milestone._id} className="relative flex gap-4">

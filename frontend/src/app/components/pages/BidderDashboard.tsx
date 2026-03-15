@@ -12,7 +12,7 @@ import {
 } from "../../document-utils";
 
 type BidStatus = "Pending" | "Evaluated" | "Selected" | "Rejected";
-type ContractStatus = "Awarded" | "Signed" | "Completed";
+type ContractStatus = "Awarded" | "Signed" | "Completed" | "Cancelled";
 
 type TenderBid = {
   _id: string;
@@ -33,7 +33,7 @@ type TenderRecord = {
   category?: string;
   budget: number;
   deadline: string;
-  status: "Draft" | "Published" | "Closed" | "Awarded";
+  status: "Draft" | "Published" | "Closed" | "Awarded" | "Completed";
   documents?: string[];
   bids?: TenderBid[];
 };
@@ -673,6 +673,7 @@ function getBidStatusClass(status: BidStatus): string {
 
 function getContractStatusClass(status: ContractStatus): string {
   if (status === "Completed") return "bg-green-100 text-green-800";
+  if (status === "Cancelled") return "bg-red-100 text-red-800";
   if (status === "Signed") return "bg-blue-100 text-blue-800";
   return "bg-yellow-100 text-yellow-800";
 }

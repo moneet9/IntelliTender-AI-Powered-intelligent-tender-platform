@@ -2,12 +2,16 @@ import { useState } from "react";
 import { Sidebar } from "../layout/Sidebar";
 import { Header } from "../layout/Header";
 import { AIAssistant } from "../AIAssistant";
-import { Upload, AlertCircle, FileText } from "lucide-react";
+import { Upload, AlertCircle, FileText, Lock, LockOpen } from "lucide-react";
 import { useNavigate } from "react-router";
 import { apiRequest } from "../../api";
 import { encodeFilesToStoredDocuments } from "../../document-utils";
 
 type WeightKey = "price" | "quality" | "experience" | "timeline";
+
+const weightKeys: WeightKey[] = ["price", "quality", "experience", "timeline"];
+const maxIndividualDocumentSizeBytes = 10 * 1024 * 1024;
+const maxCombinedDocumentSizeBytes = 35 * 1024 * 1024;
 
 export function TenderCreation() {
   const navigate = useNavigate();
@@ -27,6 +31,13 @@ export function TenderCreation() {
     experience: 20,
     timeline: 15,
   });
+  const [frozenWeights, setFrozenWeights] = useState<Record<WeightKey, boolean>>({
+    price: false,
+    quality: false,
+    experience: false,
+    timeline: false,
+  });
+  const [weightError, setWeightError] = useState("");
 
   const totalWeight = Object.values(weights).reduce((sum, val) => sum + val, 0);
   const isWeightValid = totalWeight === 100;
@@ -41,40 +52,66 @@ export function TenderCreation() {
   };
 
   const handleWeightChange = (key: WeightKey, value: number) => {
-    const newWeights: Record<WeightKey, number> = { ...weights, [key]: value };
-    const otherKeys = (Object.keys(weights) as WeightKey[]).filter((k) => k !== key);
-    const otherTotal = Object.values(newWeights).reduce((sum, val) => sum + val, 0) - value;
-    
-    // Calculate how much we need to distribute among other fields
-    const targetTotal = 100 - value;
-    const difference = targetTotal - otherTotal;
-    
-    if (difference !== 0 && otherKeys.length > 0) {
-      // Distribute the difference proportionally among other fields
-      const totalOtherWeights = otherKeys.reduce((sum, k) => sum + weights[k], 0);
-      
-      otherKeys.forEach((k) => {
-        if (totalOtherWeights > 0) {
-          const proportion = weights[k] / totalOtherWeights;
-          const adjustment = Math.round(targetTotal * proportion);
-          newWeights[k] = Math.max(0, Math.min(100, adjustment));
-        } else {
-          // If all others are 0, distribute equally
-          newWeights[k] = Math.round(targetTotal / otherKeys.length);
-        }
-      });
-      
-      // Fine-tune to ensure exactly 100%
-      const currentTotal = Object.values(newWeights).reduce((sum, val) => sum + val, 0);
-      if (currentTotal !== 100) {
-        const firstOtherKey = otherKeys[0];
-        if (firstOtherKey) {
-          newWeights[firstOtherKey] = Math.max(0, newWeights[firstOtherKey] + (100 - currentTotal));
-        }
-      }
+    if (frozenWeights[key]) {
+      setWeightError(`${key} is frozen. Unfreeze it to change this value.`);
+      return;
     }
-    
-    setWeights(newWeights);
+
+    const requestedValue = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : weights[key];
+    const immutableTotal = weightKeys
+      .filter((weightKey) => weightKey !== key && frozenWeights[weightKey])
+      .reduce((sum, weightKey) => sum + weights[weightKey], 0);
+
+    const adjustableKeys = weightKeys.filter((weightKey) => weightKey !== key && !frozenWeights[weightKey]);
+    const maxAllowed = Math.max(0, 100 - immutableTotal);
+    const clampedValue = Math.max(0, Math.min(maxAllowed, requestedValue));
+    const distributable = 100 - immutableTotal - clampedValue;
+
+    if (adjustableKeys.length === 0 && clampedValue !== weights[key]) {
+      setWeightError(`Cannot change ${key} while all other criteria are frozen. This would break the 100% total.`);
+      return;
+    }
+
+    const nextWeights: Record<WeightKey, number> = { ...weights, [key]: clampedValue };
+
+    if (adjustableKeys.length > 0) {
+      const totalAdjustableWeight = adjustableKeys.reduce((sum, weightKey) => sum + weights[weightKey], 0);
+
+      const provisional = adjustableKeys.map((weightKey) => {
+        const rawShare =
+          totalAdjustableWeight > 0
+            ? (weights[weightKey] / totalAdjustableWeight) * distributable
+            : distributable / adjustableKeys.length;
+
+        return {
+          key: weightKey,
+          floor: Math.floor(rawShare),
+          fraction: rawShare - Math.floor(rawShare),
+        };
+      });
+
+      let remaining = distributable - provisional.reduce((sum, item) => sum + item.floor, 0);
+
+      provisional
+        .slice()
+        .sort((a, b) => b.fraction - a.fraction)
+        .forEach((item) => {
+          const bonus = remaining > 0 ? 1 : 0;
+          nextWeights[item.key] = item.floor + bonus;
+          if (remaining > 0) remaining -= 1;
+        });
+    }
+
+    setWeightError("");
+    setWeights(nextWeights);
+  };
+
+  const toggleFreeze = (key: WeightKey) => {
+    setWeightError("");
+    setFrozenWeights((previous) => ({
+      ...previous,
+      [key]: !previous[key],
+    }));
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -97,7 +134,7 @@ export function TenderCreation() {
       });
       navigate("/po");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create tender");
+      setError(err instanceof Error ? err.message : "Failed to publish tender");
     } finally {
       setLoading(false);
     }
@@ -110,8 +147,8 @@ export function TenderCreation() {
         <Header role="po" userName="Rajesh Kumar" />
         <div className="flex-1 overflow-auto p-6">
           <div className="mb-6">
-            <h1 className="text-2xl text-[#0B3C5D] mb-1">Create New Tender</h1>
-            <p className="text-sm text-gray-600">Define tender specifications and evaluation criteria</p>
+            <h1 className="text-2xl text-[#0B3C5D] mb-1">Publish Tender</h1>
+            <p className="text-sm text-gray-600">Define tender specifications and publish it immediately</p>
           </div>
 
           <form onSubmit={handleSubmit} className="max-w-4xl">
@@ -199,9 +236,17 @@ export function TenderCreation() {
                     const files = e.target.files;
                     if (!files?.length) return;
 
-                    const oversizedFile = Array.from(files).find((file) => file.size > 10 * 1024 * 1024);
+                    const selectedFiles = Array.from(files);
+
+                    const oversizedFile = selectedFiles.find((file) => file.size > maxIndividualDocumentSizeBytes);
                     if (oversizedFile) {
                       setError(`${oversizedFile.name} exceeds the 10MB limit`);
+                      return;
+                    }
+
+                    const totalSelectedSize = selectedFiles.reduce((sum, file) => sum + file.size, 0);
+                    if (totalSelectedSize > maxCombinedDocumentSizeBytes) {
+                      setError("Combined file size is too large. Keep total uploads under 35MB.");
                       return;
                     }
 
@@ -209,7 +254,7 @@ export function TenderCreation() {
                       setError("");
                       const encodedDocuments = await encodeFilesToStoredDocuments(files);
                       setDocuments(encodedDocuments);
-                      setDocumentNames(Array.from(files).map((file) => file.name));
+                      setDocumentNames(selectedFiles.map((file) => file.name));
                     } catch {
                       setError("Failed to process uploaded tender documents");
                     }
@@ -251,12 +296,43 @@ export function TenderCreation() {
                 </div>
               )}
 
+              {!!weightError && (
+                <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-md flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-amber-700" />
+                  <p className="text-sm text-amber-800">{weightError}</p>
+                </div>
+              )}
+
+              <p className="text-xs text-gray-500 mb-4">
+                Freeze any criterion to lock its value. Frozen criteria never change when you adjust other weights.
+              </p>
+
               <div className="space-y-4">
-                {(Object.entries(weights) as Array<[WeightKey, number]>).map(([key, value]) => (
+                {(Object.entries(weights) as Array<[WeightKey, number]>).map(([key, value]) => {
+                  const isFrozen = frozenWeights[key];
+
+                  return (
                   <div key={key}>
                     <div className="flex items-center justify-between mb-2">
-                      <label className="text-sm text-gray-700 capitalize">{key}</label>
-                      <span className="text-sm text-[#0B3C5D]">{value}%</span>
+                      <div className="flex items-center gap-2">
+                        <label className="text-sm text-gray-700 capitalize">{key}</label>
+                        {isFrozen && <span className="text-xs px-2 py-0.5 rounded bg-slate-100 text-slate-700">Frozen</span>}
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="text-sm text-[#0B3C5D]">{value}%</span>
+                        <button
+                          type="button"
+                          onClick={() => toggleFreeze(key)}
+                          className={`inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded border transition-colors ${
+                            isFrozen
+                              ? "bg-slate-800 text-white border-slate-800 hover:bg-slate-700"
+                              : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50"
+                          }`}
+                        >
+                          {isFrozen ? <Lock className="w-3.5 h-3.5" /> : <LockOpen className="w-3.5 h-3.5" />}
+                          {isFrozen ? "Unfreeze" : "Freeze"}
+                        </button>
+                      </div>
                     </div>
                     <input
                       type="range"
@@ -264,10 +340,14 @@ export function TenderCreation() {
                       max="100"
                       value={value}
                       onChange={(e) => handleWeightChange(key, parseInt(e.target.value))}
-                      className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-[#1D4E89]"
+                      disabled={isFrozen}
+                      className={`w-full h-2 bg-gray-200 rounded-lg appearance-none accent-[#1D4E89] ${
+                        isFrozen ? "cursor-not-allowed opacity-60" : "cursor-pointer"
+                      }`}
                     />
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
 
@@ -283,7 +363,7 @@ export function TenderCreation() {
                     : "bg-gray-300 text-gray-500 cursor-not-allowed"
                 }`}
               >
-                {loading ? "Creating..." : "Create Tender"}
+                {loading ? "Publishing..." : "Publish Tender"}
               </button>
               <button
                 type="button"

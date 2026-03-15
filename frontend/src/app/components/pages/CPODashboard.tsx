@@ -1,7 +1,6 @@
 import { Sidebar } from "../layout/Sidebar";
-import { Header } from "../layout/Header";
 import { AIAssistant } from "../AIAssistant";
-import { ChangePassword } from "./ChangePassword";
+import { useNavigate } from "react-router";
 import {
   FileText,
   ClipboardCheck,
@@ -46,43 +45,10 @@ const recentAudits = [
 ];
 
 export function CPODashboard() {
-  const [activeTab, setActiveTab] = useState<"overview" | "settings">("overview");
-  const [tenders, setTenders] = useState<any[]>([]);
-  const [selectedTenderId, setSelectedTenderId] = useState("");
-  const [evaluatedBids, setEvaluatedBids] = useState<any[]>([]);
-  const [contracts, setContracts] = useState<any[]>([]);
+  const navigate = useNavigate();
   const [departmentPerformance, setDepartmentPerformance] = useState<any[]>([]);
   const [poPerformance, setPoPerformance] = useState<any[]>([]);
   const [actionError, setActionError] = useState("");
-
-  const loadTenders = async () => {
-    try {
-      const data = await apiRequest<any[]>("/api/tenders");
-      setTenders(data);
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : "Failed to load tenders");
-    }
-  };
-
-  const loadEvaluatedBids = async (tenderId: string) => {
-    setSelectedTenderId(tenderId);
-    setActionError("");
-    try {
-      const data = await apiRequest<any[]>(`/api/tenders/${tenderId}/evaluated-bids`);
-      setEvaluatedBids(data);
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : "Failed to load evaluated bids");
-    }
-  };
-
-  const loadContracts = async () => {
-    try {
-      const data = await apiRequest<any[]>("/api/contracts");
-      setContracts(data);
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : "Failed to load contracts");
-    }
-  };
 
   const loadCpoAnalytics = async () => {
     try {
@@ -97,34 +63,7 @@ export function CPODashboard() {
     }
   };
 
-  const updateContractStatus = async (contractId: string, status: "Awarded" | "Signed" | "Completed") => {
-    setActionError("");
-    try {
-      await apiRequest(`/api/contracts/${contractId}/status`, {
-        method: "PUT",
-        body: { status },
-      });
-      await loadContracts();
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : "Failed to update contract status");
-    }
-  };
-
-  const selectWinner = async (bidId: string) => {
-    if (!selectedTenderId) return;
-    setActionError("");
-    try {
-      await apiRequest(`/api/tenders/${selectedTenderId}/bids/${bidId}/select`, { method: "PUT" });
-      await loadTenders();
-      await loadEvaluatedBids(selectedTenderId);
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : "Failed to select winner");
-    }
-  };
-
   useEffect(() => {
-    loadTenders();
-    loadContracts();
     loadCpoAnalytics();
   }, []);
 
@@ -132,37 +71,40 @@ export function CPODashboard() {
     <div className="flex h-screen bg-[#F4F6F9]">
       <Sidebar role="cpo" />
       <div className="flex-1 overflow-auto p-6">
-          <div className="mb-6">
-            <h1 className="text-2xl text-[#0B3C5D] mb-4">CPO Dashboard</h1>
-            <div className="flex gap-2">
+          <div className="mb-5">
+            <h1 className="text-2xl text-[#0B3C5D] mb-1">CPO Dashboard</h1>
+            <p className="text-sm text-gray-600">Oversight & Strategic Analytics</p>
+          </div>
+          <div className="bg-white rounded-lg shadow-sm p-5 border border-gray-100 mb-6">
+            <h3 className="text-base font-medium text-[#0B3C5D] mb-3">Quick Actions</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
               <button
-                onClick={() => setActiveTab("overview")}
-                className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                  activeTab === "overview"
-                    ? "bg-[#0B3C5D] text-white"
-                    : "bg-white text-[#0B3C5D] border border-gray-300 hover:bg-gray-50"
-                }`}
+                onClick={() => navigate("/cpo/bid-comparison")}
+                className="px-4 py-3 bg-[#2E8B57] hover:bg-[#267347] text-white rounded-md transition-colors text-sm"
               >
-                Overview
+                Approve Final Award
               </button>
               <button
-                onClick={() => setActiveTab("settings")}
-                className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                  activeTab === "settings"
-                    ? "bg-[#0B3C5D] text-white"
-                    : "bg-white text-[#0B3C5D] border border-gray-300 hover:bg-gray-50"
-                }`}
+                onClick={() => navigate("/cpo/bidders")}
+                className="px-4 py-3 bg-[#1D4E89] hover:bg-[#154068] text-white rounded-md transition-colors text-sm"
               >
-                Settings
+                View Risk Analytics
+              </button>
+              <button
+                onClick={() => navigate("/cpo/bid-comparison")}
+                className="px-4 py-3 bg-[#F4A300] hover:bg-[#d89200] text-white rounded-md transition-colors text-sm"
+              >
+                Review Overrides
+              </button>
+              <button
+                onClick={() => navigate("/cpo/contracts")}
+                className="px-4 py-3 bg-[#0B3C5D] hover:bg-[#082a42] text-white rounded-md transition-colors text-sm"
+              >
+                Contract Status
               </button>
             </div>
           </div>
-
-          {activeTab === "settings" && <ChangePassword />}
-
-          {activeTab === "overview" && (
-            <>
-              <p className="text-sm text-gray-600 mb-6">Oversight & Strategic Analytics</p>
+          {actionError && <p className="text-sm text-red-600 mb-4">{actionError}</p>}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
             {statsData.map((stat) => (
               <div key={stat.label} className="bg-white rounded-lg shadow-sm p-5 border border-gray-100">
@@ -260,94 +202,9 @@ export function CPODashboard() {
               </div>
             </div>
           </div>
-
-          {/* Quick Actions */}
-          <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-100 mb-6">
-            <h3 className="text-lg text-[#0B3C5D] mb-4">Bid Comparison & Winner Selection</h3>
-            <div className="flex items-center gap-3 mb-4">
-              <select
-                value={selectedTenderId}
-                onChange={(e) => loadEvaluatedBids(e.target.value)}
-                className="px-3 py-2 border border-gray-300 rounded-md"
-              >
-                <option value="">Select tender</option>
-                {tenders.map((tender) => (
-                  <option key={tender._id} value={tender._id}>
-                    {tender.title}
-                  </option>
-                ))}
-              </select>
-            </div>
-            {actionError && <p className="text-sm text-red-600 mb-3">{actionError}</p>}
-            <div className="space-y-3">
-              {evaluatedBids.map((bid) => (
-                <div key={bid._id} className="flex items-center justify-between border border-gray-200 rounded-md p-3">
-                  <div>
-                    <p className="text-sm text-[#0B3C5D]">{bid.vendorName || "Vendor"}</p>
-                    <p className="text-xs text-gray-600">
-                      Tech: {bid.technicalScore ?? 0}, Finance: {bid.financialScore ?? 0}, Amount: ₹{Number(bid.proposedAmount).toLocaleString()}
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => selectWinner(bid._id)}
-                    className="px-4 py-2 bg-[#2E8B57] hover:bg-[#267347] text-white rounded-md text-sm"
-                  >
-                    Select Winner
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-100 mb-6">
-            <h3 className="text-lg text-[#0B3C5D] mb-4">Contract Status Update</h3>
-            <div className="space-y-3">
-              {!contracts.length && <p className="text-sm text-gray-600">No contracts available.</p>}
-              {contracts.map((contract) => (
-                <div key={contract._id} className="flex flex-col md:flex-row md:items-center md:justify-between border border-gray-200 rounded-md p-3 gap-3">
-                  <div>
-                    <p className="text-sm text-[#0B3C5D]">{contract.tenderId?.title || "Tender"}</p>
-                    <p className="text-xs text-gray-600">Vendor: {contract.vendorId?.name || "N/A"}</p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs px-2 py-1 rounded-full bg-blue-100 text-blue-800">{contract.status}</span>
-                    <select
-                      value={contract.status}
-                      onChange={(e) => updateContractStatus(contract._id, e.target.value as "Awarded" | "Signed" | "Completed")}
-                      className="px-3 py-2 border border-gray-300 rounded-md text-sm"
-                    >
-                      <option value="Awarded">Awarded</option>
-                      <option value="Signed">Signed</option>
-                      <option value="Completed">Completed</option>
-                    </select>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-100">
-            <h3 className="text-lg text-[#0B3C5D] mb-4">Quick Actions</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-              <button className="px-4 py-3 bg-[#2E8B57] hover:bg-[#267347] text-white rounded-md transition-colors text-sm">
-                Approve Final Award
-              </button>
-              <button className="px-4 py-3 bg-[#1D4E89] hover:bg-[#154068] text-white rounded-md transition-colors text-sm">
-                View Risk Analytics
-              </button>
-              <button className="px-4 py-3 bg-[#F4A300] hover:bg-[#d89200] text-white rounded-md transition-colors text-sm">
-                Review Overrides
-              </button>
-              <button className="px-4 py-3 bg-[#0B3C5D] hover:bg-[#082a42] text-white rounded-md transition-colors text-sm">
-                View Audit Logs
-              </button>
-            </div>
-          </div>
           <div className="mt-8 text-center text-xs text-gray-500 border-t border-gray-200 pt-6">
             © 2026 Government Procurement Authority
           </div>
-            </>
-          )}
         <AIAssistant role="cpo" />
       </div>
     </div>

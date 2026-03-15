@@ -2,6 +2,8 @@ import { createBrowserRouter } from "react-router";
 import { HomePage } from "./components/pages/HomePage";
 import { Login } from "./components/pages/Login";
 import { CPODashboard } from "./components/pages/CPODashboard";
+import { CPOBidComparison } from "./components/pages/CPOBidComparison";
+import { CPOContractStatus } from "./components/pages/CPOContractStatus";
 import { PODashboard } from "./components/pages/PODashboard";
 import { CommitteeDashboard } from "./components/pages/CommitteeDashboard";
 import { TenderCreation } from "./components/pages/TenderCreation";
@@ -40,6 +42,14 @@ export const router = createBrowserRouter([
     Component: BidderProfile,
   },
   {
+    path: "/cpo/bid-comparison",
+    Component: CPOBidComparison,
+  },
+  {
+    path: "/cpo/contracts",
+    Component: CPOContractStatus,
+  },
+  {
     path: "/cpo/create-po",
     Component: CreatePO,
   },
@@ -50,6 +60,10 @@ export const router = createBrowserRouter([
   },
   {
     path: "/po/create-tender",
+    Component: TenderCreation,
+  },
+  {
+    path: "/po/publish-tender",
     Component: TenderCreation,
   },
   {

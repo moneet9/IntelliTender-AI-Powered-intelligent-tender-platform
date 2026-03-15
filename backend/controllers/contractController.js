@@ -1,4 +1,4 @@
-import { Contract } from '../models/model.js';
+import { Contract, Tender } from '../models/model.js';
 
 const MILESTONE_STATUSES = ['Not Started', 'In Progress', 'Completed', 'Delayed'];
 
@@ -93,7 +93,7 @@ export const getContractById = async (req, res) => {
 export const updateContractStatus = async (req, res) => {
     try {
         const { status } = req.body;
-        if (!['Awarded', 'Signed', 'Completed'].includes(status)) {
+        if (!['Awarded', 'Signed', 'Completed', 'Cancelled'].includes(status)) {
             return res.status(400).json({ message: 'Invalid contract status' });
         }
 
@@ -121,6 +121,15 @@ export const updateContractStatus = async (req, res) => {
 
         contract.status = status;
         await contract.save();
+
+        // Sync tender status to reflect contract state
+        if (contract.tenderId) {
+            const tenderStatus = status === 'Completed' ? 'Completed' : status === 'Cancelled' ? 'Closed' : null;
+            if (tenderStatus) {
+                await Tender.findByIdAndUpdate(contract.tenderId, { status: tenderStatus });
+            }
+        }
+
         res.json(contract);
     } catch (error) {
         res.status(500).json({ error: error.message });

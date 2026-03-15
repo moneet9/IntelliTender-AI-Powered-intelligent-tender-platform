@@ -5,8 +5,8 @@ import { Header } from "../layout/Header";
 import { AIAssistant } from "../AIAssistant";
 import { apiRequest } from "../../api";
 
-type TenderStatus = "Draft" | "Published" | "Closed" | "Awarded";
-type ContractStatus = "Awarded" | "Signed" | "Completed";
+type TenderStatus = "Draft" | "Published" | "Closed" | "Awarded" | "Completed";
+type ContractStatus = "Awarded" | "Signed" | "Completed" | "Cancelled";
 
 type TenderRecord = {
   _id: string;
@@ -68,7 +68,7 @@ export function PODashboard() {
   }, [contracts, tenders]);
 
   const tenderBreakdown = useMemo(() => {
-    const counts: Record<string, number> = { Draft: 0, Published: 0, Closed: 0, Awarded: 0 };
+    const counts: Record<string, number> = { Draft: 0, Published: 0, Closed: 0, Awarded: 0, Completed: 0 };
     tenders.forEach((t) => {
       if (counts[t.status] !== undefined) counts[t.status]++;
     });

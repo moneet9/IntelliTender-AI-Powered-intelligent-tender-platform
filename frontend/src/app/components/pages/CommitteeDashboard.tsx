@@ -1,16 +1,13 @@
 import { Sidebar } from "../layout/Sidebar";
 import { Header } from "../layout/Header";
 import { AIAssistant } from "../AIAssistant";
-import { ChangePassword } from "./ChangePassword";
-import { Upload } from "lucide-react";
-import { useEffect, useState } from "react";
-import { useNavigate } from "react-router";
-import { apiRequest } from "../../api";
+import { useEffect, useMemo, useState } from "react";
+import { apiRequest, getAuthUser } from "../../api";
 
 type Tender = {
   _id: string;
   title: string;
-  status: "Draft" | "Published" | "Closed" | "Awarded";
+  status: "Draft" | "Published" | "Closed" | "Awarded" | "Completed";
   bids?: Array<{ _id: string }>;
 };
 
@@ -19,42 +16,55 @@ type Bid = {
   vendorName?: string;
   proposedAmount: number;
   status: "Pending" | "Evaluated" | "Selected" | "Rejected";
+  committeeEvaluations?: Array<{
+    committeeMemberId?: string;
+    technicalScore?: number;
+    financialScore?: number;
+    comments?: string;
+    evaluatedDate?: string;
+  }>;
   technicalScore?: number;
   financialScore?: number;
   comments?: string;
 };
 
 export function CommitteeDashboard() {
-  const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState<"evaluation" | "monitoring" | "settings">("evaluation");
+  const authUser = getAuthUser();
   const [tenders, setTenders] = useState<Tender[]>([]);
   const [selectedTenderId, setSelectedTenderId] = useState<string>("");
   const [bids, setBids] = useState<Bid[]>([]);
   const [technicalScore, setTechnicalScore] = useState<Record<string, string>>({});
   const [financialScore, setFinancialScore] = useState<Record<string, string>>({});
   const [comments, setComments] = useState<Record<string, string>>({});
+  const [submittingBidId, setSubmittingBidId] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
 
-  // Supply contract monitoring
-  const [supplyChecklist, setSupplyChecklist] = useState({
-    quantityVerified: false,
-    qualityVerified: false,
-    documentsUploaded: false,
-    deliveryComplete: false,
-  });
+  const [tenderSearch, setTenderSearch] = useState("");
+  const [tenderStatusFilter, setTenderStatusFilter] = useState("All");
+  const [tenderSort, setTenderSort] = useState<"title" | "bids" | "status">("title");
 
-  // Work contract monitoring
-  const [workProgress, setWorkProgress] = useState({
-    milestoneTitle: "",
-    completionDate: "",
-    description: "",
-    observations: "",
-  });
+  const filteredTenders = useMemo(() => {
+    let result = tenders.filter((t) => {
+      const q = tenderSearch.trim().toLowerCase();
+      const matchSearch = !q ||
+        t.title.toLowerCase().includes(q) ||
+        t._id.slice(-6).toLowerCase().includes(q);
+      const matchStatus = tenderStatusFilter === "All" || t.status === tenderStatusFilter;
+      return matchSearch && matchStatus;
+    });
+    return [...result].sort((a, b) => {
+      if (tenderSort === "bids") return (b.bids?.length || 0) - (a.bids?.length || 0);
+      if (tenderSort === "status") return a.status.localeCompare(b.status);
+      return a.title.localeCompare(b.title);
+    });
+  }, [tenders, tenderSearch, tenderStatusFilter, tenderSort]);
 
   const loadTenders = async () => {
     setLoading(true);
     setError("");
+    setSuccess("");
     try {
       const data = await apiRequest<Tender[]>("/api/tenders");
       setTenders(data);
@@ -67,6 +77,7 @@ export function CommitteeDashboard() {
 
   const loadTenderBids = async (tenderId: string) => {
     setError("");
+    setSuccess("");
     setSelectedTenderId(tenderId);
     try {
       const data = await apiRequest<Bid[]>(`/api/tenders/${tenderId}/bids`);
@@ -78,6 +89,11 @@ export function CommitteeDashboard() {
 
   const submitEvaluation = async (bidId: string) => {
     if (!selectedTenderId) return;
+
+    setSubmittingBidId(bidId);
+    setError("");
+    setSuccess("");
+
     try {
       await apiRequest(`/api/tenders/${selectedTenderId}/bids/${bidId}/evaluate`, {
         method: "PUT",
@@ -87,10 +103,22 @@ export function CommitteeDashboard() {
           comments: comments[bidId] || "",
         },
       });
+
+      setSuccess("Evaluation saved. Other committee members can also submit their reviews for the same tender.");
       await loadTenderBids(selectedTenderId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to evaluate bid");
+    } finally {
+      setSubmittingBidId("");
     }
+  };
+
+  const getCommitteeMemberEvaluation = (bid: Bid) => {
+    if (!authUser?._id) return null;
+
+    return (bid.committeeEvaluations || []).find(
+      (evaluation) => evaluation.committeeMemberId === authUser._id
+    ) || null;
   };
 
   useEffect(() => {
@@ -101,55 +129,55 @@ export function CommitteeDashboard() {
     <div className="flex h-screen bg-[#F4F6F9]">
       <Sidebar role="committee" />
       <div className="flex-1 overflow-auto p-6">
+          <Header role="committee" userName={authUser?.name || ""} />
           <div className="mb-6">
             <h1 className="text-2xl text-[#0B3C5D] mb-1">Committee Dashboard</h1>
-            <p className="text-sm text-gray-600">Technical Evaluation & Contract Monitoring</p>
+            <p className="text-sm text-gray-600">Technical Evaluation</p>
           </div>
 
-          {/* Tab Navigation */}
-          <div className="mb-6 border-b border-gray-200">
-            <div className="flex gap-6">
-              <button
-                onClick={() => setActiveTab("evaluation")}
-                className={`pb-3 px-1 text-sm transition-colors ${
-                  activeTab === "evaluation"
-                    ? "border-b-2 border-[#1D4E89] text-[#1D4E89]"
-                    : "text-gray-600 hover:text-gray-800"
-                }`}
-              >
-                Evaluation
-              </button>
-              <button
-                onClick={() => setActiveTab("monitoring")}
-                className={`pb-3 px-1 text-sm transition-colors ${
-                  activeTab === "monitoring"
-                    ? "border-b-2 border-[#1D4E89] text-[#1D4E89]"
-                    : "text-gray-600 hover:text-gray-800"
-                }`}
-              >
-                Contract Monitoring
-              </button>
-              <button
-                onClick={() => setActiveTab("settings")}
-                className={`pb-3 px-1 text-sm transition-colors ${
-                  activeTab === "settings"
-                    ? "border-b-2 border-[#1D4E89] text-[#1D4E89]"
-                    : "text-gray-600 hover:text-gray-800"
-                }`}
-              >
-                Settings
-              </button>
-            </div>
-          </div>
-
-          {activeTab === "settings" && <ChangePassword />}
-
-          {activeTab === "evaluation" && (
-            <>
+          <>
               {/* Assigned Tenders */}
               <div className="bg-white rounded-lg shadow-sm mb-6 border border-gray-100">
-                <div className="p-6 border-b border-gray-100">
+                <div className="p-4 border-b border-gray-100 flex flex-wrap items-center justify-between gap-3">
                   <h3 className="text-lg text-[#0B3C5D]">Assigned Tenders</h3>
+                  <span className="text-xs text-gray-400">{filteredTenders.length} of {tenders.length} tender(s)</span>
+                </div>
+                <div className="px-4 py-3 border-b border-gray-100 bg-gray-50 flex flex-wrap gap-3 items-center">
+                  <input
+                    type="text"
+                    value={tenderSearch}
+                    onChange={(e) => setTenderSearch(e.target.value)}
+                    placeholder="Search by title or ID…"
+                    className="flex-1 min-w-[180px] max-w-sm px-3 py-1.5 border border-gray-300 rounded-md text-sm bg-white"
+                  />
+                  <select
+                    value={tenderStatusFilter}
+                    onChange={(e) => setTenderStatusFilter(e.target.value)}
+                    className="px-3 py-1.5 border border-gray-300 rounded-md text-sm bg-white"
+                  >
+                    <option value="All">All Statuses</option>
+                    <option value="Published">Published</option>
+                    <option value="Closed">Closed</option>
+                    <option value="Awarded">Awarded</option>
+                    <option value="Completed">Completed</option>
+                  </select>
+                  <select
+                    value={tenderSort}
+                    onChange={(e) => setTenderSort(e.target.value as "title" | "bids" | "status")}
+                    className="px-3 py-1.5 border border-gray-300 rounded-md text-sm bg-white"
+                  >
+                    <option value="title">Sort: Title A–Z</option>
+                    <option value="bids">Sort: Most Bids</option>
+                    <option value="status">Sort: Status</option>
+                  </select>
+                  {(tenderSearch || tenderStatusFilter !== "All") && (
+                    <button
+                      onClick={() => { setTenderSearch(""); setTenderStatusFilter("All"); }}
+                      className="text-xs text-gray-500 hover:text-gray-700 underline"
+                    >
+                      Clear
+                    </button>
+                  )}
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full">
@@ -178,7 +206,12 @@ export function CommitteeDashboard() {
                           <td colSpan={5} className="px-6 py-4 text-sm text-gray-600">Loading tenders...</td>
                         </tr>
                       )}
-                      {!loading && tenders.map((tender) => (
+                      {!loading && !filteredTenders.length && (
+                        <tr>
+                          <td colSpan={5} className="px-6 py-8 text-sm text-gray-400 text-center">No tenders match your search.</td>
+                        </tr>
+                      )}
+                      {!loading && filteredTenders.map((tender) => (
                         <tr key={tender._id} className="hover:bg-gray-50">
                           <td className="px-6 py-4 text-sm text-[#1D4E89]">{tender._id.slice(-6).toUpperCase()}</td>
                           <td className="px-6 py-4 text-sm text-gray-800">{tender.title}</td>
@@ -190,7 +223,11 @@ export function CommitteeDashboard() {
                                   ? "bg-blue-100 text-blue-800"
                                   : tender.status === "Draft"
                                   ? "bg-yellow-100 text-yellow-800"
-                                  : "bg-green-100 text-green-800"
+                                  : tender.status === "Completed"
+                                  ? "bg-green-100 text-green-800"
+                                  : tender.status === "Awarded"
+                                  ? "bg-purple-100 text-purple-800"
+                                  : "bg-gray-100 text-gray-700"
                               }`}
                             >
                               {tender.status}
@@ -212,6 +249,7 @@ export function CommitteeDashboard() {
               </div>
 
               {error && <p className="text-sm text-red-600 mb-4">{error}</p>}
+              {success && <p className="text-sm text-green-700 mb-4">{success}</p>}
 
               {/* Bid Evaluation */}
               <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-100">
@@ -219,168 +257,75 @@ export function CommitteeDashboard() {
                 {!selectedTenderId && <p className="text-sm text-gray-600">Select a tender to review submissions.</p>}
                 {!!selectedTenderId && !bids.length && <p className="text-sm text-gray-600">No bids found for selected tender.</p>}
                 <div className="space-y-4">
-                  {bids.map((bid) => (
-                    <div key={bid._id} className="border border-gray-200 rounded-lg p-4">
-                      <div className="flex items-center justify-between mb-3">
-                        <h4 className="text-sm text-[#0B3C5D]">{bid.vendorName || "Vendor"}</h4>
-                        <span className="text-sm text-gray-600">₹{Number(bid.proposedAmount).toLocaleString()}</span>
-                      </div>
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                        <input
-                          type="number"
-                          value={technicalScore[bid._id] ?? String(bid.technicalScore ?? "")}
-                          onChange={(e) => setTechnicalScore({ ...technicalScore, [bid._id]: e.target.value })}
-                          className="px-3 py-2 border border-gray-300 rounded-md"
-                          placeholder="Technical score"
-                        />
-                        <input
-                          type="number"
-                          value={financialScore[bid._id] ?? String(bid.financialScore ?? "")}
-                          onChange={(e) => setFinancialScore({ ...financialScore, [bid._id]: e.target.value })}
-                          className="px-3 py-2 border border-gray-300 rounded-md"
-                          placeholder="Financial score"
-                        />
-                        <input
-                          type="text"
-                          value={comments[bid._id] ?? bid.comments ?? ""}
-                          onChange={(e) => setComments({ ...comments, [bid._id]: e.target.value })}
-                          className="px-3 py-2 border border-gray-300 rounded-md"
-                          placeholder="Comments"
-                        />
-                      </div>
-                      <div className="mt-3">
-                        <button
-                          onClick={() => submitEvaluation(bid._id)}
-                          className="px-4 py-2 bg-[#1D4E89] hover:bg-[#154068] text-white rounded-md text-sm"
-                        >
-                          Mark Evaluated
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </>
-          )}
+                  {bids.map((bid) => {
+                    const myEvaluation = getCommitteeMemberEvaluation(bid);
+                    const evaluationCount = bid.committeeEvaluations?.length || (bid.status === "Evaluated" ? 1 : 0);
+                    const isSubmitting = submittingBidId === bid._id;
 
-          {activeTab === "monitoring" && (
-            <>
-              {/* Supply Contract Monitoring */}
-              <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-100">
-                <h3 className="text-lg text-[#0B3C5D] mb-4">Supply Contract Monitoring</h3>
-                <p className="text-sm text-gray-600 mb-4">Contract: CNT-2026-032 - Office Furniture Supply</p>
-                <div className="space-y-3">
-                  {Object.entries(supplyChecklist).map(([key, checked]) => (
-                    <label key={key} className="flex items-center gap-3 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={(e) =>
-                          setSupplyChecklist({ ...supplyChecklist, [key]: e.target.checked })
-                        }
-                        className="w-5 h-5 rounded border-gray-300 text-[#1D4E89] focus:ring-[#1D4E89]"
-                      />
-                      <span className="text-sm text-gray-700 capitalize">
-                        {key.replace(/([A-Z])/g, " $1").trim()}
-                      </span>
-                    </label>
-                  ))}
-                </div>
-                <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-md">
-                  <p className="text-sm text-blue-800">
-                    Timestamp will be automatically captured upon completion
-                  </p>
-                </div>
-              </div>
-
-              {/* Work Contract Monitoring */}
-              <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-100">
-                <h3 className="text-lg text-[#0B3C5D] mb-4">Work Contract Progress Report</h3>
-                <p className="text-sm text-gray-600 mb-4">Contract: CNT-2026-028 - Road Construction Project</p>
-                <div className="space-y-4">
-                  <div>
-                    <label className="block text-sm text-gray-700 mb-2">Milestone Title</label>
-                    <input
-                      type="text"
-                      value={workProgress.milestoneTitle}
-                      onChange={(e) =>
-                        setWorkProgress({ ...workProgress, milestoneTitle: e.target.value })
-                      }
-                      className="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89]"
-                      placeholder="e.g., Foundation Work Completed"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm text-gray-700 mb-2">Completion Date</label>
-                    <input
-                      type="date"
-                      value={workProgress.completionDate}
-                      onChange={(e) =>
-                        setWorkProgress({ ...workProgress, completionDate: e.target.value })
-                      }
-                      className="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89]"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm text-gray-700 mb-2">Description</label>
-                    <textarea
-                      value={workProgress.description}
-                      onChange={(e) =>
-                        setWorkProgress({ ...workProgress, description: e.target.value })
-                      }
-                      className="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89]"
-                      rows={3}
-                      placeholder="Describe the milestone progress..."
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm text-gray-700 mb-2">Observations</label>
-                    <textarea
-                      value={workProgress.observations}
-                      onChange={(e) =>
-                        setWorkProgress({ ...workProgress, observations: e.target.value })
-                      }
-                      className="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89]"
-                      rows={3}
-                      placeholder="Any observations or issues..."
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm text-gray-700 mb-2">Upload Files/Images</label>
-                    <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-[#1D4E89] transition-colors cursor-pointer">
-                      <Upload className="w-8 h-8 text-gray-400 mx-auto mb-2" />
-                      <p className="text-sm text-gray-600">Upload progress photos and documents</p>
-                    </div>
-                  </div>
-                  <button className="w-full px-4 py-3 bg-[#1D4E89] hover:bg-[#154068] text-white rounded-md transition-colors">
-                    Submit Progress Report
-                  </button>
+                    return (
+                      <div key={bid._id} className="border border-gray-200 rounded-lg p-4">
+                        <div className="flex items-center justify-between mb-3">
+                          <div>
+                            <h4 className="text-sm text-[#0B3C5D]">{bid.vendorName || "Vendor"}</h4>
+                            <p className="text-xs text-gray-500 mt-1">
+                              Aggregated score: Technical {bid.technicalScore ?? "-"} | Financial {bid.financialScore ?? "-"}
+                            </p>
+                          </div>
+                          <div className="text-right">
+                            <span className="text-sm text-gray-600">₹{Number(bid.proposedAmount).toLocaleString()}</span>
+                            <p className="text-xs text-gray-500 mt-1">{evaluationCount} committee review(s)</p>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                          <input
+                            type="number"
+                            value={technicalScore[bid._id] ?? String(myEvaluation?.technicalScore ?? "")}
+                            onChange={(e) => setTechnicalScore({ ...technicalScore, [bid._id]: e.target.value })}
+                            className="px-3 py-2 border border-gray-300 rounded-md"
+                            placeholder="Technical score"
+                          />
+                          <input
+                            type="number"
+                            value={financialScore[bid._id] ?? String(myEvaluation?.financialScore ?? "")}
+                            onChange={(e) => setFinancialScore({ ...financialScore, [bid._id]: e.target.value })}
+                            className="px-3 py-2 border border-gray-300 rounded-md"
+                            placeholder="Financial score"
+                          />
+                          <input
+                            type="text"
+                            value={comments[bid._id] ?? myEvaluation?.comments ?? ""}
+                            onChange={(e) => setComments({ ...comments, [bid._id]: e.target.value })}
+                            className="px-3 py-2 border border-gray-300 rounded-md"
+                            placeholder="Comments"
+                          />
+                        </div>
+                        <div className="mt-3 flex items-center justify-between gap-3">
+                          {myEvaluation ? (
+                            <p className="text-xs text-green-700">
+                              Your evaluation recorded
+                              {myEvaluation.evaluatedDate
+                                ? ` on ${new Date(myEvaluation.evaluatedDate).toLocaleString()}`
+                                : ""}
+                            </p>
+                          ) : (
+                            <span />
+                          )}
+                          <button
+                            onClick={() => submitEvaluation(bid._id)}
+                            disabled={isSubmitting}
+                            className={`px-4 py-2 rounded-md text-sm text-white ${
+                              isSubmitting ? "bg-[#7aa0c5] cursor-not-allowed" : "bg-[#1D4E89] hover:bg-[#154068]"
+                            }`}
+                          >
+                            {isSubmitting ? "Saving..." : myEvaluation ? "Update Evaluation" : "Mark Evaluated"}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
-
-              {/* AI Delay Analysis */}
-              <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-100">
-                <h3 className="text-lg text-[#0B3C5D] mb-4">AI Delay Analysis</h3>
-                <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-md mb-4">
-                  <p className="text-sm text-yellow-800 mb-2">
-                    <span className="font-medium">⚠️ Delay Detected:</span> Project is 12 days behind schedule
-                  </p>
-                  <p className="text-sm text-yellow-700">
-                    Based on contract timeline and progress reports, the current milestone should have been completed by February 18, 2026.
-                  </p>
-                </div>
-                <div className="p-4 bg-red-50 border border-red-200 rounded-md">
-                  <h4 className="text-sm text-[#B22222] mb-2">Recommended Penalty</h4>
-                  <p className="text-sm text-gray-700">
-                    According to Clause 7.3 of the contract: <span className="font-medium">₹18,000/day</span> for delays exceeding 10 days.
-                  </p>
-                  <p className="text-sm text-gray-700 mt-2">
-                    <span className="font-medium">Total Penalty: ₹2,16,000</span> (12 days × ₹18,000)
-                  </p>
-                </div>
-              </div>
-            </>
-          )}
+          </>
         <AIAssistant role="committee" />
       </div>
     </div>

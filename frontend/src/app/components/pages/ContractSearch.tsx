@@ -4,8 +4,8 @@ import { Header } from "../layout/Header";
 import { AIAssistant } from "../AIAssistant";
 import { Search, Filter, X, Calendar, FileText, SlidersHorizontal, Upload, Check } from "lucide-react";
 import { apiRequest, getAuthUser } from "../../api";
-import { encodeFileToStoredDocument, getStoredDocumentName, getStoredDocumentUrl } from "../../document-utils";
-import { formatDateTime, hasExistingBid, TenderRecord } from "./vendorShared";
+import { encodeFileToStoredDocument } from "../../document-utils";
+import { DocumentLinks, formatDateTime, hasExistingBid, TenderRecord } from "./vendorShared";
 
 export function ContractSearch() {
   const authUser = getAuthUser();
@@ -565,26 +565,9 @@ export function ContractSearch() {
                   {/* Documents Section */}
                   {detailedTender.documents && detailedTender.documents.length > 0 && (
                     <div className="mb-6">
-                      <h3 className="text-sm font-semibold text-gray-700 mb-3">Required Documents</h3>
+                      <h3 className="text-sm font-semibold text-gray-700 mb-3">Specification Documents</h3>
                       <div className="bg-blue-50 p-4 rounded-lg">
-                        <ol className="list-decimal list-inside space-y-2">
-                          {detailedTender.documents.map((document, index) => {
-                            const name = getStoredDocumentName(document, `Document ${index + 1}`);
-                            const url = getStoredDocumentUrl(document);
-
-                            return (
-                              <li key={`${name}-${index}`} className="text-sm text-gray-700">
-                                {url ? (
-                                  <a href={url} target="_blank" rel="noreferrer" className="text-[#1D4E89] hover:underline">
-                                    {name}
-                                  </a>
-                                ) : (
-                                  <span>{name}</span>
-                                )}
-                              </li>
-                            );
-                          })}
-                        </ol>
+                        <DocumentLinks documents={detailedTender.documents} emptyLabel="No documents" numbered />
                       </div>
                     </div>
                   )}

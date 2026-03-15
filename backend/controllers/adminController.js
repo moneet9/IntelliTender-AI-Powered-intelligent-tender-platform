@@ -199,7 +199,16 @@ export const getCpoAnalytics = async (_req, res) => {
       const totalBids = poTenders.reduce((sum, tender) => sum + (tender.bids?.length || 0), 0);
       const evaluatedByCommittee = poTenders.reduce((sum, tender) => {
         const bidList = tender.bids || [];
-        return sum + bidList.filter((bid) => bid.evaluatedBy && committeeIds.includes(bid.evaluatedBy.toString())).length;
+        return sum + bidList.reduce((bidSum, bid) => {
+          const evaluations = Array.isArray(bid.committeeEvaluations) ? bid.committeeEvaluations : [];
+          if (evaluations.length) {
+            return bidSum + evaluations.filter(
+              (evaluation) => evaluation.committeeMemberId && committeeIds.includes(evaluation.committeeMemberId.toString())
+            ).length;
+          }
+
+          return bidSum + (bid.evaluatedBy && committeeIds.includes(bid.evaluatedBy.toString()) ? 1 : 0);
+        }, 0);
       }, 0);
 
       const departmentKey = po.department || 'Unassigned';

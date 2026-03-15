@@ -10,6 +10,8 @@ import {
   Calendar,
   Search,
   UserPlus,
+  BarChart2,
+  FileCheck,
 } from "lucide-react";
 
 interface SidebarProps {
@@ -38,13 +40,15 @@ export function Sidebar({ role }: SidebarProps) {
       items: [
         { path: "/cpo", icon: LayoutDashboard, label: "Dashboard" },
         { path: "/cpo/create-po", icon: UserPlus, label: "Create PO" },
+        { path: "/cpo/bid-comparison", icon: BarChart2, label: "Bid Comparison" },
+        { path: "/cpo/contracts", icon: FileCheck, label: "Contract Status" },
         { path: "/cpo/bidders", icon: Users, label: "Vendor Management" },
       ],
     },
     po: {
       items: [
         { path: "/po", icon: LayoutDashboard, label: "Dashboard" },
-        { path: "/po/create-tender", icon: FileText, label: "Create Tender" },
+        { path: "/po/publish-tender", icon: FileText, label: "Publish Tender", aliases: ["/po/create-tender"] },
         { path: "/po/create-committee", icon: UserPlus, label: "Create Committee" },
         { path: "/po/milestones", icon: Calendar, label: "Milestones" },
         { path: "/po/evaluation", icon: ClipboardList, label: "Tender Evaluation" },
@@ -53,9 +57,8 @@ export function Sidebar({ role }: SidebarProps) {
     },
     committee: {
       items: [
-        { path: "/committee", icon: LayoutDashboard, label: "Dashboard" },
-        { path: "/committee/evaluation", icon: ClipboardList, label: "Evaluation" },
-        { path: "/committee/milestones", icon: Calendar, label: "Milestones" },
+        { path: "/committee", icon: LayoutDashboard, label: "Dashboard", aliases: ["/committee/evaluation"] },
+        { path: "/committee/milestones", icon: Calendar, label: "Milestones", aliases: ["/committee/monitoring"] },
       ],
     },
     vendor: {

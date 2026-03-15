@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle, ChevronDown, ChevronUp, FileText } from "lucide-react";
 import { Sidebar } from "../layout/Sidebar";
 import { Header } from "../layout/Header";
@@ -6,7 +6,7 @@ import { AIAssistant } from "../AIAssistant";
 import { apiRequest } from "../../api";
 import { getStoredDocumentName, getStoredDocumentUrl } from "../../document-utils";
 
-type TenderStatus = "Draft" | "Published" | "Closed" | "Awarded";
+type TenderStatus = "Draft" | "Published" | "Closed" | "Awarded" | "Completed";
 type BidStatus = "Pending" | "Evaluated" | "Selected" | "Rejected";
 
 type TenderRecord = {
@@ -45,57 +45,102 @@ export function AIEvaluation() {
   const [expandedBidId, setExpandedBidId] = useState<string | null>(null);
   const [loadingTenders, setLoadingTenders] = useState(false);
   const [loadingBids, setLoadingBids] = useState(false);
+  const [selectingBidId, setSelectingBidId] = useState("");
   const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
 
-  useEffect(() => {
-    const loadTenders = async () => {
-      setLoadingTenders(true);
-      setError("");
-      try {
-        const data = await apiRequest<TenderRecord[]>("/api/tenders");
-        const eligible = (data || []).filter((tender) =>
-          tender.status === "Published" || tender.status === "Closed" || tender.status === "Awarded"
-        );
-        setTenders(eligible);
-        if (eligible.length) {
-          setSelectedTenderId(eligible[0]._id);
+  // Tender search & filter
+  const [tenderSearch, setTenderSearch] = useState("");
+  const [tenderStatusFilter, setTenderStatusFilter] = useState("All");
+  const [tenderCategoryFilter, setTenderCategoryFilter] = useState("All");
+
+  // Bid search & filter
+  const [bidSearch, setBidSearch] = useState("");
+  const [bidStatusFilter, setBidStatusFilter] = useState("All");
+
+  const loadTenders = useCallback(async () => {
+    setLoadingTenders(true);
+    setError("");
+    try {
+      const data = await apiRequest<TenderRecord[]>("/api/tenders");
+      const eligibleStatuses = new Set(["published", "closed", "awarded", "completed"]);
+      const eligible = (data || []).filter((tender) => {
+        const normalizedStatus = String(tender.status || "").trim().toLowerCase();
+        return eligibleStatuses.has(normalizedStatus);
+      });
+
+      setTenders(eligible);
+      setSelectedTenderId((previousId) => {
+        if (previousId && eligible.some((item) => item._id === previousId)) {
+          return previousId;
         }
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load tenders");
-      } finally {
-        setLoadingTenders(false);
-      }
-    };
-
-    loadTenders();
+        return eligible[0]?._id || "";
+      });
+      setExpandedBidId(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load tenders");
+    } finally {
+      setLoadingTenders(false);
+    }
   }, []);
 
   useEffect(() => {
-    if (!selectedTenderId) {
+    void loadTenders();
+  }, [loadTenders]);
+
+  const loadBids = useCallback(async (tenderId: string) => {
+    if (!tenderId) {
       setBids([]);
       return;
     }
 
-    const loadBids = async () => {
-      setLoadingBids(true);
-      setError("");
-      try {
-        const data = await apiRequest<BidRecord[]>(`/api/tenders/${selectedTenderId}/bids`);
-        setBids(data || []);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load submissions");
-      } finally {
-        setLoadingBids(false);
-      }
-    };
+    setLoadingBids(true);
+    setError("");
+    try {
+      const data = await apiRequest<BidRecord[]>(`/api/tenders/${tenderId}/bids`);
+      setBids(data || []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load submissions");
+    } finally {
+      setLoadingBids(false);
+    }
+  }, []);
 
-    loadBids();
-  }, [selectedTenderId]);
+  useEffect(() => {
+    void loadBids(selectedTenderId);
+  }, [loadBids, selectedTenderId]);
 
   const selectedTender = useMemo(
     () => tenders.find((tender) => tender._id === selectedTenderId) || null,
     [tenders, selectedTenderId]
   );
+
+  const filteredTenders = useMemo(() => {
+    return tenders.filter((t) => {
+      const q = tenderSearch.trim().toLowerCase();
+      const matchSearch = !q ||
+        t.title.toLowerCase().includes(q) ||
+        t._id.slice(-6).toLowerCase().includes(q);
+      const matchStatus = tenderStatusFilter === "All" || t.status === tenderStatusFilter;
+      const matchCategory = tenderCategoryFilter === "All" || (t.category || "General") === tenderCategoryFilter;
+      return matchSearch && matchStatus && matchCategory;
+    });
+  }, [tenders, tenderSearch, tenderStatusFilter, tenderCategoryFilter]);
+
+  const tenderCategories = useMemo(() => {
+    const cats = new Set(tenders.map((t) => t.category || "General"));
+    return Array.from(cats).sort();
+  }, [tenders]);
+
+  const filteredBids = useMemo(() => {
+    return bids.filter((b) => {
+      const q = bidSearch.trim().toLowerCase();
+      const matchSearch = !q ||
+        (b.vendorName || b.vendorDetails?.name || "").toLowerCase().includes(q);
+      const matchStatus = bidStatusFilter === "All" || b.status === bidStatusFilter;
+      return matchSearch && matchStatus;
+    });
+  }, [bids, bidSearch, bidStatusFilter]);
 
   const stats = useMemo(() => {
     const total = bids.length;
@@ -104,6 +149,25 @@ export function AIEvaluation() {
     const selected = bids.filter((b) => b.status === "Selected").length;
     return { total, pending, evaluated, selected };
   }, [bids]);
+
+  const selectWinner = async (bidId: string) => {
+    if (!selectedTenderId) return;
+
+    setSelectingBidId(bidId);
+    setError("");
+    setSuccess("");
+
+    try {
+      await apiRequest(`/api/tenders/${selectedTenderId}/bids/${bidId}/select`, { method: "PUT" });
+      setSuccess("Winner selected successfully. Tender has been awarded.");
+      await Promise.all([loadTenders(), loadBids(selectedTenderId)]);
+      setExpandedBidId(bidId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to select winner");
+    } finally {
+      setSelectingBidId("");
+    }
+  };
 
   return (
     <div className="flex h-screen bg-[#F4F6F9]">
@@ -117,25 +181,72 @@ export function AIEvaluation() {
           </div>
 
           {error && <p className="text-sm text-red-600 mb-4">{error}</p>}
+          {success && <p className="text-sm text-green-700 mb-4">{success}</p>}
 
           <div className="bg-white rounded-lg shadow-sm border border-gray-100 p-5 mb-6">
-            <label className="block text-sm text-gray-700 mb-2">Select Tender</label>
+            <label className="block text-sm text-gray-700 mb-3">Select Tender</label>
+            <div className="flex flex-wrap gap-3 mb-3">
+              <input
+                type="text"
+                value={tenderSearch}
+                onChange={(e) => setTenderSearch(e.target.value)}
+                placeholder="Search by title or ID…"
+                className="flex-1 min-w-[180px] max-w-xs px-3 py-2 border border-gray-300 rounded-md text-sm bg-white"
+              />
+              <select
+                value={tenderStatusFilter}
+                onChange={(e) => setTenderStatusFilter(e.target.value)}
+                className="px-3 py-2 border border-gray-300 rounded-md text-sm bg-white"
+              >
+                <option value="All">All Statuses</option>
+                <option value="Published">Published</option>
+                <option value="Closed">Closed</option>
+                <option value="Awarded">Awarded</option>
+                <option value="Completed">Completed</option>
+              </select>
+              <select
+                value={tenderCategoryFilter}
+                onChange={(e) => setTenderCategoryFilter(e.target.value)}
+                className="px-3 py-2 border border-gray-300 rounded-md text-sm bg-white"
+              >
+                <option value="All">All Categories</option>
+                {tenderCategories.map((cat) => (
+                  <option key={cat} value={cat}>{cat}</option>
+                ))}
+              </select>
+              {(tenderSearch || tenderStatusFilter !== "All" || tenderCategoryFilter !== "All") && (
+                <button
+                  onClick={() => { setTenderSearch(""); setTenderStatusFilter("All"); setTenderCategoryFilter("All"); }}
+                  className="text-xs text-gray-500 hover:text-gray-700 underline self-center"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
             <select
               value={selectedTenderId}
               onChange={(e) => {
                 setSelectedTenderId(e.target.value);
                 setExpandedBidId(null);
+                setBidSearch("");
+                setBidStatusFilter("All");
               }}
               className="w-full md:w-[520px] px-3 py-2 border border-gray-300 rounded-md bg-white"
             >
-              <option value="">Choose a tender</option>
-              {tenders.map((tender) => (
+              <option value="">Choose a tender ({filteredTenders.length} match{filteredTenders.length !== 1 ? "es" : ""})</option>
+              {filteredTenders.map((tender) => (
                 <option key={tender._id} value={tender._id}>
                   {tender.title} ({tender.status})
                 </option>
               ))}
             </select>
             {loadingTenders && <p className="text-sm text-gray-500 mt-2">Loading tenders...</p>}
+            {!loadingTenders && tenders.length === 0 && (
+              <p className="text-sm text-amber-700 mt-2">No published/closed/awarded tenders found.</p>
+            )}
+            {!loadingTenders && tenders.length > 0 && filteredTenders.length === 0 && (
+              <p className="text-sm text-gray-400 mt-2">No tenders match your filters.</p>
+            )}
           </div>
 
           {selectedTender && (
@@ -164,6 +275,9 @@ export function AIEvaluation() {
                 </div>
               </div>
               {selectedTender.description && <p className="text-sm text-gray-700">{selectedTender.description}</p>}
+              {selectedTender.status === "Awarded" && (
+                <p className="text-sm text-green-700 mt-3">This tender has already been awarded to a selected vendor.</p>
+              )}
             </div>
           )}
 
@@ -187,20 +301,58 @@ export function AIEvaluation() {
           </div>
 
           <div className="bg-white rounded-lg shadow-sm border border-gray-100">
-            <div className="p-5 border-b border-gray-100">
-              <h3 className="text-lg text-[#0B3C5D]">Vendor Submissions</h3>
-              <p className="text-sm text-gray-500 mt-1">Review submitted bid details and proposal documents for the selected tender</p>
+            <div className="p-5 border-b border-gray-100 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="text-lg text-[#0B3C5D]">Vendor Submissions</h3>
+                <p className="text-sm text-gray-500 mt-1">Review submitted bid details and proposal documents for the selected tender</p>
+              </div>
+              {!!bids.length && (
+                <span className="text-xs text-gray-400">{filteredBids.length} of {bids.length} bid(s)</span>
+              )}
             </div>
+            {!!bids.length && (
+              <div className="px-5 py-3 border-b border-gray-100 bg-gray-50 flex flex-wrap gap-3 items-center">
+                <input
+                  type="text"
+                  value={bidSearch}
+                  onChange={(e) => setBidSearch(e.target.value)}
+                  placeholder="Search by vendor name…"
+                  className="flex-1 min-w-[160px] max-w-xs px-3 py-1.5 border border-gray-300 rounded-md text-sm bg-white"
+                />
+                <select
+                  value={bidStatusFilter}
+                  onChange={(e) => setBidStatusFilter(e.target.value)}
+                  className="px-3 py-1.5 border border-gray-300 rounded-md text-sm bg-white"
+                >
+                  <option value="All">All Bid Statuses</option>
+                  <option value="Pending">Pending</option>
+                  <option value="Evaluated">Evaluated</option>
+                  <option value="Selected">Selected</option>
+                  <option value="Rejected">Rejected</option>
+                </select>
+                {(bidSearch || bidStatusFilter !== "All") && (
+                  <button
+                    onClick={() => { setBidSearch(""); setBidStatusFilter("All"); }}
+                    className="text-xs text-gray-500 hover:text-gray-700 underline"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+            )}
 
             {loadingBids && <p className="text-sm text-gray-500 px-5 py-4">Loading submissions...</p>}
             {!loadingBids && !selectedTenderId && <p className="text-sm text-gray-500 px-5 py-4">Select a tender to view submissions.</p>}
             {!loadingBids && !!selectedTenderId && bids.length === 0 && <p className="text-sm text-gray-500 px-5 py-4">No submissions received for this tender yet.</p>}
+            {!loadingBids && !!bids.length && filteredBids.length === 0 && <p className="text-sm text-gray-400 px-5 py-4">No bids match your search.</p>}
 
             <div className="divide-y divide-gray-100">
-              {bids.map((bid) => {
+              {filteredBids.map((bid) => {
                 const proposalUrl = getStoredDocumentUrl(bid.proposalDocument);
                 const proposalName = getStoredDocumentName(bid.proposalDocument, "Proposal document");
                 const isExpanded = expandedBidId === bid._id;
+                const canSelectWinner = bid.status === "Evaluated" && selectedTender?.status !== "Awarded";
+                const isSelectingWinner = selectingBidId === bid._id;
 
                 return (
                   <div key={bid._id} className="p-5">
@@ -264,6 +416,23 @@ export function AIEvaluation() {
                           <div className="p-3 bg-white rounded-md border border-gray-200">
                             <p className="text-xs text-gray-500 mb-1">Committee Comments</p>
                             <p className="text-sm text-gray-700">{bid.comments}</p>
+                          </div>
+                        )}
+
+                        {canSelectWinner && (
+                          <div className="flex justify-end">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void selectWinner(bid._id);
+                              }}
+                              disabled={isSelectingWinner}
+                              className={`px-4 py-2 rounded-md text-sm text-white transition-colors ${
+                                isSelectingWinner ? "bg-green-300 cursor-not-allowed" : "bg-[#2E8B57] hover:bg-[#267347]"
+                              }`}
+                            >
+                              {isSelectingWinner ? "Selecting..." : "Select Winner"}
+                            </button>
                           </div>
                         )}
 

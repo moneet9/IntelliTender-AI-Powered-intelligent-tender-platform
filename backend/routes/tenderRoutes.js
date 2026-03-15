@@ -2,13 +2,15 @@ import express from 'express';
 const router = express.Router();
 import auth from '../middleware/auth.js';
 import {
-    createTender, getTenders, getTenderById, editTender, publishTender, closeTender,
+    createTender, getTenders, getTenderById, getTenderDocument, getBidDocument, editTender, publishTender, closeTender,
     submitBid, getBidsByTender, evaluateBid, getEvaluatedBids, selectWinner
 } from '../controllers/tenderController.js';
 
 // Tender Management (CPO / PO)
 router.post('/', auth(['CPO', 'PO']), createTender);
 router.get('/', getTenders); // Anyone can view all (could restrict down the line)
+router.get('/:id/documents/:docIndex', auth(['Vendor', 'CPO', 'PO', 'Committee']), getTenderDocument);
+router.get('/:id/bid-documents/:documentId', getBidDocument);
 router.get('/:id', getTenderById);
 router.put('/:id', auth(['CPO', 'PO']), editTender);
 router.put('/:id/publish', auth(['CPO', 'PO']), publishTender);

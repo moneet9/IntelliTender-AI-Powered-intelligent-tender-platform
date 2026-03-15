@@ -4,8 +4,19 @@ export type StoredDocument = {
   mimeType?: string;
 };
 
+export type StoredDocumentReference = {
+  name: string;
+  tenderId: string;
+  docIndex: number;
+  mimeType?: string;
+};
+
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function looksLikeMongoObjectId(value: string): boolean {
+  return /^[a-fA-F0-9]{24}$/.test(value.trim());
 }
 
 export function readFileAsDataUrl(file: File): Promise<string> {
@@ -57,9 +68,17 @@ export function decodeStoredDocument(value?: string | null): StoredDocument | nu
   }
 
   if (value.startsWith("http://") || value.startsWith("https://")) {
+    const tail = value.split("/").pop() || "Document";
     return {
-      name: value.split("/").pop() || "Document",
+      name: looksLikeMongoObjectId(tail) ? "Proposal document" : tail,
       content: value,
+    };
+  }
+
+  if (looksLikeMongoObjectId(value)) {
+    return {
+      name: "Proposal document",
+      content: "",
     };
   }
 
@@ -71,6 +90,34 @@ export function decodeStoredDocument(value?: string | null): StoredDocument | nu
 
 export function getStoredDocumentName(value?: string | null, fallback = "Document"): string {
   return decodeStoredDocument(value)?.name || fallback;
+}
+
+export function getStoredDocumentReference(value?: string | null): StoredDocumentReference | null {
+  if (!value) return null;
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!isObjectRecord(parsed)) return null;
+
+    const tenderId = typeof parsed.tenderId === "string" ? parsed.tenderId : "";
+    const indexValue =
+      typeof parsed.docIndex === "number"
+        ? parsed.docIndex
+        : Number.parseInt(String(parsed.docIndex ?? ""), 10);
+
+    if (parsed.lazy !== true || !tenderId || Number.isNaN(indexValue) || indexValue < 0) {
+      return null;
+    }
+
+    return {
+      name: typeof parsed.name === "string" && parsed.name.trim() ? parsed.name : `Document ${indexValue + 1}`,
+      tenderId,
+      docIndex: indexValue,
+      mimeType: typeof parsed.mimeType === "string" ? parsed.mimeType : undefined,
+    };
+  } catch {
+    return null;
+  }
 }
 
 export function getStoredDocumentUrl(value?: string | null): string | null {
