@@ -8,6 +8,7 @@ import { apiRequest, getAuthUser } from "../../api";
 
 export function ChangePassword() {
   const authUser = getAuthUser();
+  const isRestrictedVendor = authUser?.role === "Vendor" && authUser.accountStatus && authUser.accountStatus !== "Active";
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -136,6 +137,10 @@ export function ChangePassword() {
               <Link to="/login" className="text-[#1D4E89] hover:underline text-sm">
                 Go to Login
               </Link>
+            </div>
+          ) : isRestrictedVendor ? (
+            <div className="space-y-4 text-center">
+              <p className="text-sm text-gray-600">Your vendor account is suspended or frozen. Password changes are disabled.</p>
             </div>
           ) : (
             <>

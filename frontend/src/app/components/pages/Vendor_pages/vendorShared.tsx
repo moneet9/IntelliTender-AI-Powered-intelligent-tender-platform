@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type MouseEvent } from "react";
-import { apiRequest } from "../../api";
-import { getStoredDocumentName, getStoredDocumentReference, getStoredDocumentUrl } from "../../document-utils";
+import { apiRequest } from "../../../api";
+import { getStoredDocumentName, getStoredDocumentReference, getStoredDocumentUrl } from "../../../document-utils";
 
 export type BidStatus = "Pending" | "Evaluated" | "Selected" | "Rejected";
 export type ContractStatus = "Awarded" | "Signed" | "Completed" | "Cancelled";
@@ -489,3 +489,4 @@ export function DocumentLinks({
 function fallbackNameWithEllipsis(name: string): string {
   return name.length > 28 ? `${name.slice(0, 28)}...` : `${name}...`;
 }
+

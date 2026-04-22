@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { Calendar, CheckCircle, FileText, Users } from "lucide-react";
-import { Sidebar } from "../layout/Sidebar";
-import { Header } from "../layout/Header";
-import { AIAssistant } from "../AIAssistant";
-import { apiRequest } from "../../api";
+import { Sidebar } from "../../layout/Sidebar";
+import { Header } from "../../layout/Header";
+import { AIAssistant } from "../../AIAssistant";
+import { apiRequest } from "../../../api";
 
 type TenderStatus = "Draft" | "Published" | "Closed" | "Awarded" | "Completed";
 type ContractStatus = "Awarded" | "Signed" | "Completed" | "Cancelled";

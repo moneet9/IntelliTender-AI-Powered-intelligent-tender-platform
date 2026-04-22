@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle, ChevronDown, ChevronUp, FileText } from "lucide-react";
-import { Sidebar } from "../layout/Sidebar";
-import { Header } from "../layout/Header";
-import { AIAssistant } from "../AIAssistant";
-import { apiRequest } from "../../api";
-import { getStoredDocumentName, getStoredDocumentUrl } from "../../document-utils";
+import { Sidebar } from "../../layout/Sidebar";
+import { Header } from "../../layout/Header";
+import { AIAssistant } from "../../AIAssistant";
+import { apiRequest } from "../../../api";
+import { getStoredDocumentName, getStoredDocumentUrl } from "../../../document-utils";
 
 type TenderStatus = "Draft" | "Published" | "Closed" | "Awarded" | "Completed";
 type BidStatus = "Pending" | "Evaluated" | "Selected" | "Rejected";

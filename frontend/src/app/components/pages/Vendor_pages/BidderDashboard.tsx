@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
-import { Sidebar } from "../layout/Sidebar";
-import { Header } from "../layout/Header";
-import { AIAssistant } from "../AIAssistant";
+import { Sidebar } from "../../layout/Sidebar";
+import { Header } from "../../layout/Header";
+import { AIAssistant } from "../../AIAssistant";
 import { ChangePassword } from "./ChangePassword";
 import { FileText, CheckCircle, Clock, Award, Upload } from "lucide-react";
-import { apiRequest, getAuthUser } from "../../api";
+import { apiRequest, getAuthUser } from "../../../api";
 import {
   encodeFileToStoredDocument,
   getStoredDocumentName,
   getStoredDocumentUrl,
-} from "../../document-utils";
+} from "../../../document-utils";
 
 type BidStatus = "Pending" | "Evaluated" | "Selected" | "Rejected";
 type ContractStatus = "Awarded" | "Signed" | "Completed" | "Cancelled";

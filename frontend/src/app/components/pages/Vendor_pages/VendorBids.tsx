@@ -1,8 +1,8 @@
-import { Sidebar } from "../layout/Sidebar";
-import { Header } from "../layout/Header";
-import { AIAssistant } from "../AIAssistant";
-import { getAuthUser } from "../../api";
-import { getStoredDocumentName, getStoredDocumentUrl } from "../../document-utils";
+import { Sidebar } from "../../layout/Sidebar";
+import { Header } from "../../layout/Header";
+import { AIAssistant } from "../../AIAssistant";
+import { getAuthUser } from "../../../api";
+import { getStoredDocumentName, getStoredDocumentUrl } from "../../../document-utils";
 import {
   formatCurrency,
   getBidStatusClass,
@@ -114,3 +114,4 @@ export function VendorBids() {
     </div>
   );
 }
+

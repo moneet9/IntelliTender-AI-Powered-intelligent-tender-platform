@@ -1,7 +1,7 @@
-import { Sidebar } from "../layout/Sidebar";
-import { AIAssistant } from "../AIAssistant";
+import { Sidebar } from "../../layout/Sidebar";
+import { AIAssistant } from "../../AIAssistant";
 import { useEffect, useMemo, useState } from "react";
-import { apiRequest } from "../../api";
+import { apiRequest } from "../../../api";
 
 export function CPOBidComparison() {
   const [tenders, setTenders] = useState<any[]>([]);
@@ -295,3 +295,4 @@ export function CPOBidComparison() {
     </div>
   );
 }
+

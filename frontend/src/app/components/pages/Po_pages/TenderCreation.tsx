@@ -1,17 +1,33 @@
 import { useState } from "react";
-import { Sidebar } from "../layout/Sidebar";
-import { Header } from "../layout/Header";
-import { AIAssistant } from "../AIAssistant";
-import { Upload, AlertCircle, FileText, Lock, LockOpen } from "lucide-react";
+import { Sidebar } from "../../layout/Sidebar";
+import { Header } from "../../layout/Header";
+import { AIAssistant } from "../../AIAssistant";
+import { Upload, AlertCircle, FileText, Lock, LockOpen, X } from "lucide-react";
 import { useNavigate } from "react-router";
-import { apiRequest } from "../../api";
-import { encodeFilesToStoredDocuments } from "../../document-utils";
+import { apiRequest } from "../../../api";
+import { encodeFilesToStoredDocuments } from "../../../document-utils";
 
 type WeightKey = "price" | "quality" | "experience" | "timeline";
+
+type MilestoneData = {
+  title: string;
+  description: string;
+  plannedStartDate: string;
+  plannedEndDate: string;
+  checklistItems: string[];
+};
 
 const weightKeys: WeightKey[] = ["price", "quality", "experience", "timeline"];
 const maxIndividualDocumentSizeBytes = 10 * 1024 * 1024;
 const maxCombinedDocumentSizeBytes = 35 * 1024 * 1024;
+
+const emptyMilestone = (): MilestoneData => ({
+  title: "",
+  description: "",
+  plannedStartDate: "",
+  plannedEndDate: "",
+  checklistItems: [],
+});
 
 export function TenderCreation() {
   const navigate = useNavigate();
@@ -38,6 +54,9 @@ export function TenderCreation() {
     timeline: false,
   });
   const [weightError, setWeightError] = useState("");
+
+  const [milestones, setMilestones] = useState<MilestoneData[]>([emptyMilestone()]);
+  const hasMilestones = milestones.some((m) => m.title.trim() !== "");
 
   const totalWeight = Object.values(weights).reduce((sum, val) => sum + val, 0);
   const isWeightValid = totalWeight === 100;
@@ -114,9 +133,64 @@ export function TenderCreation() {
     }));
   };
 
+  const addMilestone = () => {
+    setMilestones((prev) => [...prev, emptyMilestone()]);
+  };
+
+  const removeMilestone = (index: number) => {
+    setMilestones((prev) => prev.filter((_, idx) => idx !== index));
+  };
+
+  const updateMilestone = (index: number, field: keyof Omit<MilestoneData, "checklistItems">, value: string) => {
+    setMilestones((prev) =>
+      prev.map((item, idx) => (idx === index ? { ...item, [field]: value } : item))
+    );
+  };
+
+  const addChecklistItem = (milestoneIndex: number) => {
+    setMilestones((prev) =>
+      prev.map((item, idx) =>
+        idx === milestoneIndex ? { ...item, checklistItems: [...item.checklistItems, ""] } : item
+      )
+    );
+  };
+
+  const updateChecklistItem = (milestoneIndex: number, itemIndex: number, value: string) => {
+    setMilestones((prev) =>
+      prev.map((item, idx) =>
+        idx === milestoneIndex
+          ? { ...item, checklistItems: item.checklistItems.map((ci, ci_idx) => (ci_idx === itemIndex ? value : ci)) }
+          : item
+      )
+    );
+  };
+
+  const removeChecklistItem = (milestoneIndex: number, itemIndex: number) => {
+    setMilestones((prev) =>
+      prev.map((item, idx) =>
+        idx === milestoneIndex
+          ? { ...item, checklistItems: item.checklistItems.filter((_, ci_idx) => ci_idx !== itemIndex) }
+          : item
+      )
+    );
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!isWeightValid) return;
+    if (!hasMilestones) {
+      setError("At least one milestone is required");
+      return;
+    }
+
+    const hasInvalidMilestone = milestones.some(
+      (item) => !item.title.trim() || !item.plannedStartDate || !item.plannedEndDate
+    );
+
+    if (hasInvalidMilestone) {
+      setError("Each milestone requires title, planned start date, and planned end date");
+      return;
+    }
 
     setError("");
     setLoading(true);
@@ -130,6 +204,7 @@ export function TenderCreation() {
           budget: Number(formData.budget),
           deadline: formData.deadline,
           documents,
+          milestones: milestones.filter((m) => m.title.trim() !== ""),
         },
       });
       navigate("/po");
@@ -351,14 +426,140 @@ export function TenderCreation() {
               </div>
             </div>
 
+            {/* Milestones (Required) */}
+            <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-100 mb-6">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h3 className="text-lg text-[#0B3C5D]">Project Milestones</h3>
+                  <p className="text-xs text-gray-500 mt-1">Define at least one milestone. These will be tracked after contract award.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={addMilestone}
+                  className="px-3 py-2 text-xs rounded bg-[#1D4E89] text-white hover:bg-[#154068] transition-colors"
+                >
+                  + Add Milestone
+                </button>
+              </div>
+
+              {!hasMilestones && (
+                <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-md flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-amber-700" />
+                  <p className="text-sm text-amber-800">At least one milestone is required</p>
+                </div>
+              )}
+
+              <div className="space-y-4">
+                {milestones.map((milestone, index) => (
+                  <div key={index} className="p-4 border border-gray-200 rounded-md space-y-3 bg-gray-50">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-medium text-gray-700">Milestone {index + 1}</p>
+                      {milestones.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => removeMilestone(index)}
+                          className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-red-100 text-red-700 hover:bg-red-200 transition-colors"
+                        >
+                          <X className="w-3 h-3" />
+                          Remove
+                        </button>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="block text-sm text-gray-700 mb-2">Title *</label>
+                      <input
+                        type="text"
+                        value={milestone.title}
+                        onChange={(e) => updateMilestone(index, "title", e.target.value)}
+                        placeholder="e.g., Design Phase, Development Phase 1"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89]"
+                        required
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm text-gray-700 mb-2">Description</label>
+                      <textarea
+                        value={milestone.description}
+                        onChange={(e) => updateMilestone(index, "description", e.target.value)}
+                        placeholder="Describe deliverables and objectives"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89]"
+                        rows={2}
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-sm text-gray-700 mb-2">Planned Start Date *</label>
+                        <input
+                          type="date"
+                          value={milestone.plannedStartDate}
+                          onChange={(e) => updateMilestone(index, "plannedStartDate", e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89]"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm text-gray-700 mb-2">Planned End Date *</label>
+                        <input
+                          type="date"
+                          value={milestone.plannedEndDate}
+                          onChange={(e) => updateMilestone(index, "plannedEndDate", e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89]"
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-3">
+                        <label className="block text-sm text-gray-700">Verification Checklist</label>
+                        <button
+                          type="button"
+                          onClick={() => addChecklistItem(index)}
+                          className="text-xs px-2 py-1 rounded bg-blue-50 text-[#1D4E89] border border-blue-100 hover:bg-blue-100 transition-colors"
+                        >
+                          + Add Item
+                        </button>
+                      </div>
+                      {milestone.checklistItems.length === 0 && (
+                        <p className="text-xs text-gray-400 italic mb-2">No checklist items yet. Add items that the committee will verify.</p>
+                      )}
+                      <div className="space-y-2">
+                        {milestone.checklistItems.map((item, itemIndex) => (
+                          <div key={itemIndex} className="flex items-center gap-2">
+                            <input
+                              type="text"
+                              value={item}
+                              onChange={(e) => updateChecklistItem(index, itemIndex, e.target.value)}
+                              placeholder={`Checklist item ${itemIndex + 1}`}
+                              className="flex-1 px-3 py-1.5 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-[#1D4E89]"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => removeChecklistItem(index, itemIndex)}
+                              className="flex items-center justify-center w-7 h-7 rounded bg-red-50 text-red-600 border border-red-100 hover:bg-red-100 transition-colors"
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
             {/* Submit Buttons */}
             <div className="flex items-center gap-4">
               {error && <p className="text-sm text-red-600">{error}</p>}
               <button
                 type="submit"
-                disabled={!isWeightValid || loading}
+                disabled={!isWeightValid || !hasMilestones || loading}
                 className={`px-6 py-3 rounded-md transition-colors ${
-                  isWeightValid && !loading
+                  isWeightValid && hasMilestones && !loading
                     ? "bg-[#1D4E89] hover:bg-[#154068] text-white"
                     : "bg-gray-300 text-gray-500 cursor-not-allowed"
                 }`}

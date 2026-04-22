@@ -25,6 +25,8 @@ export type AuthUser = {
   name: string;
   email: string;
   role: "CPO" | "PO" | "Committee" | "Vendor";
+  accountStatus?: "Active" | "Frozen" | "Suspended" | "Deleted";
+  frozenUntil?: string | null;
   token: string;
 };
 

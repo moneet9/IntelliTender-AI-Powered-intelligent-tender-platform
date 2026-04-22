@@ -1,7 +1,7 @@
-import { Sidebar } from "../layout/Sidebar";
-import { Header } from "../layout/Header";
-import { AIAssistant } from "../AIAssistant";
-import { getAuthUser } from "../../api";
+import { Sidebar } from "../../layout/Sidebar";
+import { Header } from "../../layout/Header";
+import { AIAssistant } from "../../AIAssistant";
+import { getAuthUser } from "../../../api";
 import {
   DocumentLinks,
   formatDate,
@@ -136,3 +136,4 @@ export function VendorContracts() {
     </div>
   );
 }
+

@@ -1,14 +1,15 @@
 import { useState, useEffect, useMemo } from "react";
-import { Sidebar } from "../layout/Sidebar";
-import { Header } from "../layout/Header";
-import { AIAssistant } from "../AIAssistant";
+import { Sidebar } from "../../layout/Sidebar";
+import { Header } from "../../layout/Header";
+import { AIAssistant } from "../../AIAssistant";
 import { Search, Filter, X, Calendar, FileText, SlidersHorizontal, Upload, Check } from "lucide-react";
-import { apiRequest, getAuthUser } from "../../api";
-import { encodeFileToStoredDocument } from "../../document-utils";
+import { apiRequest, getAuthUser } from "../../../api";
+import { encodeFileToStoredDocument } from "../../../document-utils";
 import { DocumentLinks, formatDateTime, hasExistingBid, TenderRecord } from "./vendorShared";
 
 export function ContractSearch() {
   const authUser = getAuthUser();
+  const isRestrictedAccount = authUser?.accountStatus && authUser.accountStatus !== "Active";
   const [tenders, setTenders] = useState<TenderRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -120,6 +121,7 @@ export function ContractSearch() {
   };
 
   const handleSubmitBid = async () => {
+    if (isRestrictedAccount) return;
     if (!selectedTenderId || !declaration) return;
 
     if (!proposedAmount || Number(proposedAmount) <= 0) {
@@ -201,6 +203,12 @@ export function ContractSearch() {
             <h1 className="text-2xl text-[#0B3C5D] mb-1">Tender Search</h1>
             <p className="text-sm text-gray-600">Search and filter available tenders by category, budget, and deadline with time.</p>
           </div>
+
+          {isRestrictedAccount && (
+            <div className="mb-4 p-4 rounded-lg border border-yellow-200 bg-yellow-50 text-yellow-900 text-sm">
+              Your account is suspended or frozen. Tender search is read-only and bid submission is disabled.
+            </div>
+          )}
 
           {/* Search and Filter Bar */}
           <div className="bg-white rounded-lg shadow-sm p-4 border border-gray-100 mb-6">

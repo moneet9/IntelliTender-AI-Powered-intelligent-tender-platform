@@ -1,10 +1,10 @@
 import { useMemo, useState } from "react";
 import { Upload } from "lucide-react";
-import { Sidebar } from "../layout/Sidebar";
-import { Header } from "../layout/Header";
-import { AIAssistant } from "../AIAssistant";
-import { apiRequest, getAuthUser } from "../../api";
-import { encodeFileToStoredDocument } from "../../document-utils";
+import { Sidebar } from "../../layout/Sidebar";
+import { Header } from "../../layout/Header";
+import { AIAssistant } from "../../AIAssistant";
+import { apiRequest, getAuthUser } from "../../../api";
+import { encodeFileToStoredDocument } from "../../../document-utils";
 import {
   DocumentLinks,
   formatCurrency,
@@ -16,6 +16,7 @@ import {
 export function VendorTenders() {
   const authUser = getAuthUser();
   const { loading, error, publishedTenders, reload } = useVendorData(authUser?._id);
+  const isRestrictedAccount = authUser?.accountStatus && authUser.accountStatus !== "Active";
 
   const [showSubmissionForm, setShowSubmissionForm] = useState(false);
   const [selectedTenderId, setSelectedTenderId] = useState("");
@@ -53,6 +54,7 @@ export function VendorTenders() {
   };
 
   const handleSubmitBid = async () => {
+    if (isRestrictedAccount) return;
     if (!selectedTenderId || !declaration) return;
 
     if (!proposedAmount || Number(proposedAmount) <= 0) {
@@ -98,6 +100,12 @@ export function VendorTenders() {
             <h1 className="text-2xl text-[#0B3C5D] mb-1">Published Tenders</h1>
             <p className="text-sm text-gray-600">Review tender documents and submit your proposal.</p>
           </div>
+
+          {isRestrictedAccount && (
+            <div className="mb-4 p-4 rounded-lg border border-yellow-200 bg-yellow-50 text-yellow-900 text-sm">
+              Your account is suspended or frozen. You can only view tenders right now.
+            </div>
+          )}
 
           {error && <p className="text-sm text-red-600 mb-4">{error}</p>}
           {formError && <p className="text-sm text-red-600 mb-4">{formError}</p>}
@@ -152,6 +160,10 @@ export function VendorTenders() {
                               <span className="inline-flex px-3 py-1 rounded-full text-xs bg-green-100 text-green-800">
                                 Bid Submitted
                               </span>
+                            ) : isRestrictedAccount ? (
+                              <span className="inline-flex px-3 py-1 rounded-full text-xs bg-gray-100 text-gray-700">
+                                Restricted
+                              </span>
                             ) : (
                               <button
                                 onClick={() => openBidModal(tender._id)}
@@ -169,7 +181,7 @@ export function VendorTenders() {
             </div>
           </div>
 
-          {showSubmissionForm && selectedTender && (
+          {showSubmissionForm && selectedTender && !isRestrictedAccount && (
             <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
               <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
                 <div className="p-6 border-b border-gray-100">
@@ -281,3 +293,4 @@ export function VendorTenders() {
     </div>
   );
 }
+

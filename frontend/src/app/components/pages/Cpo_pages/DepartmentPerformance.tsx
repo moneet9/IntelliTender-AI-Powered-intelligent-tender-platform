@@ -1,5 +1,5 @@
-import { Sidebar } from "../layout/Sidebar";
-import { AIAssistant } from "../AIAssistant";
+import { Sidebar } from "../../layout/Sidebar";
+import { AIAssistant } from "../../AIAssistant";
 import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 import { TrendingUp, Users, FileText, CheckCircle, AlertTriangle } from "lucide-react";
 

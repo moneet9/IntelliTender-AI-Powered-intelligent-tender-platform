@@ -146,17 +146,9 @@ export function MilestoneTracking({ userRole = "committee" }: MilestoneTrackingP
   const [modalTab, setModalTab] = useState<"update" | "history">("update");
   const [delayAnalysis, setDelayAnalysis] = useState<DelayAnalysis | null>(null);
 
-  // + Add Milestone panel (PO only)
-  const [showAddPanel, setShowAddPanel] = useState(false);
-  const [addPanelTenderId, setAddPanelTenderId] = useState("");
-
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
-
-  const [timelineStartDate, setTimelineStartDate] = useState("");
-  const [timelineEndDate, setTimelineEndDate] = useState("");
-  const [timelineMilestones, setTimelineMilestones] = useState<TimelineDraftMilestone[]>([emptyTimelineMilestone()]);
 
   const [milestoneUpdate, setMilestoneUpdate] = useState<MilestoneUpdateForm>({
     status: "Not Started",
@@ -250,21 +242,6 @@ export function MilestoneTracking({ userRole = "committee" }: MilestoneTrackingP
     loadContracts();
   }, []);
 
-  // Load published tenders for PO add panel
-  useEffect(() => {
-    if (userRole !== "po") return;
-    apiRequest<TenderRecord[]>("/api/tenders")
-      .then((data) => setTenders((data || []).filter((t) => t.status === "Published" || t.status === "Closed" || t.status === "Awarded" || t.status === "Completed")))
-      .catch(() => {});
-  }, [userRole]);
-
-  useEffect(() => {
-    if (userRole !== "po") return;
-    apiRequest<CommitteeMember[]>("/api/admin/committee")
-      .then((data) => setCommitteeMembers(data || []))
-      .catch(() => setCommitteeMembers([]));
-  }, [userRole]);
-
   useEffect(() => {
     if (!selectedContractId) return;
     loadDelayAnalysis(selectedContractId);
@@ -293,23 +270,13 @@ export function MilestoneTracking({ userRole = "committee" }: MilestoneTrackingP
   }, [selectedContract, milestoneSearch, milestoneStatusFilter]);
 
   // Contract matching the tender selected in the + panel
-  const addPanelContract = useMemo(
-    () => (addPanelTenderId ? contracts.find((c) => c.tenderId?._id === addPanelTenderId) || null : null),
-    [addPanelTenderId, contracts]
-  );
+
 
   useEffect(() => {
     if (!selectedContract) return;
 
     if (!selectedMilestoneId && selectedContract.milestones?.length) {
       setSelectedMilestoneId(selectedContract.milestones[0]._id);
-    }
-
-    if (selectedContract.timelineStartDate) {
-      setTimelineStartDate(selectedContract.timelineStartDate.slice(0, 10));
-    }
-    if (selectedContract.timelineEndDate) {
-      setTimelineEndDate(selectedContract.timelineEndDate.slice(0, 10));
     }
   }, [selectedContract, selectedMilestoneId]);
 
@@ -346,47 +313,7 @@ export function MilestoneTracking({ userRole = "committee" }: MilestoneTrackingP
     return { total, completed, delayed, overallProgress };
   }, [selectedContract]);
 
-  const addTimelineMilestone = () => {
-    setTimelineMilestones((prev) => [...prev, emptyTimelineMilestone()]);
-  };
 
-  const removeTimelineMilestone = (index: number) => {
-    setTimelineMilestones((prev) => prev.filter((_, idx) => idx !== index));
-  };
-
-  const updateTimelineMilestone = (index: number, field: keyof Omit<TimelineDraftMilestone, "checklistItems">, value: string) => {
-    setTimelineMilestones((prev) =>
-      prev.map((item, idx) => (idx === index ? { ...item, [field]: value } : item))
-    );
-  };
-
-  const addChecklistItem = (milestoneIndex: number) => {
-    setTimelineMilestones((prev) =>
-      prev.map((item, idx) =>
-        idx === milestoneIndex ? { ...item, checklistItems: [...item.checklistItems, ""] } : item
-      )
-    );
-  };
-
-  const updateChecklistItem = (milestoneIndex: number, itemIndex: number, value: string) => {
-    setTimelineMilestones((prev) =>
-      prev.map((item, idx) =>
-        idx === milestoneIndex
-          ? { ...item, checklistItems: item.checklistItems.map((ci, ci_idx) => (ci_idx === itemIndex ? value : ci)) }
-          : item
-      )
-    );
-  };
-
-  const removeChecklistItem = (milestoneIndex: number, itemIndex: number) => {
-    setTimelineMilestones((prev) =>
-      prev.map((item, idx) =>
-        idx === milestoneIndex
-          ? { ...item, checklistItems: item.checklistItems.filter((_, ci_idx) => ci_idx !== itemIndex) }
-          : item
-      )
-    );
-  };
 
   const handleMilestoneFiles = async (kind: "documents" | "images", files: FileList | null) => {
     if (!files?.length) return;
@@ -455,46 +382,7 @@ export function MilestoneTracking({ userRole = "committee" }: MilestoneTrackingP
     }
   };
 
-  const submitTimeline = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedContractId) return;
 
-    setError("");
-    setSuccess("");
-
-    if (!timelineStartDate || !timelineEndDate) {
-      setError("Timeline start and end date are required");
-      return;
-    }
-
-    const hasInvalidMilestone = timelineMilestones.some(
-      (item) => !item.title || !item.plannedStartDate || !item.plannedEndDate
-    );
-
-    if (hasInvalidMilestone) {
-      setError("Each milestone requires title, planned start date, and planned end date");
-      return;
-    }
-
-    try {
-      await apiRequest(`/api/contracts/${selectedContractId}/timeline`, {
-        method: "PUT",
-        body: {
-          timelineStartDate,
-          timelineEndDate,
-          milestones: timelineMilestones,
-        },
-      });
-
-      setSuccess("Contract timeline defined successfully");
-      setShowAddPanel(false);
-      setAddPanelTenderId("");
-      await loadContracts();
-      await loadDelayAnalysis(selectedContractId);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to define timeline");
-    }
-  };
 
   const submitMilestoneUpdate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -536,165 +424,10 @@ export function MilestoneTracking({ userRole = "committee" }: MilestoneTrackingP
           userName={userRole === "po" ? "Rajesh Kumar" : userRole === "committee" ? "Anil Verma" : "Priya Sharma"}
         />
         <div className="flex-1 overflow-auto p-6">
-          <div className="flex items-start justify-between mb-6">
-            <div>
-              <h1 className="text-2xl text-[#0B3C5D] mb-1">Milestone Tracking</h1>
-              <p className="text-sm text-gray-600">Step 2 Governance: timeline control, committee verification, and delay detection</p>
-            </div>
-            {userRole === "po" && (
-              <button
-                onClick={() => { setShowAddPanel((v) => !v); setError(""); setSuccess(""); }}
-                className="flex items-center gap-2 px-4 py-2 bg-[#1D4E89] hover:bg-[#154068] text-white rounded-lg text-sm transition-colors flex-shrink-0"
-              >
-                <span className="text-lg leading-none">{showAddPanel ? "✕" : "+"}</span>
-                {showAddPanel ? "Cancel" : "Add Milestone"}
-              </button>
-            )}
+          <div className="mb-6">
+            <h1 className="text-2xl text-[#0B3C5D] mb-1">Milestone Tracking</h1>
+            <p className="text-sm text-gray-600">Step 2 Governance: timeline control, committee verification, and delay detection</p>
           </div>
-
-          {/* + Add Milestone Panel (PO only) */}
-          {userRole === "po" && showAddPanel && (
-            <div className="bg-white rounded-lg border border-[#1D4E89]/20 shadow-sm p-6 mb-6">
-              <h3 className="text-base font-medium text-[#0B3C5D] mb-4">Define Milestone Timeline</h3>
-
-              {/* Step 1: Pick a tender */}
-              <div className="mb-5">
-                <label className="block text-sm text-gray-700 mb-2">Select Tender</label>
-                <select
-                  value={addPanelTenderId}
-                  onChange={(e) => {
-                    const tid = e.target.value;
-                    setAddPanelTenderId(tid);
-                    const contract = contracts.find((c) => c.tenderId?._id === tid);
-                    if (contract) {
-                      setSelectedContractId(contract._id);
-                      setTimelineStartDate(contract.timelineStartDate?.slice(0, 10) || "");
-                      setTimelineEndDate(contract.timelineEndDate?.slice(0, 10) || "");
-                      if (!contract.timelineDefined) setTimelineMilestones([emptyTimelineMilestone()]);
-                    }
-                  }}
-                  className="w-full md:w-[480px] px-3 py-2 border border-gray-300 rounded-md bg-white"
-                >
-                  <option value="">— choose a tender —</option>
-                  {tenders.map((t) => {
-                    const contract = contracts.find((c) => c.tenderId?._id === t._id);
-                    return (
-                      <option key={t._id} value={t._id}>
-                        {t.title} ({t.status}){contract?.timelineDefined ? " — timeline already set" : ""}
-                      </option>
-                    );
-                  })}
-                </select>
-                {!tenders.length && <p className="text-xs text-gray-400 mt-2">No published tenders found.</p>}
-              </div>
-
-              {addPanelTenderId && !addPanelContract && (
-                <div className="p-4 bg-amber-50 border border-amber-200 rounded-md">
-                  <p className="text-sm text-amber-700">No contract found for this tender. Milestones can only be defined once a contract is awarded to a vendor.</p>
-                </div>
-              )}
-
-              {addPanelContract?.timelineDefined && (
-                <div className="p-4 bg-blue-50 border border-blue-200 rounded-md">
-                  <p className="text-sm text-blue-700">A timeline is already defined for this contract. You can view and manage it below.</p>
-                  <button
-                    onClick={() => setShowAddPanel(false)}
-                    className="mt-2 text-sm text-[#1D4E89] hover:underline"
-                  >
-                    Close this panel →
-                  </button>
-                </div>
-              )}
-
-              {addPanelContract && !addPanelContract.timelineDefined && (
-                <form onSubmit={submitTimeline} className="space-y-5">
-                  <div className="p-3 bg-gray-50 rounded-md border border-gray-100 text-sm">
-                    <p className="text-gray-600">Contract vendor: <span className="text-[#0B3C5D] font-medium">{addPanelContract.vendorId?.name || "—"}</span></p>
-                    {addPanelContract.vendorId?.email && <p className="text-gray-400 text-xs mt-0.5">{addPanelContract.vendorId.email}</p>}
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm text-gray-700 mb-2">Timeline Start Date</label>
-                      <input type="date" value={timelineStartDate} onChange={(e) => setTimelineStartDate(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-md" />
-                    </div>
-                    <div>
-                      <label className="block text-sm text-gray-700 mb-2">Timeline End Date</label>
-                      <input type="date" value={timelineEndDate} onChange={(e) => setTimelineEndDate(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-md" />
-                    </div>
-                  </div>
-
-                  <div className="space-y-4">
-                    <div className="flex items-center justify-between">
-                      <h4 className="text-sm font-medium text-[#0B3C5D]">Milestones</h4>
-                      <button type="button" onClick={addTimelineMilestone} className="px-3 py-1 text-xs rounded bg-[#1D4E89] text-white">+ Add Milestone</button>
-                    </div>
-
-                    {timelineMilestones.map((item, index) => (
-                      <div key={index} className="p-4 border border-gray-200 rounded-md space-y-3 bg-gray-50">
-                        <div className="flex items-center justify-between">
-                          <p className="text-sm font-medium text-gray-700">Milestone {index + 1}</p>
-                          {timelineMilestones.length > 1 && (
-                            <button type="button" onClick={() => removeTimelineMilestone(index)} className="text-xs px-2 py-1 rounded bg-red-100 text-red-700">Remove</button>
-                          )}
-                        </div>
-                        <input value={item.title} onChange={(e) => updateTimelineMilestone(index, "title", e.target.value)} placeholder="Milestone title *" className="w-full px-3 py-2 border border-gray-300 rounded-md" />
-                        <textarea value={item.description} onChange={(e) => updateTimelineMilestone(index, "description", e.target.value)} placeholder="Description" className="w-full px-3 py-2 border border-gray-300 rounded-md" rows={2} />
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                          <div>
-                            <label className="block text-xs text-gray-500 mb-1">Planned Start *</label>
-                            <input type="date" value={item.plannedStartDate} onChange={(e) => updateTimelineMilestone(index, "plannedStartDate", e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-md" />
-                          </div>
-                          <div>
-                            <label className="block text-xs text-gray-500 mb-1">Planned End *</label>
-                            <input type="date" value={item.plannedEndDate} onChange={(e) => updateTimelineMilestone(index, "plannedEndDate", e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-md" />
-                          </div>
-                          <div>
-                            <label className="block text-xs text-gray-500 mb-1">Assigned To</label>
-                            <select
-                              value={item.assignedTo}
-                              onChange={(e) => updateTimelineMilestone(index, "assignedTo", e.target.value)}
-                              className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white"
-                            >
-                              <option value="">{committeeMembers.length ? "Select committee member (with designation)" : "No committee members found"}</option>
-                              {committeeMembers.map((member) => {
-                                const memberLabel = getCommitteeAssigneeLabel(member);
-                                return (
-                                  <option key={member._id} value={memberLabel}>
-                                    {memberLabel}
-                                  </option>
-                                );
-                              })}
-                            </select>
-                          </div>
-                        </div>
-                        <div className="pt-1">
-                          <div className="flex items-center justify-between mb-2">
-                            <p className="text-xs text-gray-600">Checklist Items <span className="text-gray-400">(committee will verify these)</span></p>
-                            <button type="button" onClick={() => addChecklistItem(index)} className="text-xs px-2 py-1 rounded bg-blue-50 text-[#1D4E89] border border-blue-100">+ Add Item</button>
-                          </div>
-                          {item.checklistItems.length === 0 && <p className="text-xs text-gray-400 italic">No checklist items yet.</p>}
-                          <div className="space-y-2">
-                            {item.checklistItems.map((ci, ci_idx) => (
-                              <div key={ci_idx} className="flex items-center gap-2">
-                                <input value={ci} onChange={(e) => updateChecklistItem(index, ci_idx, e.target.value)} placeholder={`Item ${ci_idx + 1}`} className="flex-1 px-3 py-1.5 border border-gray-300 rounded-md text-sm" />
-                                <button type="button" onClick={() => removeChecklistItem(index, ci_idx)} className="text-xs px-2 py-1 rounded bg-red-50 text-red-600 border border-red-100">×</button>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="flex gap-3 pt-2">
-                    <button type="submit" className="px-5 py-2 rounded-lg bg-[#0B3C5D] text-white hover:bg-[#1D4E89] text-sm">Save Timeline</button>
-                    <button type="button" onClick={() => setShowAddPanel(false)} className="px-5 py-2 rounded-lg border border-gray-200 text-gray-600 text-sm hover:bg-gray-50">Cancel</button>
-                  </div>
-                </form>
-              )}
-            </div>
-          )}
 
           <div className="bg-white rounded-lg border border-gray-100 p-4 mb-6">
             <label className="block text-sm text-gray-700 mb-3">Select Contract</label>
@@ -800,144 +533,6 @@ export function MilestoneTracking({ userRole = "committee" }: MilestoneTrackingP
                   <p className="text-2xl text-[#1D4E89]">{summary.overallProgress}%</p>
                 </div>
               </div>
-
-              {canDefineTimeline && !selectedContract.timelineDefined && (
-                <form onSubmit={submitTimeline} className="bg-white rounded-lg border border-gray-100 p-6 mb-6 space-y-4">
-                  <h3 className="text-lg text-[#0B3C5D]">Define Contract Timeline</h3>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm text-gray-700 mb-2">Timeline Start Date</label>
-                      <input
-                        type="date"
-                        value={timelineStartDate}
-                        onChange={(e) => setTimelineStartDate(e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-md"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm text-gray-700 mb-2">Timeline End Date</label>
-                      <input
-                        type="date"
-                        value={timelineEndDate}
-                        onChange={(e) => setTimelineEndDate(e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-md"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="space-y-4">
-                    <div className="flex items-center justify-between">
-                      <h4 className="text-sm text-[#0B3C5D]">Milestones</h4>
-                      <button
-                        type="button"
-                        onClick={addTimelineMilestone}
-                        className="px-3 py-1 text-xs rounded bg-[#1D4E89] text-white"
-                      >
-                        Add Milestone
-                      </button>
-                    </div>
-
-                    {timelineMilestones.map((item, index) => (
-                      <div key={index} className="p-4 border border-gray-200 rounded-md space-y-3">
-                        <div className="flex items-center justify-between">
-                          <p className="text-sm text-gray-700">Milestone {index + 1}</p>
-                          {timelineMilestones.length > 1 && (
-                            <button
-                              type="button"
-                              onClick={() => removeTimelineMilestone(index)}
-                              className="text-xs px-2 py-1 rounded bg-red-100 text-red-700"
-                            >
-                              Remove
-                            </button>
-                          )}
-                        </div>
-
-                        <input
-                          value={item.title}
-                          onChange={(e) => updateTimelineMilestone(index, "title", e.target.value)}
-                          placeholder="Milestone title"
-                          className="w-full px-3 py-2 border border-gray-300 rounded-md"
-                        />
-                        <textarea
-                          value={item.description}
-                          onChange={(e) => updateTimelineMilestone(index, "description", e.target.value)}
-                          placeholder="Milestone description"
-                          className="w-full px-3 py-2 border border-gray-300 rounded-md"
-                          rows={2}
-                        />
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                          <input
-                            type="date"
-                            value={item.plannedStartDate}
-                            onChange={(e) => updateTimelineMilestone(index, "plannedStartDate", e.target.value)}
-                            className="px-3 py-2 border border-gray-300 rounded-md"
-                          />
-                          <input
-                            type="date"
-                            value={item.plannedEndDate}
-                            onChange={(e) => updateTimelineMilestone(index, "plannedEndDate", e.target.value)}
-                            className="px-3 py-2 border border-gray-300 rounded-md"
-                          />
-                          <select
-                            value={item.assignedTo}
-                            onChange={(e) => updateTimelineMilestone(index, "assignedTo", e.target.value)}
-                            className="px-3 py-2 border border-gray-300 rounded-md bg-white"
-                          >
-                            <option value="">{committeeMembers.length ? "Select committee member" : "No committee members found"}</option>
-                            {committeeMembers.map((member) => {
-                              const memberLabel = getCommitteeAssigneeLabel(member);
-                              return (
-                                <option key={member._id} value={memberLabel}>
-                                  {memberLabel}
-                                </option>
-                              );
-                            })}
-                          </select>
-                        </div>
-
-                        <div className="pt-2">
-                          <div className="flex items-center justify-between mb-2">
-                            <p className="text-xs text-gray-600">Checklist Items <span className="text-gray-400">(committee will tick these off)</span></p>
-                            <button
-                              type="button"
-                              onClick={() => addChecklistItem(index)}
-                              className="text-xs px-2 py-1 rounded bg-blue-50 text-[#1D4E89] border border-blue-100"
-                            >
-                              + Add Item
-                            </button>
-                          </div>
-                          {item.checklistItems.length === 0 && (
-                            <p className="text-xs text-gray-400 italic">No checklist items. Click "Add Item" to create verification steps.</p>
-                          )}
-                          <div className="space-y-2">
-                            {item.checklistItems.map((ci, ci_idx) => (
-                              <div key={ci_idx} className="flex items-center gap-2">
-                                <input
-                                  value={ci}
-                                  onChange={(e) => updateChecklistItem(index, ci_idx, e.target.value)}
-                                  placeholder={`Item ${ci_idx + 1}`}
-                                  className="flex-1 px-3 py-1.5 border border-gray-300 rounded-md text-sm"
-                                />
-                                <button
-                                  type="button"
-                                  onClick={() => removeChecklistItem(index, ci_idx)}
-                                  className="text-xs px-2 py-1 rounded bg-red-50 text-red-600 border border-red-100"
-                                >
-                                  ×
-                                </button>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  <button type="submit" className="px-5 py-2 rounded bg-[#0B3C5D] text-white hover:bg-[#1D4E89]">
-                    Save Timeline
-                  </button>
-                </form>
-              )}
 
               {selectedContract.timelineDefined && (
                 <>

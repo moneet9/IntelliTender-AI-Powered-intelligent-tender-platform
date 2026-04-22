@@ -10,7 +10,7 @@ const userSchema = new mongoose.Schema({
     specialization: { type: String },
     designation: { type: String },
     managerPo: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    accountStatus: { type: String, enum: ['Active', 'Frozen', 'Deleted'], default: 'Active' },
+    accountStatus: { type: String, enum: ['Active', 'Frozen', 'Suspended', 'Deleted'], default: 'Active' },
     frozenUntil: { type: Date },
     passwordResetOtp: { type: String },
     passwordResetOtpExpiresAt: { type: Date },
@@ -55,7 +55,14 @@ const tenderSchema = new mongoose.Schema({
     status: { type: String, enum: ['Draft', 'Published', 'Closed', 'Awarded', 'Completed'], default: 'Published' },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     documents: [{ type: String }],
-    bids: [bidSchema] // Embed bid array directly in Tender as requested
+    bids: [bidSchema], // Embed bid array directly in Tender as requested
+    draftMilestones: [{
+        title: { type: String, required: true },
+        description: { type: String, default: '' },
+        plannedStartDate: { type: Date, required: true },
+        plannedEndDate: { type: Date, required: true },
+        checklistItems: [{ type: String }]
+    }]
 }, { timestamps: true });
 
 const bidDocumentSchema = new mongoose.Schema({

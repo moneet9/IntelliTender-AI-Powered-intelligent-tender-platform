@@ -1,8 +1,8 @@
-import { Sidebar } from "../layout/Sidebar";
-import { Header } from "../layout/Header";
-import { AIAssistant } from "../AIAssistant";
+import { Sidebar } from "../../layout/Sidebar";
+import { Header } from "../../layout/Header";
+import { AIAssistant } from "../../AIAssistant";
 import { useEffect, useMemo, useState } from "react";
-import { apiRequest, getAuthUser } from "../../api";
+import { apiRequest, getAuthUser } from "../../../api";
 
 type Tender = {
   _id: string;

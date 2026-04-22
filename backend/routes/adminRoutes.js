@@ -4,9 +4,11 @@ import {
   createPO,
   listPOs,
   deletePO,
+  updatePO,
   createCommitteeMember,
   listCommitteeMembers,
   deleteCommitteeMember,
+  updateCommitteeMember,
   listVendors,
   freezeVendor,
   deleteVendor,
@@ -17,10 +19,12 @@ const router = express.Router();
 
 router.post('/po', auth('CPO'), createPO);
 router.get('/po', auth('CPO'), listPOs);
+router.put('/po/:id', auth('CPO'), updatePO);
 router.delete('/po/:id', auth('CPO'), deletePO);
 
 router.post('/committee', auth('PO'), createCommitteeMember);
 router.get('/committee', auth('PO'), listCommitteeMembers);
+router.put('/committee/:id', auth('PO'), updateCommitteeMember);
 router.delete('/committee/:id', auth('PO'), deleteCommitteeMember);
 
 router.get('/vendors', auth(['PO', 'CPO']), listVendors);

@@ -1,9 +1,9 @@
 import { Link } from "react-router";
 import { Award, CheckCircle, Clock, FileText } from "lucide-react";
-import { Sidebar } from "../layout/Sidebar";
-import { Header } from "../layout/Header";
-import { AIAssistant } from "../AIAssistant";
-import { getAuthUser } from "../../api";
+import { Sidebar } from "../../layout/Sidebar";
+import { Header } from "../../layout/Header";
+import { AIAssistant } from "../../AIAssistant";
+import { getAuthUser } from "../../../api";
 import {
   formatCurrency,
   formatDate,
@@ -144,3 +144,4 @@ export function VendorDashboard() {
     </div>
   );
 }
+

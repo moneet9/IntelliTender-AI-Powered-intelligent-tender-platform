@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, Link } from "react-router";
+import { GoogleLogin, type CredentialResponse } from "@react-oauth/google";
 import { Lock, Shield } from "lucide-react";
 import { ApiError, apiRequest, saveAuthUser } from "../../api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
@@ -46,6 +47,8 @@ export function Login() {
     Vendor: "/vendor",
   } as const;
 
+  const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+
   useEffect(() => {
     if (!frozenUntil && !otpExpiresAt) return;
     const id = setInterval(() => setNowMs(Date.now()), 1000);
@@ -86,6 +89,8 @@ export function Login() {
         name: string;
         email: string;
         role: "CPO" | "PO" | "Committee" | "Vendor";
+        accountStatus?: "Active" | "Frozen" | "Suspended" | "Deleted";
+        frozenUntil?: string | null;
         token: string;
       }>("/api/auth/login", {
         method: "POST",
@@ -127,6 +132,8 @@ export function Login() {
         name: string;
         email: string;
         role: "Vendor";
+        accountStatus?: "Active" | "Frozen" | "Suspended" | "Deleted";
+        frozenUntil?: string | null;
         token: string;
       }>("/api/auth/signup-vendor", {
         method: "POST",
@@ -136,6 +143,49 @@ export function Login() {
       navigate("/vendor");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Signup failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleGoogleLogin = async (credentialResponse: CredentialResponse) => {
+    if (!credentialResponse.credential) {
+      setError("Google login failed. Please try again.");
+      return;
+    }
+
+    setError("");
+    setWarningType("");
+    setFrozenUntil(null);
+    setLoading(true);
+
+    try {
+      const data = await apiRequest<{
+        _id: string;
+        name: string;
+        email: string;
+        role: "CPO" | "PO" | "Committee" | "Vendor";
+        accountStatus?: "Active" | "Frozen" | "Suspended" | "Deleted";
+        frozenUntil?: string | null;
+        token: string;
+      }>("/api/auth/google", {
+        method: "POST",
+        body: { idToken: credentialResponse.credential },
+      });
+
+      saveAuthUser(data);
+      navigate(routeMap[data.role]);
+    } catch (err) {
+      if (err instanceof ApiError && err.code === "ACCOUNT_DELETED") {
+        setWarningType("deleted");
+        setError(err.message);
+      } else if (err instanceof ApiError && err.code === "ACCOUNT_FROZEN") {
+        setWarningType("frozen");
+        setFrozenUntil(err.frozenUntil || null);
+        setError(err.message);
+      } else {
+        setError(err instanceof Error ? err.message : "Google login failed");
+      }
     } finally {
       setLoading(false);
     }
@@ -484,6 +534,32 @@ export function Login() {
                 >
                   Forgot Password?
                 </button>
+              </div>
+            )}
+
+            {mode === "login" && googleClientId && (
+              <div className="space-y-3">
+                <div className="relative">
+                  <div className="absolute inset-0 flex items-center">
+                    <span className="w-full border-t border-gray-200" />
+                  </div>
+                  <div className="relative flex justify-center text-xs uppercase">
+                    <span className="bg-white px-2 text-gray-500">Or continue with</span>
+                  </div>
+                </div>
+                <div className="flex justify-center">
+                  <GoogleLogin
+                    onSuccess={(credentialResponse) => {
+                      void handleGoogleLogin(credentialResponse);
+                    }}
+                    onError={() => setError("Google login was cancelled or failed")}
+                    useOneTap={false}
+                    theme="outline"
+                    size="large"
+                    text="continue_with"
+                    shape="rectangular"
+                  />
+                </div>
               </div>
             )}
 

@@ -13,6 +13,7 @@ import {
   BarChart2,
   FileCheck,
 } from "lucide-react";
+import { getAuthUser } from "../../api";
 
 interface SidebarProps {
   role: "cpo" | "po" | "committee" | "vendor" | "bidder";
@@ -27,12 +28,18 @@ type NavItem = {
 
 export function Sidebar({ role }: SidebarProps) {
   const location = useLocation();
+  const authUser = getAuthUser();
+  const vendorRestricted = role === "vendor" && authUser?.accountStatus && authUser.accountStatus !== "Active";
 
   const vendorItems: NavItem[] = [
     { path: "/vendor", icon: LayoutDashboard, label: "Dashboard", aliases: ["/bidder"] },
-    { path: "/vendor/contract-search", icon: Search, label: "Search Tenders", aliases: ["/bidder/contract-search"] },
-    { path: "/vendor/bids", icon: ClipboardList, label: "My Bids", aliases: ["/bidder/bids"] },
-    { path: "/vendor/contracts", icon: Calendar, label: "Contracts", aliases: ["/bidder/contracts"] },
+    ...(vendorRestricted
+      ? []
+      : [
+          { path: "/vendor/contract-search", icon: Search, label: "Search Tenders", aliases: ["/bidder/contract-search"] },
+          { path: "/vendor/bids", icon: ClipboardList, label: "My Bids", aliases: ["/bidder/bids"] },
+          { path: "/vendor/contracts", icon: Calendar, label: "Contracts", aliases: ["/bidder/contracts"] },
+        ]),
   ];
 
   const roleConfig: Record<SidebarProps["role"], { items: NavItem[] }> = {
@@ -109,10 +116,12 @@ export function Sidebar({ role }: SidebarProps) {
 
       {/* Settings */}
       <div className="p-4 border-t border-white/10">
-        <Link to="/change-password" className="w-full flex items-center gap-3 px-4 py-3 rounded-md text-white/80 hover:bg-white/10 hover:text-white transition-colors">
-          <Settings className="w-5 h-5" />
-          <span className="text-sm">Settings</span>
-        </Link>
+        {!(role === "vendor" && authUser?.accountStatus && authUser.accountStatus !== "Active") && (
+          <Link to="/change-password" className="w-full flex items-center gap-3 px-4 py-3 rounded-md text-white/80 hover:bg-white/10 hover:text-white transition-colors">
+            <Settings className="w-5 h-5" />
+            <span className="text-sm">Settings</span>
+          </Link>
+        )}
       </div>
     </div>
   );

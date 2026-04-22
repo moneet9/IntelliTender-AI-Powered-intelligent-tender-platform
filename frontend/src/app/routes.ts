@@ -1,23 +1,23 @@
 import { createBrowserRouter } from "react-router";
 import { HomePage } from "./components/pages/HomePage";
 import { Login } from "./components/pages/Login";
-import { CPODashboard } from "./components/pages/CPODashboard";
-import { CPOBidComparison } from "./components/pages/CPOBidComparison";
-import { CPOContractStatus } from "./components/pages/CPOContractStatus";
-import { PODashboard } from "./components/pages/PODashboard";
-import { CommitteeDashboard } from "./components/pages/CommitteeDashboard";
-import { TenderCreation } from "./components/pages/TenderCreation";
-import { AIEvaluation } from "./components/pages/AIEvaluation";
-import { BidderProfile } from "./components/pages/BidderProfile";
-import { POMilestones } from "./components/pages/POMilestones";
-import { CommitteeMilestones } from "./components/pages/CommitteeMilestones";
-import { ContractSearch } from "./components/pages/ContractSearch";
-import { CreatePO } from "./components/pages/CreatePO";
-import { CreateCommittee } from "./components/pages/CreateCommittee";
+import { CPODashboard } from "./components/pages/Cpo_pages/CPODashboard";
+import { CPOBidComparison } from "./components/pages/Cpo_pages/CPOBidComparison";
+import { CPOContractStatus } from "./components/pages/Cpo_pages/CPOContractStatus";
+import { PODashboard } from "./components/pages/Po_pages/PODashboard";
+import { CommitteeDashboard } from "./components/pages/Commitee_member_pages/CommitteeDashboard";
+import { TenderCreation } from "./components/pages/Po_pages/TenderCreation";
+import { AIEvaluation } from "./components/pages/Po_pages/AIEvaluation";
+import { BidderProfile } from "./components/pages/Vendor_pages/BidderProfile";
+import { POMilestones } from "./components/pages/Po_pages/POMilestones";
+import { CommitteeMilestones } from "./components/pages/Commitee_member_pages/CommitteeMilestones";
+import { ContractSearch } from "./components/pages/Vendor_pages/ContractSearch";
+import { CreatePO } from "./components/pages/Cpo_pages/CreatePO";
+import { CreateCommittee } from "./components/pages/Po_pages/CreateCommittee";
 import { ChangePassword } from "./components/pages/ChangePassword";
-import { VendorDashboard } from "./components/pages/VendorDashboard";
-import { VendorBids } from "./components/pages/VendorBids";
-import { VendorContracts } from "./components/pages/VendorContracts";
+import { VendorDashboard } from "./components/pages/Vendor_pages/VendorDashboard";
+import { VendorBids } from "./components/pages/Vendor_pages/VendorBids";
+import { VendorContracts } from "./components/pages/Vendor_pages/VendorContracts";
 
 export const router = createBrowserRouter([
   {

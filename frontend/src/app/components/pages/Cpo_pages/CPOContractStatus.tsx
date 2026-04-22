@@ -1,7 +1,7 @@
-import { Sidebar } from "../layout/Sidebar";
-import { AIAssistant } from "../AIAssistant";
+import { Sidebar } from "../../layout/Sidebar";
+import { AIAssistant } from "../../AIAssistant";
 import { useEffect, useMemo, useState } from "react";
-import { apiRequest } from "../../api";
+import { apiRequest } from "../../../api";
 
 export function CPOContractStatus() {
   const [contracts, setContracts] = useState<any[]>([]);
@@ -182,3 +182,4 @@ export function CPOContractStatus() {
     </div>
   );
 }
+

@@ -44,6 +44,33 @@ export const createPO = async (req, res) => {
   }
 };
 
+export const updatePO = async (req, res) => {
+  try {
+    const { name, email, phone, department, accountStatus } = req.body;
+    if (!name || !email) {
+      return res.status(400).json({ message: 'name and email are required' });
+    }
+
+    const po = await User.findOne({ _id: req.params.id, role: 'PO' });
+    if (!po) return res.status(404).json({ message: 'PO not found' });
+
+    const emailInUse = await User.findOne({ email, _id: { $ne: po._id } });
+    if (emailInUse) return res.status(400).json({ message: 'Email already in use' });
+
+    po.name = name;
+    po.email = email;
+    po.phone = phone;
+    po.department = department;
+    if (accountStatus) po.accountStatus = accountStatus;
+    await po.save();
+
+    const committeeCount = await User.countDocuments({ role: 'Committee', managerPo: po._id });
+    res.json({ ...sanitizeUser(po), committeeCount });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 export const listPOs = async (_req, res) => {
   try {
     const pos = await User.find({ role: 'PO' }).sort({ createdAt: -1 });
@@ -112,6 +139,37 @@ export const createCommitteeMember = async (req, res) => {
   }
 };
 
+export const updateCommitteeMember = async (req, res) => {
+  try {
+    const { name, email, phone, designation, specialization, accountStatus } = req.body;
+    if (!name || !email) {
+      return res.status(400).json({ message: 'name and email are required' });
+    }
+
+    const designationValue = (designation || specialization || '').trim();
+
+    const committee = await User.findOne({ _id: req.params.id, role: 'Committee', managerPo: req.user.id });
+    if (!committee) return res.status(404).json({ message: 'Committee member not found' });
+
+    const emailInUse = await User.findOne({ email, _id: { $ne: committee._id } });
+    if (emailInUse) return res.status(400).json({ message: 'Email already in use' });
+
+    committee.name = name;
+    committee.email = email;
+    committee.phone = phone;
+    if (designationValue) {
+      committee.designation = designationValue;
+      committee.specialization = specialization || designationValue;
+    }
+    if (accountStatus) committee.accountStatus = accountStatus;
+    await committee.save();
+
+    res.json(sanitizeUser(committee));
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 export const listCommitteeMembers = async (req, res) => {
   try {
     const committees = await User.find({ role: 'Committee', managerPo: req.user.id }).sort({ createdAt: -1 });
@@ -170,11 +228,11 @@ export const deleteVendor = async (req, res) => {
     const vendor = await User.findOne({ _id: req.params.id, role: 'Vendor' });
     if (!vendor) return res.status(404).json({ message: 'Vendor not found' });
 
-    vendor.accountStatus = 'Deleted';
+    vendor.accountStatus = 'Suspended';
     vendor.frozenUntil = null;
     await vendor.save();
 
-    res.json({ message: 'Vendor account deleted', vendor: sanitizeUser(vendor) });
+    res.json({ message: 'Vendor account suspended', vendor: sanitizeUser(vendor) });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

@@ -1,5 +1,5 @@
-import { Sidebar } from "../layout/Sidebar";
-import { AIAssistant } from "../AIAssistant";
+import { Sidebar } from "../../layout/Sidebar";
+import { AIAssistant } from "../../AIAssistant";
 import { useNavigate } from "react-router";
 import {
   FileText,
@@ -20,7 +20,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { useEffect, useState } from "react";
-import { apiRequest } from "../../api";
+import { apiRequest } from "../../../api";
 
 const statsData = [
   { label: "Total Active Tenders", value: "42", icon: FileText, color: "bg-[#1D4E89]" },

@@ -256,7 +256,7 @@ const mapBidWithVendorDetails = (bid) => {
 // --- TENDER MANAGEMENT ---
 export const createTender = async (req, res) => {
     try {
-        const { title, description, category, budget, deadline, documents } = req.body;
+        const { title, description, category, budget, deadline, documents, milestones } = req.body;
         const tender = await Tender.create({
             title,
             description,
@@ -265,6 +265,7 @@ export const createTender = async (req, res) => {
             deadline,
             status: 'Published',
             documents: Array.isArray(documents) ? documents : [],
+            draftMilestones: Array.isArray(milestones) && milestones.length > 0 ? milestones : [],
             createdBy: req.user.id
         });
         res.status(201).json(tender);
@@ -564,10 +565,39 @@ export const selectWinner = async (req, res) => {
 
         await tender.save();
 
+        // Convert draft milestones from tender to contract milestones
+        const contractMilestones = (tender.draftMilestones || []).map(dm => ({
+            title: dm.title,
+            description: dm.description || '',
+            plannedStartDate: dm.plannedStartDate,
+            plannedEndDate: dm.plannedEndDate,
+            status: 'Not Started',
+            progress: 0,
+            checklist: (dm.checklistItems || []).map(item => ({ label: item, checked: false })),
+            remarks: '',
+            documents: [],
+            images: []
+        }));
+
+        // Calculate timeline dates from milestones
+        let timelineStartDate = null;
+        let timelineEndDate = null;
+        
+        if (contractMilestones.length > 0) {
+            const startDates = contractMilestones.map(m => new Date(m.plannedStartDate)).sort((a, b) => a - b);
+            const endDates = contractMilestones.map(m => new Date(m.plannedEndDate)).sort((a, b) => b - a);
+            timelineStartDate = startDates[0];
+            timelineEndDate = endDates[0];
+        }
+
         const contract = await Contract.create({
             tenderId: tender._id,
             vendorId: winningBid.vendorId,
-            status: 'Awarded'
+            status: 'Awarded',
+            milestones: contractMilestones,
+            timelineDefined: contractMilestones.length > 0,
+            timelineStartDate,
+            timelineEndDate
         });
 
         res.json({ message: 'Winner selected and contract created', tenderId: tender._id, contractId: contract._id });
