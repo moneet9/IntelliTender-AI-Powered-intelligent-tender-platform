@@ -1,4 +1,5 @@
 import { Sidebar } from "../../layout/Sidebar";
+import { Header } from "../../layout/Header";
 import { AIAssistant } from "../../AIAssistant";
 import { useNavigate } from "react-router";
 import {
@@ -7,7 +8,7 @@ import {
   Award,
   AlertTriangle,
   Clock,
-  DollarSign,
+  IndianRupee,
 } from "lucide-react";
 import {
   BarChart,
@@ -20,7 +21,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { useEffect, useState } from "react";
-import { apiRequest } from "../../../api";
+import { apiRequest, getAuthUser } from "../../../api";
 
 const statsData = [
   { label: "Total Active Tenders", value: "42", icon: FileText, color: "bg-[#1D4E89]" },
@@ -28,7 +29,7 @@ const statsData = [
   { label: "Contracts Awarded", value: "127", icon: Award, color: "bg-[#2E8B57]" },
   { label: "High Risk Bidders", value: "5", icon: AlertTriangle, color: "bg-[#B22222]" },
   { label: "Delayed Projects", value: "8", icon: Clock, color: "bg-[#F4A300]" },
-  { label: "Total Value (Cr)", value: "₹18.5", icon: DollarSign, color: "bg-[#0B3C5D]" },
+  { label: "Total Value (Cr)", value: "₹18.5", icon: IndianRupee, color: "bg-[#0B3C5D]" },
 ];
 
 const aiFlags = [
@@ -46,6 +47,7 @@ const recentAudits = [
 
 export function CPODashboard() {
   const navigate = useNavigate();
+  const authUser = getAuthUser();
   const [departmentPerformance, setDepartmentPerformance] = useState<any[]>([]);
   const [poPerformance, setPoPerformance] = useState<any[]>([]);
   const [actionError, setActionError] = useState("");
@@ -71,6 +73,7 @@ export function CPODashboard() {
     <div className="flex h-screen bg-[#F4F6F9]">
       <Sidebar role="cpo" />
       <div className="flex-1 overflow-auto p-6">
+          <Header role="cpo" userName={authUser?.name || ""} />
           <div className="mb-5">
             <h1 className="text-2xl text-[#0B3C5D] mb-1">CPO Dashboard</h1>
             <p className="text-sm text-gray-600">Oversight & Strategic Analytics</p>

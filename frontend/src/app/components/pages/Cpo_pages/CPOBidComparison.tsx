@@ -1,9 +1,11 @@
 import { Sidebar } from "../../layout/Sidebar";
+import { Header } from "../../layout/Header";
 import { AIAssistant } from "../../AIAssistant";
 import { useEffect, useMemo, useState } from "react";
-import { apiRequest } from "../../../api";
+import { apiRequest, getAuthUser } from "../../../api";
 
 export function CPOBidComparison() {
+  const authUser = getAuthUser();
   const [tenders, setTenders] = useState<any[]>([]);
   const [selectedTenderId, setSelectedTenderId] = useState("");
   const [evaluatedBids, setEvaluatedBids] = useState<any[]>([]);
@@ -128,7 +130,9 @@ export function CPOBidComparison() {
   return (
     <div className="flex h-screen bg-[#F4F6F9]">
       <Sidebar role="cpo" />
-      <div className="flex-1 overflow-auto p-6">
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <Header role="cpo" userName={authUser?.name || ""} />
+        <div className="flex-1 overflow-auto p-6">
         <div className="mb-6">
           <h1 className="text-2xl text-[#0B3C5D] mb-1">Bid Comparison</h1>
           <p className="text-sm text-gray-600">Compare evaluated bids and approve final winner selection</p>
@@ -289,6 +293,7 @@ export function CPOBidComparison() {
               </div>
             ))}
           </div>
+        </div>
         </div>
         <AIAssistant role="cpo" />
       </div>

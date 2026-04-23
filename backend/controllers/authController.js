@@ -356,8 +356,8 @@ export const loginWithGoogle = async (req, res) => {
             return res.json(buildAuthResponse(user));
         }
 
-        const generatedPassword = crypto.randomBytes(32).toString('hex');
-        const hashedPassword = await bcrypt.hash(generatedPassword, 10);
+        const defaultPassword = 'Password@123';
+        const hashedPassword = await bcrypt.hash(defaultPassword, 10);
 
         user = await User.create({
             name: name || email.split('@')[0] || 'Vendor User',

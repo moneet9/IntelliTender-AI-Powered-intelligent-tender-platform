@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import { Link } from "react-router";
+import { Link, useNavigate } from "react-router";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -8,6 +8,7 @@ import { apiRequest, getAuthUser } from "../../api";
 
 export function ChangePassword() {
   const authUser = getAuthUser();
+  const navigate = useNavigate();
   const isRestrictedVendor = authUser?.role === "Vendor" && authUser.accountStatus && authUser.accountStatus !== "Active";
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -38,6 +39,14 @@ export function ChangePassword() {
   }, [otpExpiresAt, nowMs]);
 
   const isOtpExpired = otpExpiresAt ? new Date(otpExpiresAt).getTime() < nowMs : false;
+
+  const getDashboardRoute = () => {
+    if (!authUser) return "/login";
+    if (authUser.role === "CPO") return "/cpo";
+    if (authUser.role === "PO") return "/po";
+    if (authUser.role === "Committee") return "/committee";
+    return "/vendor";
+  };
 
   const handleRequestOtp = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -183,9 +192,13 @@ export function ChangePassword() {
                   <Button type="submit" className="w-full bg-[#0B3C5D] hover:bg-[#1D4E89]" disabled={loading}>
                     {loading ? "Sending OTP..." : "Send OTP"}
                   </Button>
-                  <Link to="/login" className="block text-center text-sm text-[#1D4E89] hover:underline">
+                  <button
+                    type="button"
+                    onClick={() => navigate(getDashboardRoute())}
+                    className="block w-full text-center text-sm text-[#1D4E89] hover:underline"
+                  >
                     Back
-                  </Link>
+                  </button>
                 </form>
               )}
 

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Sidebar } from "../../layout/Sidebar";
+import { Header } from "../../layout/Header";
 import { AIAssistant } from "../../AIAssistant";
 import { UserPlus, Mail, Phone, Briefcase, CheckCircle, Edit2 } from "lucide-react";
 import { useEffect } from "react";
@@ -164,8 +165,9 @@ export function CreateCommittee() {
   return (
     <div className="flex h-screen bg-[#F4F6F9]">
       <Sidebar role="po" />
-      <div className="flex-1 overflow-auto">
-        <div className="p-8">
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <Header role="po" userName="Rajesh Kumar" />
+        <div className="flex-1 overflow-auto p-8">
           <div className="mb-8">
             <h1 className="text-2xl text-[#0B3C5D] mb-2">Create Committee Member</h1>
             <p className="text-sm text-gray-600">Add a new committee member for bid evaluation and monitoring</p>
