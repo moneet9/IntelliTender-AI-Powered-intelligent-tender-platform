@@ -8,6 +8,7 @@ import {
 	defineContractTimeline,
 	updateMilestone,
 	submitProgressReport,
+	getContractAsset,
 	getContractDelayAnalysis,
 } from '../controllers/contractController.js';
 
@@ -17,6 +18,7 @@ router.put('/:id/status', auth(['CPO', 'PO']), updateContractStatus);
 router.put('/:id/timeline', auth(['CPO', 'PO']), defineContractTimeline);
 router.put('/:id/milestones/:milestoneId', auth(['Committee', 'PO', 'CPO']), updateMilestone);
 router.post('/:id/progress-reports', auth(['Committee', 'PO', 'CPO', 'Vendor']), submitProgressReport);
+router.get('/:id/assets/:assetId', auth(['CPO', 'PO', 'Committee', 'Vendor']), getContractAsset);
 router.get('/:id/delay-analysis', auth(['CPO', 'PO', 'Committee', 'Vendor']), getContractDelayAnalysis);
 
 export default router;

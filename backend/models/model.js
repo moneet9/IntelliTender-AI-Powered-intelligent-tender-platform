@@ -125,6 +125,21 @@ const progressReportSchema = new mongoose.Schema({
     reportedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
 }, { timestamps: true });
 
+const milestoneAssetSchema = new mongoose.Schema({
+    contractId: { type: mongoose.Schema.Types.ObjectId, ref: 'Contract', required: true, index: true },
+    milestoneId: { type: mongoose.Schema.Types.ObjectId },
+    reportId: { type: mongoose.Schema.Types.ObjectId },
+    uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    assetType: {
+        type: String,
+        enum: ['milestone-document', 'milestone-image', 'progress-report-attachment'],
+        required: true,
+    },
+    name: { type: String, required: true },
+    content: { type: String, required: true },
+    mimeType: { type: String },
+}, { timestamps: true });
+
 const contractSchema = new mongoose.Schema({
     tenderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Tender', required: true },
     vendorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
@@ -140,3 +155,4 @@ export const User = mongoose.model('User', userSchema);
 export const Tender = mongoose.model('Tender', tenderSchema);
 export const Contract = mongoose.model('Contract', contractSchema);
 export const BidDocument = mongoose.model('BidDocument', bidDocumentSchema);
+export const MilestoneAsset = mongoose.model('MilestoneAsset', milestoneAssetSchema);
