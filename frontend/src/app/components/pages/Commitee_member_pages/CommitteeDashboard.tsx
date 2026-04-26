@@ -11,10 +11,24 @@ type Tender = {
   bids?: Array<{ _id: string }>;
 };
 
+type VendorDetails = {
+  _id: string;
+  name: string;
+  email: string;
+  phone?: string;
+  department?: string;
+  specialization?: string;
+  accountStatus?: string;
+};
+
 type Bid = {
   _id: string;
+  vendorId?: string;
   vendorName?: string;
+  vendorDetails?: VendorDetails | null;
   proposedAmount: number;
+  proposalDocumentId?: string;
+  proposalDocument?: string;
   status: "Pending" | "Evaluated" | "Selected" | "Rejected";
   committeeEvaluations?: Array<{
     committeeMemberId?: string;
@@ -26,6 +40,10 @@ type Bid = {
   technicalScore?: number;
   financialScore?: number;
   comments?: string;
+  evaluatedBy?: string;
+  evaluatedDate?: string;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 export function CommitteeDashboard() {
@@ -81,9 +99,17 @@ export function CommitteeDashboard() {
     setSelectedTenderId(tenderId);
     try {
       const data = await apiRequest<Bid[]>(`/api/tenders/${tenderId}/bids`);
-      setBids(data);
+      if (Array.isArray(data)) {
+        setBids(data);
+      } else {
+        setBids([]);
+        setError("Invalid response format from server");
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load bids");
+      const errorMsg = err instanceof Error ? err.message : "Failed to load bids";
+      setError(errorMsg);
+      console.error('Error loading bids:', err);
+      setBids([]);
     }
   };
 

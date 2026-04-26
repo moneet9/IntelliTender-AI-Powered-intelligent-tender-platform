@@ -274,7 +274,18 @@ export const createTender = async (req, res) => {
 
 export const getTenders = async (req, res) => {
     try {
-        const tenders = await Tender.find().populate('createdBy', 'name').lean();
+        let filter = {};
+
+        // If user is Committee, only show tenders created by their assigned PO
+        if (req.user?.role === 'Committee') {
+            const user = await User.findById(req.user.id).select('managerPo');
+            if (!user?.managerPo) {
+                return res.json([]);
+            }
+            filter = { createdBy: user.managerPo };
+        }
+
+        const tenders = await Tender.find(filter).populate('createdBy', 'name').lean();
         const minimized = await Promise.all(
             tenders.map(async (tender) => ({
                 ...tender,
@@ -354,6 +365,15 @@ export const getTenderById = async (req, res) => {
     try {
         const tender = await Tender.findById(req.params.id).populate('createdBy', 'name');
         if (!tender) return res.status(404).json({ message: 'Tender not found' });
+
+        // If user is Committee, check if tender is created by their assigned PO
+        if (req.user?.role === 'Committee') {
+            const user = await User.findById(req.user.id).select('managerPo');
+            if (!user?.managerPo || String(tender.createdBy._id) !== String(user.managerPo)) {
+                return res.status(403).json({ message: 'Forbidden: You can only view tenders from your assigned procurement officer' });
+            }
+        }
+
         res.json(tender);
     } catch (e) { res.status(500).json({ error: e.message }); }
 };
@@ -458,8 +478,21 @@ export const getBidsByTender = async (req, res) => {
         );
         if (!tender) return res.status(404).json({ message: 'Tender not found' });
 
+        // If user is Committee, check if tender is created by their assigned PO
+        if (req.user?.role === 'Committee') {
+            const user = await User.findById(req.user.id).select('managerPo');
+            if (!user?.managerPo || String(tender.createdBy) !== String(user.managerPo)) {
+                return res.status(403).json({ message: 'Forbidden: You can only view bids from tenders created by your procurement officer' });
+            }
+        }
+
+        if (!tender.bids || tender.bids.length === 0) {
+            return res.json([]);
+        }
+
         const enrichedBids = await enrichBidDocumentReferences(req, tender._id, tender.bids || []);
-        res.json(enrichedBids.map(mapBidWithVendorDetails));
+        const mappedBids = enrichedBids.map(mapBidWithVendorDetails);
+        res.json(mappedBids);
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
