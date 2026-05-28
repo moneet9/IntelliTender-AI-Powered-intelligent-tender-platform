@@ -27,10 +27,18 @@ const committeeEvaluationSchema = new mongoose.Schema({
     evaluatedDate: { type: Date, default: Date.now },
 }, { _id: false });
 
+const bidDocumentEntrySchema = new mongoose.Schema({
+    label: { type: String, required: true },
+    category: { type: String, enum: ['Technical', 'Commercial'], required: true },
+    documentId: { type: mongoose.Schema.Types.ObjectId, ref: 'BidDocument' },
+    document: { type: String },
+}, { _id: false });
+
 const bidSchema = new mongoose.Schema({
     vendorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     vendorName: { type: String },
     proposedAmount: { type: Number, required: true },
+    bidDocuments: { type: [bidDocumentEntrySchema], default: [] },
     proposalDocumentId: { type: mongoose.Schema.Types.ObjectId, ref: 'BidDocument' },
     proposalDocument: { type: String }, // Can be a URL, base64 string, or just mock string
     status: { type: String, enum: ['Pending', 'Evaluated', 'Selected', 'Rejected'], default: 'Pending' },
@@ -42,6 +50,16 @@ const bidSchema = new mongoose.Schema({
     evaluatedDate: { type: Date }
 }, { timestamps: true });
 
+const qcbsCriterionSchema = new mongoose.Schema({
+    name: { type: String, required: true },
+    maxMarks: { type: Number, required: true },
+}, { _id: false });
+
+const requiredDocumentSchema = new mongoose.Schema({
+    label: { type: String, required: true },
+    category: { type: String, enum: ['Technical', 'Commercial'], required: true },
+}, { _id: false });
+
 const tenderSchema = new mongoose.Schema({
     title: { type: String, required: true },
     description: { type: String, required: true },
@@ -51,7 +69,15 @@ const tenderSchema = new mongoose.Schema({
         default: 'General',
     },
     budget: { type: Number, required: true },
-    deadline: { type: Date, required: true },
+    preBidDate: { type: Date, required: true },
+    finalSubmissionDate: { type: Date, required: true },
+    evaluationMethod: { type: String, enum: ['L1', 'QCBS'], default: 'QCBS' },
+    qcbsConfig: {
+        technicalWeight: { type: Number },
+        commercialWeight: { type: Number },
+        technicalCriteria: { type: [qcbsCriterionSchema], default: [] },
+    },
+    requiredDocuments: { type: [requiredDocumentSchema], default: [] },
     status: { type: String, enum: ['Draft', 'Published', 'Closed', 'Awarded', 'Completed'], default: 'Published' },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     documents: [{ type: String }],

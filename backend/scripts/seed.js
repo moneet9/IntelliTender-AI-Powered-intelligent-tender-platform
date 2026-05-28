@@ -165,7 +165,8 @@ const seed = async () => {
       description: 'Procurement of ergonomic furniture for administrative offices',
       category: 'Supply',
       budget: 1800000,
-      deadline: asDate('2026-08-30T00:00:00.000Z'),
+      preBidDate: asDate('2026-08-23T00:00:00.000Z'),
+      finalSubmissionDate: asDate('2026-08-30T00:00:00.000Z'),
       status: 'Draft',
       createdBy: po._id,
       documents: [
@@ -179,7 +180,8 @@ const seed = async () => {
       description: 'Managed firewall, SIEM monitoring, and incident response services for district offices',
       category: 'Service',
       budget: 3200000,
-      deadline: asDate('2026-09-15T00:00:00.000Z'),
+      preBidDate: asDate('2026-09-08T00:00:00.000Z'),
+      finalSubmissionDate: asDate('2026-09-15T00:00:00.000Z'),
       status: 'Published',
       createdBy: po._id,
       documents: [
@@ -193,7 +195,8 @@ const seed = async () => {
       description: 'Procurement of rack servers, switches, UPS units, and secure endpoint devices',
       category: 'Supply',
       budget: 7500000,
-      deadline: asDate('2026-10-20T00:00:00.000Z'),
+      preBidDate: asDate('2026-10-13T00:00:00.000Z'),
+      finalSubmissionDate: asDate('2026-10-20T00:00:00.000Z'),
       status: 'Published',
       createdBy: po._id,
       documents: [
@@ -226,7 +229,8 @@ const seed = async () => {
       description: 'Interactive boards, classroom audio, networking, and installation services for six schools',
       category: 'Service',
       budget: 5400000,
-      deadline: asDate('2026-02-15T00:00:00.000Z'),
+      preBidDate: asDate('2026-02-08T00:00:00.000Z'),
+      finalSubmissionDate: asDate('2026-02-15T00:00:00.000Z'),
       status: 'Closed',
       createdBy: cpo._id,
       documents: [
@@ -269,7 +273,8 @@ const seed = async () => {
       description: 'Supply of MRI and ICU equipment for the district hospital',
       category: 'Supply',
       budget: 12000000,
-      deadline: asDate('2026-01-15T00:00:00.000Z'),
+      preBidDate: asDate('2026-01-08T00:00:00.000Z'),
+      finalSubmissionDate: asDate('2026-01-15T00:00:00.000Z'),
       status: 'Awarded',
       createdBy: cpo._id,
       documents: [
@@ -312,7 +317,8 @@ const seed = async () => {
       description: 'Design, supply, installation, and commissioning of solar street lights across municipal roads',
       category: 'Work',
       budget: 9100000,
-      deadline: asDate('2026-01-12T00:00:00.000Z'),
+      preBidDate: asDate('2026-01-05T00:00:00.000Z'),
+      finalSubmissionDate: asDate('2026-01-12T00:00:00.000Z'),
       status: 'Awarded',
       createdBy: po._id,
       documents: [
@@ -355,7 +361,8 @@ const seed = async () => {
       description: 'Installation and commissioning of smart utility meters in urban households',
       category: 'Work',
       budget: 6800000,
-      deadline: asDate('2026-01-05T00:00:00.000Z'),
+      preBidDate: asDate('2025-12-29T00:00:00.000Z'),
+      finalSubmissionDate: asDate('2026-01-05T00:00:00.000Z'),
       status: 'Awarded',
       createdBy: cpo._id,
       documents: [
@@ -398,7 +405,8 @@ const seed = async () => {
       description: 'Annual preventive maintenance of institutional water purification systems',
       category: 'Service',
       budget: 1950000,
-      deadline: asDate('2025-11-28T00:00:00.000Z'),
+      preBidDate: asDate('2025-11-21T00:00:00.000Z'),
+      finalSubmissionDate: asDate('2025-11-28T00:00:00.000Z'),
       status: 'Awarded',
       createdBy: po._id,
       documents: [

@@ -20,15 +20,15 @@ export function ContractSearch() {
   const [selectedStatus, setSelectedStatus] = useState<string>("all");
   const [budgetRange, setBudgetRange] = useState<[number, number]>([0, 100000000]);
   const [showFilters, setShowFilters] = useState(false);
-  const [sortBy, setSortBy] = useState<"deadline" | "budget" | "name">("deadline");
+  const [sortBy, setSortBy] = useState<"finalSubmission" | "budget" | "name">("finalSubmission");
   
   // Bid submission state
   const [showSubmissionForm, setShowSubmissionForm] = useState(false);
   const [selectedTenderId, setSelectedTenderId] = useState("");
   const [declaration, setDeclaration] = useState(false);
   const [proposedAmount, setProposedAmount] = useState("");
-  const [proposalDocument, setProposalDocument] = useState("");
-  const [proposalFileName, setProposalFileName] = useState("");
+  const [documentUploads, setDocumentUploads] = useState<Record<string, string>>({});
+  const [documentNames, setDocumentNames] = useState<Record<string, string>>({});
   const [submittingBid, setSubmittingBid] = useState(false);
   const [formError, setFormError] = useState("");
   const [success, setSuccess] = useState("");
@@ -83,8 +83,8 @@ export function ContractSearch() {
     setSuccess("");
     setDeclaration(false);
     setProposedAmount("");
-    setProposalDocument("");
-    setProposalFileName("");
+    setDocumentUploads({});
+    setDocumentNames({});
   };
 
   const closeBidModal = () => {
@@ -92,32 +92,8 @@ export function ContractSearch() {
     setSelectedTenderId("");
     setDeclaration(false);
     setProposedAmount("");
-    setProposalDocument("");
-    setProposalFileName("");
-  };
-
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    if (file.type !== "application/pdf") {
-      setFormError("Please upload a PDF file");
-      return;
-    }
-
-    if (file.size > 10 * 1024 * 1024) {
-      setFormError("File size must be less than 10MB");
-      return;
-    }
-
-    try {
-      setFormError("");
-      const encoded = await encodeFileToStoredDocument(file);
-      setProposalDocument(encoded);
-      setProposalFileName(file.name);
-    } catch (err) {
-      setFormError(err instanceof Error ? err.message : "File upload failed");
-    }
+    setDocumentUploads({});
+    setDocumentNames({});
   };
 
   const handleSubmitBid = async () => {
@@ -128,9 +104,12 @@ export function ContractSearch() {
       setFormError("Enter a valid proposed amount before submitting the bid");
       return;
     }
-
-    if (!proposalDocument) {
-      setFormError("Upload the signed proposal PDF before submitting the bid");
+    const requiredDocs = (selectedTender?.requiredDocuments || []).length
+      ? selectedTender?.requiredDocuments || []
+      : [{ label: "Commercial Bid Document", category: "Commercial" }];
+    const missingDocs = requiredDocs.filter((doc) => !documentUploads[doc.label]);
+    if (missingDocs.length > 0) {
+      setFormError(`Upload all required documents: ${missingDocs.map((doc) => doc.label).join(", ")}`);
       return;
     }
 
@@ -143,7 +122,10 @@ export function ContractSearch() {
         method: "POST",
         body: {
           proposedAmount: Number(proposedAmount),
-          proposalDocument,
+          documents: requiredDocs.map((doc) => ({
+            label: doc.label,
+            document: documentUploads[doc.label],
+          })),
         },
       });
 
@@ -173,7 +155,9 @@ export function ContractSearch() {
   // Sort tenders
   const sortedTenders = useMemo(() => {
     return [...filteredTenders].sort((a, b) => {
-      if (sortBy === "deadline") return new Date(a.deadline).getTime() - new Date(b.deadline).getTime();
+      if (sortBy === "finalSubmission") {
+        return new Date(a.finalSubmissionDate).getTime() - new Date(b.finalSubmissionDate).getTime();
+      }
       if (sortBy === "budget") return b.budget - a.budget;
       return a.title.localeCompare(b.title);
     });
@@ -184,7 +168,7 @@ export function ContractSearch() {
     setSelectedCategory("all");
     setSelectedStatus("all");
     setBudgetRange([0, 100000000]);
-    setSortBy("deadline");
+    setSortBy("finalSubmission");
   };
 
   const activeFiltersCount = [
@@ -201,7 +185,7 @@ export function ContractSearch() {
         <div className="flex-1 overflow-auto p-6">
           <div className="mb-6">
             <h1 className="text-2xl text-[#0B3C5D] mb-1">Tender Search</h1>
-            <p className="text-sm text-gray-600">Search and filter available tenders by category, budget, and deadline with time.</p>
+            <p className="text-sm text-gray-600">Search and filter available tenders by category, budget, and final submission time.</p>
           </div>
 
           {isRestrictedAccount && (
@@ -279,7 +263,7 @@ export function ContractSearch() {
                       onChange={(e) => setSortBy(e.target.value as any)}
                       className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89] text-sm"
                     >
-                      <option value="deadline">Deadline (Soonest)</option>
+                      <option value="finalSubmission">Final Submission (Soonest)</option>
                       <option value="budget">Budget (Highest)</option>
                       <option value="name">Name (A-Z)</option>
                     </select>
@@ -379,8 +363,8 @@ export function ContractSearch() {
                       <span>{tender.budget.toLocaleString()}</span>
                     </div>
                     <div className="text-sm text-gray-600">
-                      <span className="font-medium">Deadline: </span>
-                      {formatDateTime(tender.deadline)}
+                      <span className="font-medium">Final Submission: </span>
+                      {formatDateTime(tender.finalSubmissionDate)}
                     </div>
                   </div>
 
@@ -446,7 +430,7 @@ export function ContractSearch() {
                     <p className="text-sm font-semibold text-[#0B3C5D] mb-2">{selectedTender.title}</p>
                     <div className="text-xs text-gray-600 space-y-1">
                       <p><span className="font-medium">Budget:</span> ₹{selectedTender.budget.toLocaleString()}</p>
-                      <p><span className="font-medium">Deadline:</span> {formatDateTime(selectedTender.deadline)}</p>
+                      <p><span className="font-medium">Final Submission:</span> {formatDateTime(selectedTender.finalSubmissionDate)}</p>
                       <p><span className="font-medium">Category:</span> {selectedTender.category || "General"}</p>
                     </div>
                   </div>
@@ -469,12 +453,55 @@ export function ContractSearch() {
 
                     {/* Document Upload */}
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Signed Proposal (PDF)</label>
-                      <label className="w-full px-4 py-2 border-2 border-dashed border-gray-300 rounded-md cursor-pointer hover:border-[#1D4E89] transition-colors flex items-center justify-center gap-2 text-sm text-gray-600">
-                        <Upload className="w-4 h-4" />
-                        {proposalFileName || "Click to upload PDF"}
-                        <input type="file" accept=".pdf" onChange={handleFileUpload} className="hidden" />
-                      </label>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Required Documents (PDF)</label>
+                      <div className="space-y-3">
+                        {(selectedTender?.requiredDocuments || [{ label: "Commercial Bid Document", category: "Commercial" }]).map(
+                          (doc) => {
+                            const displayCategory =
+                              doc.label.trim().toLowerCase() === "eligibility proof" ? "Eligibility" : doc.category;
+
+                            return (
+                              <div key={doc.label} className="border border-gray-200 rounded-md p-3">
+                                <p className="text-xs text-gray-600 mb-2">
+                                  {doc.label} <span className="text-gray-400">({displayCategory})</span>
+                                </p>
+                                <label className="w-full px-4 py-2 border-2 border-dashed border-gray-300 rounded-md cursor-pointer hover:border-[#1D4E89] transition-colors flex items-center justify-center gap-2 text-sm text-gray-600">
+                                  <Upload className="w-4 h-4" />
+                                  {documentNames[doc.label] || "Click to upload PDF"}
+                                  <input
+                                    type="file"
+                                    accept=".pdf"
+                                    className="hidden"
+                                    onChange={async (event) => {
+                                      const file = event.target.files?.[0];
+                                      if (!file) return;
+
+                                      if (file.type !== "application/pdf") {
+                                        setFormError("Please upload a PDF file");
+                                        return;
+                                      }
+
+                                      if (file.size > 10 * 1024 * 1024) {
+                                        setFormError("File size must be less than 10MB");
+                                        return;
+                                      }
+
+                                      try {
+                                        setFormError("");
+                                        const encoded = await encodeFileToStoredDocument(file);
+                                        setDocumentUploads((prev) => ({ ...prev, [doc.label]: encoded }));
+                                        setDocumentNames((prev) => ({ ...prev, [doc.label]: file.name }));
+                                      } catch (err) {
+                                        setFormError(err instanceof Error ? err.message : "File upload failed");
+                                      }
+                                    }}
+                                  />
+                                </label>
+                              </div>
+                            );
+                          }
+                        )}
+                      </div>
                     </div>
 
                     {/* Declaration Checkbox */}
@@ -565,8 +592,10 @@ export function ContractSearch() {
                       </p>
                     </div>
                     <div>
-                      <p className="text-xs text-gray-600 uppercase tracking-wide">Deadline</p>
-                      <p className="text-sm font-semibold text-[#0B3C5D] mt-1">{formatDateTime(detailedTender.deadline)}</p>
+                      <p className="text-xs text-gray-600 uppercase tracking-wide">Final Submission</p>
+                      <p className="text-sm font-semibold text-[#0B3C5D] mt-1">
+                        {formatDateTime(detailedTender.finalSubmissionDate)}
+                      </p>
                     </div>
                   </div>
 

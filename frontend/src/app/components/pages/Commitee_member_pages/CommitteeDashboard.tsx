@@ -2,12 +2,18 @@ import { Sidebar } from "../../layout/Sidebar";
 import { Header } from "../../layout/Header";
 import { AIAssistant } from "../../AIAssistant";
 import { useEffect, useMemo, useState } from "react";
+import { FileText } from "lucide-react";
 import { apiRequest, getAuthUser } from "../../../api";
+import { getStoredDocumentName, getStoredDocumentUrl } from "../../../document-utils";
 
 type Tender = {
   _id: string;
   title: string;
   status: "Draft" | "Published" | "Closed" | "Awarded" | "Completed";
+  qcbsConfig?: {
+    technicalCriteria?: Array<{ name: string; maxMarks: number }>;
+  };
+  requiredDocuments?: Array<{ label: string; category: "Technical" | "Commercial" }>;
   bids?: Array<{ _id: string }>;
 };
 
@@ -27,6 +33,12 @@ type Bid = {
   vendorName?: string;
   vendorDetails?: VendorDetails | null;
   proposedAmount: number;
+  bidDocuments?: Array<{
+    label: string;
+    category: "Technical" | "Commercial";
+    documentId?: string;
+    document?: string;
+  }>;
   proposalDocumentId?: string;
   proposalDocument?: string;
   status: "Pending" | "Evaluated" | "Selected" | "Rejected";
@@ -52,6 +64,7 @@ export function CommitteeDashboard() {
   const [selectedTenderId, setSelectedTenderId] = useState<string>("");
   const [bids, setBids] = useState<Bid[]>([]);
   const [technicalScore, setTechnicalScore] = useState<Record<string, string>>({});
+  const [technicalDocScores, setTechnicalDocScores] = useState<Record<string, Record<string, string>>>({});
   const [financialScore, setFinancialScore] = useState<Record<string, string>>({});
   const [comments, setComments] = useState<Record<string, string>>({});
   const [submittingBidId, setSubmittingBidId] = useState("");
@@ -78,6 +91,34 @@ export function CommitteeDashboard() {
       return a.title.localeCompare(b.title);
     });
   }, [tenders, tenderSearch, tenderStatusFilter, tenderSort]);
+
+  const selectedTender = useMemo(
+    () => tenders.find((tender) => tender._id === selectedTenderId) || null,
+    [tenders, selectedTenderId]
+  );
+
+  const technicalCriteriaMap = useMemo(() => {
+    const criteria = selectedTender?.qcbsConfig?.technicalCriteria || [];
+    return new Map(criteria.map((criterion) => [criterion.name, criterion.maxMarks]));
+  }, [selectedTender]);
+
+  const technicalRequirements = useMemo(
+    () =>
+      (selectedTender?.requiredDocuments || []).filter(
+        (doc) =>
+          doc.category === "Technical" &&
+          doc.label.trim().toLowerCase() !== "eligibility proof"
+      ),
+    [selectedTender]
+  );
+
+  const getBidDocumentUrl = (doc: Bid["bidDocuments"][number]) => {
+    if (doc.documentId && selectedTenderId) {
+      return `/api/tenders/${selectedTenderId}/bid-documents/${doc.documentId}`;
+    }
+
+    return getStoredDocumentUrl(doc.document);
+  };
 
   const loadTenders = async () => {
     setLoading(true);
@@ -116,6 +157,14 @@ export function CommitteeDashboard() {
   const submitEvaluation = async (bidId: string) => {
     if (!selectedTenderId) return;
 
+    const technicalTotal = technicalRequirements.reduce(
+      (sum, doc) => sum + Number(technicalDocScores[bidId]?.[doc.label] || 0),
+      0
+    );
+    const technicalScoreValue = technicalRequirements.length
+      ? technicalTotal
+      : Number(technicalScore[bidId] || 0);
+
     setSubmittingBidId(bidId);
     setError("");
     setSuccess("");
@@ -124,7 +173,7 @@ export function CommitteeDashboard() {
       await apiRequest(`/api/tenders/${selectedTenderId}/bids/${bidId}/evaluate`, {
         method: "PUT",
         body: {
-          technicalScore: Number(technicalScore[bidId] || 0),
+          technicalScore: technicalScoreValue,
           financialScore: Number(financialScore[bidId] || 0),
           comments: comments[bidId] || "",
         },
@@ -150,6 +199,7 @@ export function CommitteeDashboard() {
   useEffect(() => {
     loadTenders();
   }, []);
+
 
   return (
     <div className="flex h-screen bg-[#F4F6F9]">
@@ -287,6 +337,10 @@ export function CommitteeDashboard() {
                     const myEvaluation = getCommitteeMemberEvaluation(bid);
                     const evaluationCount = bid.committeeEvaluations?.length || (bid.status === "Evaluated" ? 1 : 0);
                     const isSubmitting = submittingBidId === bid._id;
+                    const technicalTotal = technicalRequirements.reduce(
+                      (sum, doc) => sum + Number(technicalDocScores[bid._id]?.[doc.label] || 0),
+                      0
+                    );
 
                     return (
                       <div key={bid._id} className="border border-gray-200 rounded-lg p-4">
@@ -302,29 +356,126 @@ export function CommitteeDashboard() {
                             <p className="text-xs text-gray-500 mt-1">{evaluationCount} committee review(s)</p>
                           </div>
                         </div>
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                          <input
-                            type="number"
-                            value={technicalScore[bid._id] ?? String(myEvaluation?.technicalScore ?? "")}
-                            onChange={(e) => setTechnicalScore({ ...technicalScore, [bid._id]: e.target.value })}
-                            className="px-3 py-2 border border-gray-300 rounded-md"
-                            placeholder="Technical score"
-                          />
-                          <input
-                            type="number"
-                            value={financialScore[bid._id] ?? String(myEvaluation?.financialScore ?? "")}
-                            onChange={(e) => setFinancialScore({ ...financialScore, [bid._id]: e.target.value })}
-                            className="px-3 py-2 border border-gray-300 rounded-md"
-                            placeholder="Financial score"
-                          />
-                          <input
-                            type="text"
-                            value={comments[bid._id] ?? myEvaluation?.comments ?? ""}
-                            onChange={(e) => setComments({ ...comments, [bid._id]: e.target.value })}
-                            className="px-3 py-2 border border-gray-300 rounded-md"
-                            placeholder="Comments"
-                          />
-                        </div>
+                        {technicalRequirements.length > 0 ? (
+                          <div className="space-y-3">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                              {technicalRequirements.map((doc) => {
+                                const maxMarks = technicalCriteriaMap.get(doc.label) ?? 0;
+                                const value = technicalDocScores[bid._id]?.[doc.label] ?? "";
+                                return (
+                                  <div key={doc.label} className="border border-gray-200 rounded-md p-3">
+                                    <p className="text-xs text-gray-600 mb-2">{doc.label}</p>
+                                    <div className="flex items-center gap-2">
+                                      <input
+                                        type="number"
+                                        min="0"
+                                        max={maxMarks}
+                                        value={value}
+                                        onChange={(e) => {
+                                          const nextValue = e.target.value;
+                                          const maxAllowed = Number.isFinite(maxMarks) ? maxMarks : 0;
+                                          const parsed = nextValue === "" ? "" : Math.min(Math.max(Number(nextValue), 0), maxAllowed);
+                                          setTechnicalDocScores((prev) => ({
+                                            ...prev,
+                                            [bid._id]: { ...(prev[bid._id] || {}), [doc.label]: String(parsed) },
+                                          }));
+                                        }}
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                                        placeholder={`0 - ${maxMarks}`}
+                                      />
+                                      <span className="text-xs text-gray-500">/ {maxMarks}</span>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                            <div className="flex items-center justify-between">
+                              <p className="text-xs text-gray-500">Technical total</p>
+                              <p className="text-sm text-[#0B3C5D] font-medium">{technicalTotal}</p>
+                            </div>
+                            <div>
+                              <p className="text-sm text-gray-600 mb-2">Vendor Documents</p>
+                              {!!bid.bidDocuments?.length ? (
+                                <div className="space-y-2">
+                                  {bid.bidDocuments.map((doc) => {
+                                    const name = getStoredDocumentName(doc.document, doc.label);
+                                    const url = getBidDocumentUrl(doc);
+                                    return (
+                                      <div
+                                        key={doc.label}
+                                        className="flex items-center justify-between gap-3 border border-gray-200 rounded-md p-3 bg-white"
+                                      >
+                                        <div className="flex items-center gap-2">
+                                          <FileText className="w-4 h-4 text-[#1D4E89]" />
+                                          <div>
+                                            <p className="text-sm text-[#0B3C5D]">{doc.label}</p>
+                                            <p className="text-xs text-gray-500">{name}</p>
+                                          </div>
+                                        </div>
+                                        {url ? (
+                                          <a
+                                            href={url}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className="text-xs text-[#1D4E89] hover:underline"
+                                          >
+                                            Open
+                                          </a>
+                                        ) : (
+                                          <span className="text-xs text-gray-400">Unavailable</span>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              ) : (
+                                <p className="text-sm text-gray-400">No documents uploaded.</p>
+                              )}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                            <input
+                              type="number"
+                              value={technicalScore[bid._id] ?? String(myEvaluation?.technicalScore ?? "")}
+                              onChange={(e) => setTechnicalScore({ ...technicalScore, [bid._id]: e.target.value })}
+                              className="px-3 py-2 border border-gray-300 rounded-md"
+                              placeholder="Technical score"
+                            />
+                            <input
+                              type="number"
+                              value={financialScore[bid._id] ?? String(myEvaluation?.financialScore ?? "")}
+                              onChange={(e) => setFinancialScore({ ...financialScore, [bid._id]: e.target.value })}
+                              className="px-3 py-2 border border-gray-300 rounded-md"
+                              placeholder="Financial score"
+                            />
+                            <input
+                              type="text"
+                              value={comments[bid._id] ?? myEvaluation?.comments ?? ""}
+                              onChange={(e) => setComments({ ...comments, [bid._id]: e.target.value })}
+                              className="px-3 py-2 border border-gray-300 rounded-md"
+                              placeholder="Comments"
+                            />
+                          </div>
+                        )}
+                        {technicalRequirements.length > 0 && (
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+                            <input
+                              type="number"
+                              value={financialScore[bid._id] ?? String(myEvaluation?.financialScore ?? "")}
+                              onChange={(e) => setFinancialScore({ ...financialScore, [bid._id]: e.target.value })}
+                              className="px-3 py-2 border border-gray-300 rounded-md"
+                              placeholder="Financial score"
+                            />
+                            <input
+                              type="text"
+                              value={comments[bid._id] ?? myEvaluation?.comments ?? ""}
+                              onChange={(e) => setComments({ ...comments, [bid._id]: e.target.value })}
+                              className="px-3 py-2 border border-gray-300 rounded-md"
+                              placeholder="Comments"
+                            />
+                          </div>
+                        )}
                         <div className="mt-3 flex items-center justify-between gap-3">
                           {myEvaluation ? (
                             <p className="text-xs text-green-700">

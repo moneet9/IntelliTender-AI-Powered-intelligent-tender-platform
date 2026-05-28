@@ -23,10 +23,11 @@ export type TenderRecord = {
   description: string;
   category?: string;
   budget: number;
-  deadline: string;
+  finalSubmissionDate: string;
   status: "Draft" | "Published" | "Closed" | "Awarded" | "Completed";
   documents?: string[];
   bids?: TenderBid[];
+  requiredDocuments?: Array<{ label: string; category: "Technical" | "Commercial" }>;
 };
 
 export type MilestoneSummary = {
@@ -51,7 +52,7 @@ export type ContractRecord = {
     description?: string;
     category?: string;
     budget?: number;
-    deadline?: string;
+    finalSubmissionDate?: string;
     documents?: string[];
   };
   milestones?: MilestoneSummary[];
@@ -106,7 +107,10 @@ export function useVendorData(vendorId?: string) {
       tenders
         .filter((tender) => tender.status === "Published")
         .slice()
-        .sort((left, right) => new Date(left.deadline).getTime() - new Date(right.deadline).getTime()),
+        .sort(
+          (left, right) =>
+            new Date(left.finalSubmissionDate).getTime() - new Date(right.finalSubmissionDate).getTime()
+        ),
     [tenders]
   );
 

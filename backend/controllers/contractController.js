@@ -300,7 +300,7 @@ export const getContracts = async (req, res) => {
     try {
         const filter = req.user?.role === 'Vendor' ? { vendorId: req.user.id } : {};
         const contracts = await Contract.find(filter)
-            .populate('tenderId', 'title description category budget deadline documents')
+            .populate('tenderId', 'title description category budget preBidDate finalSubmissionDate documents')
             .populate('vendorId', 'name email phone department specialization accountStatus')
             .populate('milestones.verifiedBy', 'name role')
             .populate('milestones.history.updatedBy', 'name role')
@@ -319,7 +319,7 @@ export const getContracts = async (req, res) => {
 export const getContractById = async (req, res) => {
     try {
         const contract = await Contract.findById(req.params.id)
-            .populate('tenderId', 'title description category budget deadline documents')
+            .populate('tenderId', 'title description category budget preBidDate finalSubmissionDate documents')
             .populate('vendorId', 'name email phone department specialization accountStatus')
             .populate('milestones.verifiedBy', 'name role')
             .populate('milestones.history.updatedBy', 'name role')

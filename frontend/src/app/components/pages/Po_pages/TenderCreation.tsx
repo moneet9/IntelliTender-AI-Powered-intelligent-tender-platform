@@ -2,12 +2,17 @@ import { useState } from "react";
 import { Sidebar } from "../../layout/Sidebar";
 import { Header } from "../../layout/Header";
 import { AIAssistant } from "../../AIAssistant";
-import { Upload, AlertCircle, FileText, Lock, LockOpen, X } from "lucide-react";
+import { Upload, AlertCircle, FileText, X } from "lucide-react";
 import { useNavigate } from "react-router";
 import { apiRequest } from "../../../api";
 import { encodeFilesToStoredDocuments } from "../../../document-utils";
 
-type WeightKey = "price" | "quality" | "experience" | "timeline";
+type EvaluationMethod = "L1" | "QCBS";
+
+type QcbsCriterion = {
+  name: string;
+  maxMarks: string;
+};
 
 type MilestoneData = {
   title: string;
@@ -17,9 +22,14 @@ type MilestoneData = {
   checklistItems: string[];
 };
 
-const weightKeys: WeightKey[] = ["price", "quality", "experience", "timeline"];
 const maxIndividualDocumentSizeBytes = 10 * 1024 * 1024;
 const maxCombinedDocumentSizeBytes = 35 * 1024 * 1024;
+
+const emptyQcbsCriterion = (): QcbsCriterion => ({
+  name: "",
+  maxMarks: "",
+});
+
 
 const emptyMilestone = (): MilestoneData => ({
   title: "",
@@ -36,30 +46,35 @@ export function TenderCreation() {
     category: "supply",
     description: "",
     budget: "",
-    deadline: "",
+    preBidDate: "",
+    finalSubmissionDate: "",
   });
   const [documents, setDocuments] = useState<string[]>([]);
   const [documentNames, setDocumentNames] = useState<string[]>([]);
 
-  const [weights, setWeights] = useState<Record<WeightKey, number>>({
-    price: 40,
-    quality: 25,
-    experience: 20,
-    timeline: 15,
+  const [evaluationMethod, setEvaluationMethod] = useState<EvaluationMethod>("QCBS");
+  const [qcbsWeights, setQcbsWeights] = useState({
+    technical: 70,
+    commercial: 30,
   });
-  const [frozenWeights, setFrozenWeights] = useState<Record<WeightKey, boolean>>({
-    price: false,
-    quality: false,
-    experience: false,
-    timeline: false,
-  });
-  const [weightError, setWeightError] = useState("");
+  const [technicalCriteria, setTechnicalCriteria] = useState<QcbsCriterion[]>([emptyQcbsCriterion()]);
 
   const [milestones, setMilestones] = useState<MilestoneData[]>([emptyMilestone()]);
   const hasMilestones = milestones.some((m) => m.title.trim() !== "");
 
-  const totalWeight = Object.values(weights).reduce((sum, val) => sum + val, 0);
-  const isWeightValid = totalWeight === 100;
+  const qcbsWeightTotal = qcbsWeights.technical + qcbsWeights.commercial;
+  const hasTechnicalCriteria = technicalCriteria.some((criterion) => criterion.name.trim() !== "");
+  const technicalCriteriaComplete = technicalCriteria.every((criterion) => {
+    if (!criterion.name.trim()) return false;
+    const marks = Number(criterion.maxMarks);
+    return Number.isFinite(marks) && marks > 0;
+  });
+  const isQcbsValid =
+    qcbsWeightTotal === 100 &&
+    hasTechnicalCriteria &&
+    technicalCriteriaComplete;
+  const isEvaluationValid = evaluationMethod === "L1" ? true : isQcbsValid;
+
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -70,67 +85,18 @@ export function TenderCreation() {
     general: "General",
   };
 
-  const handleWeightChange = (key: WeightKey, value: number) => {
-    if (frozenWeights[key]) {
-      setWeightError(`${key} is frozen. Unfreeze it to change this value.`);
-      return;
-    }
-
-    const requestedValue = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : weights[key];
-    const immutableTotal = weightKeys
-      .filter((weightKey) => weightKey !== key && frozenWeights[weightKey])
-      .reduce((sum, weightKey) => sum + weights[weightKey], 0);
-
-    const adjustableKeys = weightKeys.filter((weightKey) => weightKey !== key && !frozenWeights[weightKey]);
-    const maxAllowed = Math.max(0, 100 - immutableTotal);
-    const clampedValue = Math.max(0, Math.min(maxAllowed, requestedValue));
-    const distributable = 100 - immutableTotal - clampedValue;
-
-    if (adjustableKeys.length === 0 && clampedValue !== weights[key]) {
-      setWeightError(`Cannot change ${key} while all other criteria are frozen. This would break the 100% total.`);
-      return;
-    }
-
-    const nextWeights: Record<WeightKey, number> = { ...weights, [key]: clampedValue };
-
-    if (adjustableKeys.length > 0) {
-      const totalAdjustableWeight = adjustableKeys.reduce((sum, weightKey) => sum + weights[weightKey], 0);
-
-      const provisional = adjustableKeys.map((weightKey) => {
-        const rawShare =
-          totalAdjustableWeight > 0
-            ? (weights[weightKey] / totalAdjustableWeight) * distributable
-            : distributable / adjustableKeys.length;
-
-        return {
-          key: weightKey,
-          floor: Math.floor(rawShare),
-          fraction: rawShare - Math.floor(rawShare),
-        };
-      });
-
-      let remaining = distributable - provisional.reduce((sum, item) => sum + item.floor, 0);
-
-      provisional
-        .slice()
-        .sort((a, b) => b.fraction - a.fraction)
-        .forEach((item) => {
-          const bonus = remaining > 0 ? 1 : 0;
-          nextWeights[item.key] = item.floor + bonus;
-          if (remaining > 0) remaining -= 1;
-        });
-    }
-
-    setWeightError("");
-    setWeights(nextWeights);
+  const addTechnicalCriterion = () => {
+    setTechnicalCriteria((prev) => [...prev, emptyQcbsCriterion()]);
   };
 
-  const toggleFreeze = (key: WeightKey) => {
-    setWeightError("");
-    setFrozenWeights((previous) => ({
-      ...previous,
-      [key]: !previous[key],
-    }));
+  const removeTechnicalCriterion = (index: number) => {
+    setTechnicalCriteria((prev) => prev.filter((_, idx) => idx !== index));
+  };
+
+  const updateTechnicalCriterion = (index: number, field: keyof QcbsCriterion, value: string) => {
+    setTechnicalCriteria((prev) =>
+      prev.map((item, idx) => (idx === index ? { ...item, [field]: value } : item))
+    );
   };
 
   const addMilestone = () => {
@@ -177,7 +143,30 @@ export function TenderCreation() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isWeightValid) return;
+    if (evaluationMethod === "QCBS") {
+      const qcbsWeightTotal = qcbsWeights.technical + qcbsWeights.commercial;
+      if (qcbsWeightTotal !== 100) {
+        setError("QCBS technical and commercial weights must total 100%");
+        return;
+      }
+
+      const hasCriteria = technicalCriteria.some((criterion) => criterion.name.trim() !== "");
+      if (!hasCriteria) {
+        setError("Add at least one technical criterion for QCBS evaluation");
+        return;
+      }
+
+      const invalidCriterion = technicalCriteria.some((criterion) => {
+        if (!criterion.name.trim()) return true;
+        const marks = Number(criterion.maxMarks);
+        return !Number.isFinite(marks) || marks <= 0;
+      });
+
+      if (invalidCriterion) {
+        setError("Each technical criterion needs a name and max marks");
+        return;
+      }
+    }
     if (!hasMilestones) {
       setError("At least one milestone is required");
       return;
@@ -195,6 +184,33 @@ export function TenderCreation() {
     setError("");
     setLoading(true);
     try {
+      const qcbsSettings =
+        evaluationMethod === "QCBS"
+          ? {
+              technicalWeight: qcbsWeights.technical,
+              commercialWeight: qcbsWeights.commercial,
+              technicalCriteria: technicalCriteria.map((criterion) => ({
+                name: criterion.name.trim(),
+                maxMarks: Number(criterion.maxMarks),
+              })),
+            }
+          : undefined;
+      const technicalDocs =
+        evaluationMethod === "QCBS"
+          ? technicalCriteria
+              .map((criterion) => criterion.name.trim())
+              .filter(Boolean)
+              .map((label) => ({ label, category: "Technical" as const }))
+          : [];
+      const requiredDocuments = [
+        ...technicalDocs,
+        { label: "Eligibility Proof", category: "Technical" as const },
+        { label: "Commercial Bid Document", category: "Commercial" as const },
+      ].filter(
+        (item, index, self) =>
+          self.findIndex((entry) => entry.label === item.label && entry.category === item.category) === index
+      );
+
       await apiRequest("/api/tenders", {
         method: "POST",
         body: {
@@ -202,7 +218,11 @@ export function TenderCreation() {
           description: formData.description,
           category: categoryLabelMap[formData.category] || "General",
           budget: Number(formData.budget),
-          deadline: formData.deadline,
+          preBidDate: formData.preBidDate,
+          finalSubmissionDate: formData.finalSubmissionDate,
+          evaluationMethod,
+          qcbsSettings,
+          requiredDocuments,
           documents,
           milestones: milestones.filter((m) => m.title.trim() !== ""),
         },
@@ -283,11 +303,22 @@ export function TenderCreation() {
                 </div>
 
                 <div className="md:col-span-2">
-                  <label className="block text-sm text-gray-700 mb-2">Submission Deadline (Date & Time)</label>
+                  <label className="block text-sm text-gray-700 mb-2">Pre-bid Meeting Date & Time</label>
                   <input
                     type="datetime-local"
-                    value={formData.deadline}
-                    onChange={(e) => setFormData({ ...formData, deadline: e.target.value })}
+                    value={formData.preBidDate}
+                    onChange={(e) => setFormData({ ...formData, preBidDate: e.target.value })}
+                    className="w-full px-4 py-2.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89] bg-white"
+                    required
+                  />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-sm text-gray-700 mb-2">Final Submission Date & Time</label>
+                  <input
+                    type="datetime-local"
+                    value={formData.finalSubmissionDate}
+                    onChange={(e) => setFormData({ ...formData, finalSubmissionDate: e.target.value })}
                     className="w-full px-4 py-2.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89] bg-white"
                     required
                   />
@@ -348,82 +379,143 @@ export function TenderCreation() {
               )}
             </div>
 
-            {/* Evaluation Weights */}
+            {/* Evaluation Method */}
             <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-100 mb-6">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg text-[#0B3C5D]">Evaluation Weights</h3>
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-gray-600">Total:</span>
-                  <span
-                    className={`px-3 py-1 rounded-md text-sm ${
-                      isWeightValid ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"
-                    }`}
-                  >
-                    {totalWeight}%
-                  </span>
-                </div>
+              <h3 className="text-lg text-[#0B3C5D] mb-4">Evaluation Method</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <label className="flex items-center gap-2 text-sm text-gray-700">
+                  <input
+                    type="radio"
+                    name="evaluationMethod"
+                    value="L1"
+                    checked={evaluationMethod === "L1"}
+                    onChange={() => setEvaluationMethod("L1")}
+                    className="text-[#1D4E89]"
+                  />
+                  L1 (Lowest Price)
+                </label>
+                <label className="flex items-center gap-2 text-sm text-gray-700">
+                  <input
+                    type="radio"
+                    name="evaluationMethod"
+                    value="QCBS"
+                    checked={evaluationMethod === "QCBS"}
+                    onChange={() => setEvaluationMethod("QCBS")}
+                    className="text-[#1D4E89]"
+                  />
+                  QCBS (Quality and Cost Based Selection)
+                </label>
               </div>
 
-              {!isWeightValid && (
-                <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-md flex items-center gap-2">
-                  <AlertCircle className="w-4 h-4 text-red-600" />
-                  <p className="text-sm text-red-700">Total weight must equal 100%</p>
-                </div>
-              )}
-
-              {!!weightError && (
-                <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-md flex items-center gap-2">
-                  <AlertCircle className="w-4 h-4 text-amber-700" />
-                  <p className="text-sm text-amber-800">{weightError}</p>
-                </div>
-              )}
-
-              <p className="text-xs text-gray-500 mb-4">
-                Freeze any criterion to lock its value. Frozen criteria never change when you adjust other weights.
-              </p>
-
-              <div className="space-y-4">
-                {(Object.entries(weights) as Array<[WeightKey, number]>).map(([key, value]) => {
-                  const isFrozen = frozenWeights[key];
-
-                  return (
-                  <div key={key}>
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center gap-2">
-                        <label className="text-sm text-gray-700 capitalize">{key}</label>
-                        {isFrozen && <span className="text-xs px-2 py-0.5 rounded bg-slate-100 text-slate-700">Frozen</span>}
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <span className="text-sm text-[#0B3C5D]">{value}%</span>
-                        <button
-                          type="button"
-                          onClick={() => toggleFreeze(key)}
-                          className={`inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded border transition-colors ${
-                            isFrozen
-                              ? "bg-slate-800 text-white border-slate-800 hover:bg-slate-700"
-                              : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50"
-                          }`}
-                        >
-                          {isFrozen ? <Lock className="w-3.5 h-3.5" /> : <LockOpen className="w-3.5 h-3.5" />}
-                          {isFrozen ? "Unfreeze" : "Freeze"}
-                        </button>
-                      </div>
-                    </div>
-                    <input
-                      type="range"
-                      min="0"
-                      max="100"
-                      value={value}
-                      onChange={(e) => handleWeightChange(key, parseInt(e.target.value))}
-                      disabled={isFrozen}
-                      className={`w-full h-2 bg-gray-200 rounded-lg appearance-none accent-[#1D4E89] ${
-                        isFrozen ? "cursor-not-allowed opacity-60" : "cursor-pointer"
+              {evaluationMethod === "QCBS" && (
+                <div className="mt-5 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-sm font-semibold text-[#0B3C5D]">QCBS Weights</h4>
+                    <span
+                      className={`px-3 py-1 rounded-md text-xs ${
+                        qcbsWeightTotal === 100 ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"
                       }`}
-                    />
+                    >
+                      Total: {qcbsWeightTotal}%
+                    </span>
                   </div>
-                  );
-                })}
-              </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm text-gray-700 mb-2">Technical Weight (%)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        value={qcbsWeights.technical}
+                        onChange={(e) =>
+                          setQcbsWeights((prev) => ({
+                            ...prev,
+                            technical: Number(e.target.value || 0),
+                          }))
+                        }
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89]"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm text-gray-700 mb-2">Commercial Weight (%)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        value={qcbsWeights.commercial}
+                        onChange={(e) =>
+                          setQcbsWeights((prev) => ({
+                            ...prev,
+                            commercial: Number(e.target.value || 0),
+                          }))
+                        }
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89]"
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h4 className="text-sm font-semibold text-[#0B3C5D]">Technical Criteria</h4>
+                      <p className="text-xs text-gray-500">Set maximum marks for each required document.</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={addTechnicalCriterion}
+                      className="px-3 py-2 text-xs rounded bg-[#1D4E89] text-white hover:bg-[#154068] transition-colors"
+                    >
+                      + Add Criterion
+                    </button>
+                  </div>
+
+                  <div className="space-y-3">
+                    {technicalCriteria.map((criterion, index) => (
+                      <div key={index} className="p-4 border border-gray-200 rounded-md bg-gray-50">
+                        <div className="flex items-center justify-between mb-3">
+                          <p className="text-xs font-medium text-gray-700">Criterion {index + 1}</p>
+                          {technicalCriteria.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => removeTechnicalCriterion(index)}
+                              className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-red-100 text-red-700 hover:bg-red-200 transition-colors"
+                            >
+                              <X className="w-3 h-3" />
+                              Remove
+                            </button>
+                          )}
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <div>
+                            <label className="block text-xs text-gray-600 mb-1">Criterion Name</label>
+                            <input
+                              type="text"
+                              value={criterion.name}
+                              onChange={(e) => updateTechnicalCriterion(index, "name", e.target.value)}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89]"
+                              placeholder="e.g., Methodology"
+                              required
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs text-gray-600 mb-1">Max Marks</label>
+                            <input
+                              type="number"
+                              min="1"
+                              value={criterion.maxMarks}
+                              onChange={(e) => updateTechnicalCriterion(index, "maxMarks", e.target.value)}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89]"
+                              required
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Milestones (Required) */}
@@ -557,9 +649,9 @@ export function TenderCreation() {
               {error && <p className="text-sm text-red-600">{error}</p>}
               <button
                 type="submit"
-                disabled={!isWeightValid || !hasMilestones || loading}
+                disabled={!isEvaluationValid || !hasMilestones || loading}
                 className={`px-6 py-3 rounded-md transition-colors ${
-                  isWeightValid && hasMilestones && !loading
+                  isEvaluationValid && hasMilestones && !loading
                     ? "bg-[#1D4E89] hover:bg-[#154068] text-white"
                     : "bg-gray-300 text-gray-500 cursor-not-allowed"
                 }`}

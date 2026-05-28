@@ -73,7 +73,7 @@ export function VendorDashboard() {
                     <div key={tender._id} className="p-3 rounded-md border border-gray-200">
                       <p className="text-sm text-[#0B3C5D]">{tender.title}</p>
                       <p className="text-xs text-gray-600 mt-1">
-                        Deadline: {formatDate(tender.deadline)} | Budget: {formatCurrency(tender.budget)}
+                        Final Submission: {formatDate(tender.finalSubmissionDate)} | Budget: {formatCurrency(tender.budget)}
                       </p>
                     </div>
                   ))}

@@ -26,16 +26,22 @@ type TenderBid = {
   comments?: string;
 };
 
+type RequiredDocument = {
+  label: string;
+  category: "Technical" | "Commercial";
+};
+
 type TenderRecord = {
   _id: string;
   title: string;
   description: string;
   category?: string;
   budget: number;
-  deadline: string;
+  finalSubmissionDate: string;
   status: "Draft" | "Published" | "Closed" | "Awarded" | "Completed";
   documents?: string[];
   bids?: TenderBid[];
+  requiredDocuments?: RequiredDocument[];
 };
 
 type MilestoneSummary = {
@@ -60,7 +66,7 @@ type ContractRecord = {
     description?: string;
     category?: string;
     budget?: number;
-    deadline?: string;
+    finalSubmissionDate?: string;
     documents?: string[];
   };
   milestones?: MilestoneSummary[];
@@ -87,8 +93,8 @@ export function BidderDashboard() {
   const [selectedTenderId, setSelectedTenderId] = useState("");
   const [declaration, setDeclaration] = useState(false);
   const [proposedAmount, setProposedAmount] = useState("");
-  const [proposalDocument, setProposalDocument] = useState("");
-  const [proposalFileName, setProposalFileName] = useState("");
+  const [documentUploads, setDocumentUploads] = useState<Record<string, string>>({});
+  const [documentNames, setDocumentNames] = useState<Record<string, string>>({});
   const [tenders, setTenders] = useState<TenderRecord[]>([]);
   const [contracts, setContracts] = useState<ContractRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -129,7 +135,10 @@ export function BidderDashboard() {
       tenders
         .filter((tender) => tender.status === "Published")
         .slice()
-        .sort((left, right) => new Date(left.deadline).getTime() - new Date(right.deadline).getTime()),
+        .sort(
+          (left, right) =>
+            new Date(left.finalSubmissionDate).getTime() - new Date(right.finalSubmissionDate).getTime()
+        ),
     [tenders]
   );
 
@@ -191,8 +200,8 @@ export function BidderDashboard() {
     setSuccess("");
     setDeclaration(false);
     setProposedAmount("");
-    setProposalDocument("");
-    setProposalFileName("");
+    setDocumentUploads({});
+    setDocumentNames({});
   };
 
   const closeBidModal = () => {
@@ -200,8 +209,8 @@ export function BidderDashboard() {
     setSelectedTenderId("");
     setDeclaration(false);
     setProposedAmount("");
-    setProposalDocument("");
-    setProposalFileName("");
+    setDocumentUploads({});
+    setDocumentNames({});
   };
 
   const handleSubmitBid = async () => {
@@ -211,9 +220,12 @@ export function BidderDashboard() {
       setError("Enter a valid proposed amount before submitting the bid");
       return;
     }
-
-    if (!proposalDocument) {
-      setError("Upload the signed proposal PDF before submitting the bid");
+    const requiredDocs = (selectedTender?.requiredDocuments || []).length
+      ? selectedTender?.requiredDocuments || []
+      : [{ label: "Commercial Bid Document", category: "Commercial" }];
+    const missingDocs = requiredDocs.filter((doc) => !documentUploads[doc.label]);
+    if (missingDocs.length > 0) {
+      setError(`Upload all required documents: ${missingDocs.map((doc) => doc.label).join(", ")}`);
       return;
     }
 
@@ -226,7 +238,10 @@ export function BidderDashboard() {
         method: "POST",
         body: {
           proposedAmount: Number(proposedAmount),
-          proposalDocument,
+          documents: requiredDocs.map((doc) => ({
+            label: doc.label,
+            document: documentUploads[doc.label],
+          })),
         },
       });
 
@@ -310,7 +325,7 @@ export function BidderDashboard() {
                     <th className="px-6 py-3 text-left text-xs text-gray-600 uppercase tracking-wider">Tender</th>
                     <th className="px-6 py-3 text-left text-xs text-gray-600 uppercase tracking-wider">Category</th>
                     <th className="px-6 py-3 text-left text-xs text-gray-600 uppercase tracking-wider">Budget</th>
-                    <th className="px-6 py-3 text-left text-xs text-gray-600 uppercase tracking-wider">Deadline</th>
+                    <th className="px-6 py-3 text-left text-xs text-gray-600 uppercase tracking-wider">Final Submission</th>
                     <th className="px-6 py-3 text-left text-xs text-gray-600 uppercase tracking-wider">Documents</th>
                     <th className="px-6 py-3 text-left text-xs text-gray-600 uppercase tracking-wider">Action</th>
                   </tr>
@@ -337,7 +352,9 @@ export function BidderDashboard() {
                         </td>
                         <td className="px-6 py-4 text-sm text-gray-700 align-top">{tender.category || "General"}</td>
                         <td className="px-6 py-4 text-sm text-gray-700 align-top">₹{Number(tender.budget).toLocaleString()}</td>
-                        <td className="px-6 py-4 text-sm text-gray-700 align-top">{formatDate(tender.deadline)}</td>
+                        <td className="px-6 py-4 text-sm text-gray-700 align-top">
+                          {formatDate(tender.finalSubmissionDate)}
+                        </td>
                         <td className="px-6 py-4 align-top">
                           <DocumentLinks documents={tender.documents} emptyLabel="No tender documents" />
                         </td>
@@ -533,7 +550,7 @@ export function BidderDashboard() {
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3 text-sm text-gray-600">
                       <span>Category: {selectedTender.category || "General"}</span>
                       <span>Budget: ₹{Number(selectedTender.budget).toLocaleString()}</span>
-                      <span>Deadline: {formatDate(selectedTender.deadline)}</span>
+                      <span>Final Submission: {formatDate(selectedTender.finalSubmissionDate)}</span>
                       <span>Documents: {(selectedTender.documents || []).length}</span>
                     </div>
                     <div className="mt-3">
@@ -553,41 +570,54 @@ export function BidderDashboard() {
                   </div>
 
                   <div>
-                    <label className="block text-sm text-gray-700 mb-2">Proposal PDF</label>
-                    <label className="block border-2 border-dashed border-gray-300 rounded-lg p-5 text-center hover:border-[#1D4E89] transition-colors cursor-pointer">
-                      <Upload className="w-7 h-7 text-gray-400 mx-auto mb-2" />
-                      <p className="text-sm text-gray-600 mb-1">Upload the vendor proposal document</p>
-                      <p className="text-xs text-gray-500">PDF only, up to 10MB</p>
-                      <input
-                        type="file"
-                        className="hidden"
-                        accept=".pdf,application/pdf"
-                        onChange={async (event) => {
-                          const file = event.target.files?.[0];
-                          if (!file) return;
+                    <label className="block text-sm text-gray-700 mb-2">Required Documents</label>
+                    <div className="space-y-3">
+                      {(selectedTender?.requiredDocuments || [{ label: "Commercial Bid Document", category: "Commercial" }]).map((doc) => (
+                        <div key={doc.label} className="border border-gray-200 rounded-lg p-3">
+                          <p className="text-xs text-gray-600 mb-2">
+                            {doc.label} <span className="text-gray-400">({doc.category})</span>
+                          </p>
+                          <label className="block border-2 border-dashed border-gray-300 rounded-lg p-4 text-center hover:border-[#1D4E89] transition-colors cursor-pointer">
+                            <Upload className="w-6 h-6 text-gray-400 mx-auto mb-2" />
+                            <p className="text-sm text-gray-600 mb-1">
+                              {documentNames[doc.label] ? "Replace uploaded PDF" : "Upload PDF"}
+                            </p>
+                            <p className="text-xs text-gray-500">PDF only, up to 10MB</p>
+                            <input
+                              type="file"
+                              className="hidden"
+                              accept=".pdf,application/pdf"
+                              onChange={async (event) => {
+                                const file = event.target.files?.[0];
+                                if (!file) return;
 
-                          if (!file.name.toLowerCase().endsWith(".pdf")) {
-                            setError("Only PDF proposal documents are allowed");
-                            return;
-                          }
+                                if (!file.name.toLowerCase().endsWith(".pdf")) {
+                                  setError("Only PDF documents are allowed");
+                                  return;
+                                }
 
-                          if (file.size > 10 * 1024 * 1024) {
-                            setError("Proposal PDF size must be 10MB or less");
-                            return;
-                          }
+                                if (file.size > 10 * 1024 * 1024) {
+                                  setError("Document size must be 10MB or less");
+                                  return;
+                                }
 
-                          try {
-                            setError("");
-                            const encoded = await encodeFileToStoredDocument(file);
-                            setProposalDocument(encoded);
-                            setProposalFileName(file.name);
-                          } catch {
-                            setError("Failed to process selected proposal document");
-                          }
-                        }}
-                      />
-                    </label>
-                    {proposalFileName && <p className="text-xs text-green-700 mt-2">Uploaded: {proposalFileName}</p>}
+                                try {
+                                  setError("");
+                                  const encoded = await encodeFileToStoredDocument(file);
+                                  setDocumentUploads((prev) => ({ ...prev, [doc.label]: encoded }));
+                                  setDocumentNames((prev) => ({ ...prev, [doc.label]: file.name }));
+                                } catch {
+                                  setError("Failed to process selected document");
+                                }
+                              }}
+                            />
+                          </label>
+                          {documentNames[doc.label] && (
+                            <p className="text-xs text-green-700 mt-2">Uploaded: {documentNames[doc.label]}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
                   </div>
 
                   <div className="pt-2">

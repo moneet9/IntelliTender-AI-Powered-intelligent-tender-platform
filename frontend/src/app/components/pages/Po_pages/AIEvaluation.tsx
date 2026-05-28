@@ -16,7 +16,7 @@ type TenderRecord = {
   status: TenderStatus;
   category?: string;
   budget?: number;
-  deadline?: string;
+  finalSubmissionDate?: string;
   documents?: string[];
 };
 
@@ -32,6 +32,12 @@ type BidRecord = {
   } | null;
   proposedAmount: number;
   proposalDocument?: string;
+  bidDocuments?: Array<{
+    label: string;
+    category: "Technical" | "Commercial";
+    documentId?: string;
+    document?: string;
+  }>;
   status: BidStatus;
   technicalScore?: number;
   financialScore?: number;
@@ -169,8 +175,17 @@ export function AIEvaluation() {
     }
   };
 
+  const getBidDocumentUrl = (doc: BidRecord["bidDocuments"][number]) => {
+    if (doc.documentId && selectedTenderId) {
+      return `/api/tenders/${selectedTenderId}/bid-documents/${doc.documentId}`;
+    }
+
+    return getStoredDocumentUrl(doc.document);
+  };
+
   return (
-    <div className="flex h-screen bg-[#F4F6F9]">
+    <>
+      <div className="flex h-screen bg-[#F4F6F9]">
       <Sidebar role="po" />
       <div className="flex-1 flex flex-col overflow-hidden">
         <Header role="po" userName="Rajesh Kumar" />
@@ -264,9 +279,11 @@ export function AIEvaluation() {
                   </p>
                 </div>
                 <div className="bg-gray-50 rounded-md p-3">
-                  <p className="text-xs text-gray-500">Deadline</p>
+                  <p className="text-xs text-gray-500">Final Submission</p>
                   <p className="text-sm text-[#0B3C5D] mt-0.5">
-                    {selectedTender.deadline ? new Date(selectedTender.deadline).toLocaleDateString() : "-"}
+                    {selectedTender.finalSubmissionDate
+                      ? new Date(selectedTender.finalSubmissionDate).toLocaleDateString()
+                      : "-"}
                   </p>
                 </div>
                 <div className="bg-gray-50 rounded-md p-3">
@@ -348,7 +365,6 @@ export function AIEvaluation() {
 
             <div className="divide-y divide-gray-100">
               {filteredBids.map((bid) => {
-                const proposalUrl = getStoredDocumentUrl(bid.proposalDocument);
                 const proposalName = getStoredDocumentName(bid.proposalDocument, "Proposal document");
                 const isExpanded = expandedBidId === bid._id;
                 const canSelectWinner = bid.status === "Evaluated" && selectedTender?.status !== "Awarded";
@@ -396,19 +412,39 @@ export function AIEvaluation() {
                         </div>
 
                         <div>
-                          <p className="text-sm text-gray-600 mb-2">Vendor Uploaded Proposal</p>
-                          {proposalUrl ? (
-                            <a
-                              href={proposalUrl}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md bg-blue-50 border border-blue-100 text-[#1D4E89] hover:bg-blue-100"
-                            >
-                              <FileText className="w-4 h-4" />
-                              {proposalName}
-                            </a>
+                          <p className="text-sm text-gray-600 mb-2">Vendor Documents</p>
+                          {!!bid.bidDocuments?.length ? (
+                            <div className="space-y-2">
+                              {bid.bidDocuments.map((doc) => {
+                                const name = getStoredDocumentName(doc.document, doc.label);
+                                const url = getBidDocumentUrl(doc);
+                                return (
+                                  <div key={doc.label} className="flex items-center justify-between gap-3 border border-gray-200 rounded-md p-3 bg-white">
+                                    <div className="flex items-center gap-2">
+                                      <FileText className="w-4 h-4 text-[#1D4E89]" />
+                                      <div>
+                                        <p className="text-sm text-[#0B3C5D]">{doc.label}</p>
+                                        <p className="text-xs text-gray-500">{name}</p>
+                                      </div>
+                                    </div>
+                                    {url ? (
+                                      <a
+                                        href={url}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="text-xs text-[#1D4E89] hover:underline"
+                                      >
+                                        Open
+                                      </a>
+                                    ) : (
+                                      <span className="text-xs text-gray-400">Unavailable</span>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
                           ) : (
-                            <p className="text-sm text-gray-400">No proposal document available.</p>
+                            <p className="text-sm text-gray-400">No documents uploaded.</p>
                           )}
                         </div>
 
@@ -455,7 +491,8 @@ export function AIEvaluation() {
         </div>
       </div>
       <AIAssistant role="po" />
-    </div>
+      </div>
+    </>
   );
 }
 

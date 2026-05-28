@@ -153,11 +153,69 @@ const resolveBidDocumentId = (bid) => {
     return extractObjectId(proposalDocumentRaw);
 };
 
+const resolveBidDocumentEntryId = (entry) => {
+    if (!entry) return '';
+    const explicitId = extractObjectId(String(entry.documentId || ''));
+    if (explicitId) return explicitId;
+
+    const rawDocument = typeof entry.document === 'string' ? entry.document : '';
+    const decoded = decodeStoredDocument(rawDocument, entry.label || 'Bid document');
+    const fromContent = extractObjectId(decoded.content);
+    if (fromContent) return fromContent;
+
+    return extractObjectId(rawDocument);
+};
+
 const buildProposalDocumentReference = ({ name, contentUrl, mimeType }) => JSON.stringify({
     name: name || 'Proposal document',
     content: contentUrl,
     mimeType,
 });
+
+const normalizeRequiredDocuments = (items) => {
+    const seen = new Set();
+    const normalized = Array.isArray(items)
+        ? items
+            .map((item) => {
+                const label = typeof item?.label === 'string' ? item.label.trim() : '';
+                const category = item?.category === 'Commercial' ? 'Commercial' : 'Technical';
+                return label ? { label, category } : null;
+            })
+            .filter(Boolean)
+        : [];
+
+    return normalized.filter((item) => {
+        const key = `${item.label.toLowerCase()}|${item.category}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+};
+
+const buildRequiredDocumentsFromQcbs = (qcbsSettings) => {
+    const criteria = Array.isArray(qcbsSettings?.technicalCriteria) ? qcbsSettings.technicalCriteria : [];
+    const technicalDocs = criteria
+        .map((criterion) => ({ label: String(criterion?.name || '').trim(), category: 'Technical' }))
+        .filter((item) => item.label);
+
+    return normalizeRequiredDocuments([
+        ...technicalDocs,
+        { label: 'Eligibility Proof', category: 'Technical' },
+        { label: 'Commercial Bid Document', category: 'Commercial' },
+    ]);
+};
+
+const ensureEligibilityProof = (items) => {
+    const normalized = normalizeRequiredDocuments(items);
+    const hasEligibility = normalized.some(
+        (item) => item.category === 'Technical' && item.label.toLowerCase() === 'eligibility proof'
+    );
+    if (hasEligibility) return normalized;
+    return normalizeRequiredDocuments([
+        ...normalized,
+        { label: 'Eligibility Proof', category: 'Technical' },
+    ]);
+};
 
 const enrichBidDocumentReferences = async (req, tenderId, bids) => {
     const plainBids = Array.isArray(bids)
@@ -167,6 +225,7 @@ const enrichBidDocumentReferences = async (req, tenderId, bids) => {
     if (!plainBids.length) return plainBids;
 
     const resolvedDocumentIdsByIndex = new Map();
+    const resolvedBidEntryIdsByIndex = new Map();
     const uniqueDocumentIds = new Set();
 
     plainBids.forEach((bid, index) => {
@@ -175,6 +234,18 @@ const enrichBidDocumentReferences = async (req, tenderId, bids) => {
 
         resolvedDocumentIdsByIndex.set(index, documentId);
         uniqueDocumentIds.add(documentId);
+    });
+
+    plainBids.forEach((bid, index) => {
+        const bidDocuments = Array.isArray(bid?.bidDocuments) ? bid.bidDocuments : [];
+        const entryIds = bidDocuments
+            .map((entry) => resolveBidDocumentEntryId(entry))
+            .filter(Boolean);
+
+        if (entryIds.length) {
+            resolvedBidEntryIdsByIndex.set(index, entryIds);
+            entryIds.forEach((entryId) => uniqueDocumentIds.add(entryId));
+        }
     });
 
     if (!uniqueDocumentIds.size) return plainBids;
@@ -190,10 +261,39 @@ const enrichBidDocumentReferences = async (req, tenderId, bids) => {
 
     return plainBids.map((bid, index) => {
         const resolvedDocumentId = resolvedDocumentIdsByIndex.get(index);
-        if (!resolvedDocumentId) return bid;
+        const bidDocuments = Array.isArray(bid?.bidDocuments) ? bid.bidDocuments : [];
+        const entryIds = resolvedBidEntryIdsByIndex.get(index) || [];
+
+        const enrichedBidDocuments = bidDocuments.map((entry, entryIndex) => {
+            const entryId = entryIds[entryIndex];
+            if (!entryId) return entry;
+
+            const document = documentsById.get(entryId);
+            if (!document) return entry;
+
+            const contentUrl = buildBidDocumentAccessUrl(req, tenderId, entryId);
+            const decodedEntry = decodeStoredDocument(
+                typeof entry.document === 'string' ? entry.document : '',
+                entry.label || 'Bid document'
+            );
+
+            return {
+                ...entry,
+                documentId: entry.documentId || entryId,
+                document: buildProposalDocumentReference({
+                    name: document.name || decodedEntry.name || entry.label || 'Bid document',
+                    contentUrl,
+                    mimeType: document.mimeType || decodedEntry.mimeType,
+                }),
+            };
+        });
+
+        if (!resolvedDocumentId) {
+            return { ...bid, bidDocuments: enrichedBidDocuments };
+        }
 
         const document = documentsById.get(resolvedDocumentId);
-        if (!document) return bid;
+        if (!document) return { ...bid, bidDocuments: enrichedBidDocuments };
 
         const contentUrl = buildBidDocumentAccessUrl(req, tenderId, resolvedDocumentId);
         const decodedProposal = decodeStoredDocument(
@@ -203,6 +303,7 @@ const enrichBidDocumentReferences = async (req, tenderId, bids) => {
 
         return {
             ...bid,
+            bidDocuments: enrichedBidDocuments,
             proposalDocumentId: bid.proposalDocumentId || resolvedDocumentId,
             proposalDocument: buildProposalDocumentReference({
                 name: document.name || decodedProposal.name,
@@ -233,6 +334,7 @@ const mapBidWithVendorDetails = (bid) => {
             }
             : null,
         proposedAmount: bid.proposedAmount,
+        bidDocuments: Array.isArray(bid.bidDocuments) ? bid.bidDocuments : [],
         proposalDocumentId: bid.proposalDocumentId,
         proposalDocument: bid.proposalDocument,
         status: bid.status,
@@ -256,13 +358,33 @@ const mapBidWithVendorDetails = (bid) => {
 // --- TENDER MANAGEMENT ---
 export const createTender = async (req, res) => {
     try {
-        const { title, description, category, budget, deadline, documents, milestones } = req.body;
+        const {
+            title,
+            description,
+            category,
+            budget,
+            preBidDate,
+            finalSubmissionDate,
+            evaluationMethod,
+            qcbsSettings,
+            requiredDocuments,
+            documents,
+            milestones,
+        } = req.body;
+        const normalizedRequiredDocuments = normalizeRequiredDocuments(requiredDocuments);
+        const derivedRequiredDocuments = normalizedRequiredDocuments.length
+            ? ensureEligibilityProof(normalizedRequiredDocuments)
+            : buildRequiredDocumentsFromQcbs(qcbsSettings);
         const tender = await Tender.create({
             title,
             description,
             category: category || 'General',
             budget,
-            deadline,
+            preBidDate,
+            finalSubmissionDate,
+            evaluationMethod,
+            qcbsConfig: qcbsSettings,
+            requiredDocuments: derivedRequiredDocuments,
             status: 'Published',
             documents: Array.isArray(documents) ? documents : [],
             draftMilestones: Array.isArray(milestones) && milestones.length > 0 ? milestones : [],
@@ -413,7 +535,9 @@ export const submitBid = async (req, res) => {
         const tender = await Tender.findById(req.params.id);
         if (!tender) return res.status(404).json({ message: 'Tender not found' });
         if (tender.status !== 'Published') return res.status(400).json({ message: 'Tender is not published' });
-        if (new Date() > new Date(tender.deadline)) return res.status(400).json({ message: 'Deadline passed' });
+        if (new Date() > new Date(tender.finalSubmissionDate)) {
+            return res.status(400).json({ message: 'Final submission date passed' });
+        }
 
         const existingBid = tender.bids.find(b => b.vendorId.toString() === req.user.id);
         if(existingBid) return res.status(400).json({ message: 'Already bid on this tender' });
@@ -421,48 +545,89 @@ export const submitBid = async (req, res) => {
         if (!req.body.proposedAmount || Number(req.body.proposedAmount) <= 0) {
             return res.status(400).json({ message: 'Valid proposedAmount is required' });
         }
+        const requiredDocuments = Array.isArray(tender.requiredDocuments) && tender.requiredDocuments.length > 0
+            ? tender.requiredDocuments
+            : [{ label: 'Commercial Bid Document', category: 'Commercial' }];
+        const submittedDocuments = Array.isArray(req.body.documents) ? req.body.documents : [];
+        if (!submittedDocuments.length) {
+            return res.status(400).json({ message: 'Bid documents are required' });
+        }
 
-        if (!req.body.proposalDocument || typeof req.body.proposalDocument !== 'string') {
-            return res.status(400).json({ message: 'Proposal document upload is required' });
+        const documentsByLabel = new Map(
+            submittedDocuments.map((item) => [String(item?.label || '').trim(), item?.document])
+        );
+        const missingDocuments = requiredDocuments.filter((doc) => !documentsByLabel.get(doc.label));
+        if (missingDocuments.length > 0) {
+            return res.status(400).json({
+                message: `Missing required documents: ${missingDocuments.map((doc) => doc.label).join(', ')}`,
+            });
         }
 
         const vendor = await User.findById(req.user.id);
         if (!vendor) return res.status(404).json({ message: 'Vendor not found' });
 
-        const decodedProposal = decodeStoredDocument(req.body.proposalDocument, 'Proposal document');
-        if (!decodedProposal.content) {
-            return res.status(400).json({ message: 'Proposal document content is invalid' });
+        const bidDocuments = [];
+        let commercialDocumentId = null;
+        let commercialDocumentReference = '';
+
+        for (const doc of requiredDocuments) {
+            const rawDocument = documentsByLabel.get(doc.label);
+            const decoded = decodeStoredDocument(rawDocument, doc.label);
+            if (!decoded.content) {
+                return res.status(400).json({ message: `Document content is invalid for ${doc.label}` });
+            }
+
+            const storedBidDocument = await BidDocument.create({
+                tenderId: tender._id,
+                vendorId: req.user.id,
+                name: decoded.name || doc.label,
+                content: decoded.content,
+                mimeType: decoded.mimeType,
+            });
+
+            const documentUrl = buildBidDocumentAccessUrl(req, tender._id, storedBidDocument._id);
+            const documentReference = buildProposalDocumentReference({
+                name: decoded.name || doc.label,
+                contentUrl: documentUrl,
+                mimeType: decoded.mimeType,
+            });
+
+            bidDocuments.push({
+                label: doc.label,
+                category: doc.category,
+                documentId: storedBidDocument._id,
+                document: documentReference,
+            });
+
+            if (doc.category === 'Commercial' && !commercialDocumentReference) {
+                commercialDocumentId = storedBidDocument._id;
+                commercialDocumentReference = documentReference;
+            }
         }
 
-        const storedBidDocument = await BidDocument.create({
-            tenderId: tender._id,
-            vendorId: req.user.id,
-            name: decodedProposal.name || 'Proposal document',
-            content: decodedProposal.content,
-            mimeType: decodedProposal.mimeType,
-        });
-
-        const proposalDocumentUrl = buildBidDocumentAccessUrl(req, tender._id, storedBidDocument._id);
-        const proposalDocumentReference = buildProposalDocumentReference({
-            name: decodedProposal.name || 'Proposal document',
-            contentUrl: proposalDocumentUrl,
-            mimeType: decodedProposal.mimeType,
-        });
+        if (!commercialDocumentReference) {
+            return res.status(400).json({ message: 'Commercial bid document is required' });
+        }
 
         tender.bids.push({
             vendorId: req.user.id,
             vendorName: vendor.name,
             proposedAmount: req.body.proposedAmount,
-            proposalDocumentId: storedBidDocument._id,
-            proposalDocument: proposalDocumentReference
+            bidDocuments,
+            proposalDocumentId: commercialDocumentId,
+            proposalDocument: commercialDocumentReference,
         });
 
         try {
             await tender.save();
         } catch (saveError) {
-            await BidDocument.findByIdAndDelete(storedBidDocument._id).catch(() => {
-                // Ignore cleanup errors; keep original save error response.
-            });
+            await Promise.all(
+                bidDocuments.map((doc) =>
+                    BidDocument.findByIdAndDelete(doc.documentId).catch(() => {
+                        // Ignore cleanup errors; keep original save error response.
+                    })
+                )
+            );
             throw saveError;
         }
 

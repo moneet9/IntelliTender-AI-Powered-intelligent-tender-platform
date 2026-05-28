@@ -8,7 +8,7 @@ import {
 
 // Tender Management (CPO / PO)
 router.post('/', auth(['CPO', 'PO']), createTender);
-router.get('/', getTenders); // Anyone can view all (could restrict down the line)
+router.get('/', auth(['Vendor', 'CPO', 'PO', 'Committee']), getTenders);
 router.get('/:id/documents/:docIndex', auth(['Vendor', 'CPO', 'PO', 'Committee']), getTenderDocument);
 router.get('/:id/bid-documents/:documentId', getBidDocument);
 router.get('/:id', getTenderById);
