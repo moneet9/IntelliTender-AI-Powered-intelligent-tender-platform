@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { MessageSquare, Send, X, Bot } from "lucide-react";
+import { apiRequest } from "../api";
 
 interface AIAssistantProps {
   role: "cpo" | "po" | "committee" | "vendor" | "bidder";
@@ -343,6 +344,7 @@ Feb 2026: 91.2 (↑ 0.7)
 
 export function AIAssistant({ role }: AIAssistantProps) {
   const [isOpen, setIsOpen] = useState(false);
+  const [isSending, setIsSending] = useState(false);
   
   // Role-specific welcome messages
   const getWelcomeMessage = () => {
@@ -371,7 +373,7 @@ export function AIAssistant({ role }: AIAssistantProps) {
   const [input, setInput] = useState("");
   const chatContainerRef = useRef<HTMLDivElement>(null);
 
-  const handleSend = (question?: string) => {
+  const handleSend = async (question?: string) => {
     const messageText = question || input;
     if (!messageText.trim()) return;
 
@@ -384,76 +386,43 @@ export function AIAssistant({ role }: AIAssistantProps) {
 
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
+    setIsSending(true);
 
-    // Generate AI response based on role and keywords
-    setTimeout(() => {
-      let response = "";
-      const lowerMessage = messageText.toLowerCase();
+    try {
+      const conversation = [...messages, userMessage]
+        .slice(-8)
+        .map((entry) => ({ role: entry.role, content: entry.content }));
 
-      // Role-specific responses
-      if (role === "bidder" || role === "vendor") {
-        if (lowerMessage.includes("find") || lowerMessage.includes("search") || lowerMessage.includes("contract")) {
-          response = `**Finding Contracts for You**\n\nI found several relevant opportunities:\n\n📋 **IT Infrastructure Upgrade** (TND-2026-048)\n- Budget: $500,000 | Deadline: March 15, 2026\n- Category: Supply | Department: IT\n- Status: Open for Bidding\n\n📋 **Hospital Equipment Supply** (TND-2026-049)\n- Budget: $750,000 | Deadline: March 18, 2026\n- Category: Supply | Department: Health\n- Status: Open for Bidding\n\n📋 **Bridge Construction** (TND-2026-050)\n- Budget: $2,500,000 | Deadline: March 20, 2026\n- Category: Work | Department: Infrastructure\n- Status: Open for Bidding\n\n💡 **Tip:** Visit the Contract Search page for advanced filtering by category, budget range, and department.`;
-        } else if (lowerMessage.includes("submit") || lowerMessage.includes("bid")) {
-          response = demoResponses.submit;
-        } else if (lowerMessage.includes("document") || lowerMessage.includes("require")) {
-          response = `**Required Documents for Tender Submission**\n\n✅ **Mandatory Documents:**\n1. Company Registration Certificate\n2. Tax Compliance Certificate (Valid)\n3. Financial Statements (Last 3 years)\n4. Bank Reference Letter\n5. Technical Proposal Document\n6. Commercial/Price Proposal\n\n✅ **Supporting Documents:**\n7. Previous Project References (minimum 3)\n8. Quality Certifications (ISO 9001, etc.)\n9. Professional Licenses\n10. Insurance Coverage Certificate\n\n⚠️ **Important:** All documents must be less than 6 months old and in PDF format (max 5MB each).`;
-        } else if (lowerMessage.includes("performance") || lowerMessage.includes("score")) {
-          response = demoResponses.performance;
-        } else {
-          response = `I can help you with:\n\n🔍 **Finding Contracts** - Search by category, budget, department\n📄 **Bidding Process** - Step-by-step submission guide\n📊 **Your Performance** - Track your success rates and scores\n📎 **Requirements** - Document checklists and deadlines\n\nTry asking: "Find me IT contracts" or "Show my performance score"`;
-        }
-      } else if (role === "po") {
-        if (lowerMessage.includes("create") || lowerMessage.includes("tender")) {
-          response = `**Publishing a Tender - Quick Guide**\n\n**Step 1: Basic Information**\n- Set clear tender title\n- Choose category (Supply/Work)\n- Define budget allocation\n- Set submission deadline\n\n**Step 2: Evaluation Weights**\n- Price Weight: Typically 35-45%\n- Quality Weight: 20-30%\n- Experience Weight: 15-25%\n- Timeline Weight: 10-20%\n- **Total must equal 100%**\n\n**Step 3: Documentation**\n- Upload tender specifications\n- Include technical requirements\n- Add evaluation criteria\n\n**Best Practices:**\n✅ Allow 3-4 weeks for submission\n✅ Set realistic budget estimates\n✅ Clear evaluation criteria\n\n Navigate to "Publish Tender" to get started!`;
-        } else if (lowerMessage.includes("milestone") || lowerMessage.includes("track")) {
-          response = `**Milestone Tracking Guide**\n\n**As Procurement Officer, you can:**\n✏️ Create new milestones for awarded contracts\n✏️ Edit milestone details and deadlines\n📊 Monitor progress updates from Committee\n📈 View completion percentages\n⚠️ Identify delayed milestones\n\n**Current Status Overview:**\n- Total Active Milestones: 15\n- On Track: 12 (80%)\n- At Risk: 2 (13%)\n- Delayed: 1 (7%)\n\n💡 **Tip:** Set realistic deadlines and include buffer time for complex milestones.`;
-        } else if (lowerMessage.includes("evaluation") || lowerMessage.includes("bid")) {
-          response = demoResponses.evaluation;
-        } else {
-          response = `I can assist you with:\n\n📝 **Tender Creation** - Setup and configuration guide\n🎯 **Milestone Tracking** - Create and manage project milestones\n🤖 **AI Evaluations** - Understanding automated scoring\n📊 **Bid Management** - Review and process submissions\n\nTry asking: "How to create a tender?" or "Explain milestone tracking"`;
-        }
-      } else if (role === "committee") {
-        if (lowerMessage.includes("evaluation") || lowerMessage.includes("score")) {
-          response = demoResponses.evaluation;
-        } else if (lowerMessage.includes("milestone") || lowerMessage.includes("progress")) {
-          response = `**Updating Milestone Progress**\n\n**As Committee Member, you can:**\n📝 Update progress status (0-100%)\n💬 Add progress notes and comments\n📅 Report completion dates\n⚠️ Flag delays or issues\n\n**Update Process:**\n1. Navigate to Milestones page\n2. Select the milestone to update\n3. Set progress percentage\n4. Add detailed notes\n5. Submit update\n\n**Current Milestones Awaiting Update:**\n• Road Construction - Foundation Work (80%)\n• Hospital Equipment - Delivery Phase (45%)\n• IT Infrastructure - Installation (60%)\n\n💡 **Tip:** Provide detailed notes for any delays or issues encountered.`;
-        } else if (lowerMessage.includes("risk") || lowerMessage.includes("bidder") || lowerMessage.includes("vendor")) {
-          response = demoResponses.risk;
-        } else {
-          response = `I can help you with:\n\n🎯 **Bid Evaluation** - Review AI scores and recommendations\n📊 **Milestone Updates** - Track and report progress\n🔍 **Risk Assessment** - Analyze bidder performance history\n✅ **Quality Review** - Compliance and technical evaluation\n\nTry asking: "Explain evaluation for TND-2026-047" or "How to update milestones?"`;
-        }
-      } else if (role === "cpo") {
-        if (lowerMessage.includes("audit") || lowerMessage.includes("trail")) {
-          response = demoResponses.audit;
-        } else if (lowerMessage.includes("oversight") || lowerMessage.includes("compliance")) {
-          response = `**Procurement Oversight Dashboard**\n\n**System-Wide Metrics:**\n📊 Active Tenders: 8\n📊 Pending Evaluations: 3\n📊 Active Contracts: 23\n📊 Total Value: $15.8M\n\n**Compliance Status:**\n✅ All tenders follow proper procedure\n✅ AI evaluation accuracy: 94.2%\n✅ Audit trail complete: 100%\n⚠️ 2 contracts require attention\n\n**Risk Overview:**\n- High Risk Contracts: 0\n- Medium Risk: 2\n- Low Risk: 21\n\n**Recent Activities:**\n• 3 tenders published this week\n• 5 bids evaluated\n• 2 contracts awarded\n• 1 milestone completed\n\n💡 View detailed reports in Audit Log section.`;
-        } else if (lowerMessage.includes("performance") || lowerMessage.includes("report")) {
-          response = `**Procurement Performance Report**\n\n**Q1 2026 Overview:**\n📈 Tenders Published: 24\n📈 Bids Received: 89\n📈 Contracts Awarded: 18\n📈 Total Value: $12.4M\n\n**Efficiency Metrics:**\n⏱️ Avg. Evaluation Time: 4.2 days\n⏱️ Avg. Award Time: 12.5 days\n✅ On-Time Awards: 94%\n\n**Bidder Engagement:**\n👥 Active Bidders: 45\n📊 Avg. Bids per Tender: 3.7\n🏆 Top Performer: Premier IT Services\n\n**Cost Savings:**\n💰 Budget vs Awarded: 8.2% savings\n💰 Total Savings: $1.02M\n\n📊 All metrics within target ranges.`;
-        } else {
-          response = `I can provide insights on:\n\n📊 **Strategic Oversight** - System-wide performance metrics\n🔍 **Audit Trails** - Complete activity logs and compliance\n📈 **Performance Reports** - Procurement efficiency analysis\n⚠️ **Risk Management** - Enterprise-level risk assessment\n\nTry asking: "Show audit trail" or "System performance report"`;
-        }
-      }
-
-      // Common responses for all roles
-      if (!response) {
-        if (lowerMessage.includes("delay") || lowerMessage.includes("tnd-2026-046")) {
-          response = demoResponses.delay;
-        } else if (lowerMessage.includes("penalty") || lowerMessage.includes("clause")) {
-          response = demoResponses.penalty;
-        } else {
-          response = `I can assist you with:\n\n• **Project Delay Analysis** - Real-time tracking and penalty calculations\n• **Penalty Clause References** - Contract terms and conditions lookup\n• **Vendor Risk Assessment** - Historical performance and compliance data\n• **AI Evaluation Explanations** - Detailed scoring breakdowns\n• **Audit Trail Queries** - Complete activity logs and compliance records\n\nPlease ask a specific question based on your role as ${role.toUpperCase()}.`;
-        }
-      }
+      const response = await apiRequest<{ reply: string }>("/api/ai/chat", {
+        method: "POST",
+        body: {
+          message: messageText,
+          role,
+          messages: conversation,
+        },
+      });
 
       const aiMessage: Message = {
         role: "assistant",
-        content: response,
+        content: response.reply || "No response received from the AI service.",
         timestamp: new Date().toLocaleTimeString(),
       };
 
       setMessages((prev) => [...prev, aiMessage]);
-    }, 500);
+    } catch (error) {
+      const aiMessage: Message = {
+        role: "assistant",
+        content:
+          error instanceof Error
+            ? `I couldn't reach the AI service: ${error.message}`
+            : "I couldn't reach the AI service. Make sure Ollama is running and try again.",
+        timestamp: new Date().toLocaleTimeString(),
+      };
+
+      setMessages((prev) => [...prev, aiMessage]);
+    } finally {
+      setIsSending(false);
+    }
   };
 
   useEffect(() => {
@@ -466,7 +435,7 @@ export function AIAssistant({ role }: AIAssistantProps) {
     return (
       <button
         onClick={() => setIsOpen(true)}
-        className="fixed bottom-6 right-6 w-14 h-14 bg-[#1D4E89] hover:bg-[#154068] text-white rounded-full shadow-lg flex items-center justify-center transition-all hover:scale-110 z-50"
+        className="fixed bottom-6 right-6 w-12 h-12 bg-[#1D4E89] hover:bg-[#154068] text-white rounded-full shadow-lg flex items-center justify-center transition-all hover:scale-110 z-50"
       >
         <MessageSquare className="w-6 h-6" />
       </button>
@@ -548,6 +517,7 @@ export function AIAssistant({ role }: AIAssistantProps) {
           />
           <button
             onClick={() => handleSend()}
+            disabled={isSending}
             className="px-4 py-2 bg-[#1D4E89] hover:bg-[#154068] text-white rounded-md transition-colors"
           >
             <Send className="w-4 h-4" />

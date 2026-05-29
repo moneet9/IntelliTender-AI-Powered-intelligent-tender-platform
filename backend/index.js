@@ -7,6 +7,7 @@ import tenderRoutes from './routes/tenderRoutes.js';
 import contractRoutes from './routes/contractRoutes.js';
 import mockRoutes from './routes/mockRoutes.js';
 import adminRoutes from './routes/adminRoutes.js';
+import chatbotRoutes from './AI/chatbot/chatbotRoutes.js';
 
 dotenv.config();
 
@@ -28,6 +29,7 @@ app.use('/api/tenders', tenderRoutes);
 app.use('/api/contracts', contractRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/mock', mockRoutes);
+app.use('/api/ai', chatbotRoutes);
 
 const PORT = process.env.PORT || 5000;
 
