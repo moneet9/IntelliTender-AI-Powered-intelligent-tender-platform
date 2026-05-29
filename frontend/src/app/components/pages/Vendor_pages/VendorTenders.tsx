@@ -64,9 +64,16 @@ export function VendorTenders() {
     const requiredDocs = (selectedTender?.requiredDocuments || []).length
       ? selectedTender?.requiredDocuments || []
       : [{ label: "Commercial Bid Document", category: "Commercial" }];
-    const missingDocs = requiredDocs.filter((doc) => !documentUploads[doc.label]);
+
+    // Only enforce Commercial category and explicit 'Eligibility Proof' as mandatory
+    const mandatoryDocs = requiredDocs.filter((doc) => {
+      const label = String(doc.label || "").trim().toLowerCase();
+      return doc.category === "Commercial" || label === "eligibility proof";
+    });
+
+    const missingDocs = mandatoryDocs.filter((doc) => !documentUploads[String(doc.label || "").trim().toLowerCase()]);
     if (missingDocs.length > 0) {
-      setFormError(`Upload all required documents: ${missingDocs.map((doc) => doc.label).join(", ")}`);
+      setFormError(`Upload required documents: ${missingDocs.map((doc) => doc.label).join(", ")}`);
       return;
     }
 
@@ -79,10 +86,12 @@ export function VendorTenders() {
         method: "POST",
         body: {
           proposedAmount: Number(proposedAmount),
-          documents: requiredDocs.map((doc) => ({
-            label: doc.label,
-            document: documentUploads[doc.label],
-          })),
+          documents: requiredDocs
+            .map((doc) => ({
+              label: doc.label,
+              document: documentUploads[String(doc.label || "").trim().toLowerCase()],
+            }))
+            .filter((d) => d.document),
         },
       });
 
@@ -224,15 +233,18 @@ export function VendorTenders() {
                   <div>
                     <label className="block text-sm text-gray-700 mb-2">Required Documents</label>
                     <div className="space-y-3">
-                      {(selectedTender?.requiredDocuments || [{ label: "Commercial Bid Document", category: "Commercial" }]).map((doc) => (
-                        <div key={doc.label} className="border border-gray-200 rounded-lg p-3">
+                      {(selectedTender?.requiredDocuments || [{ label: "Commercial Bid Document", category: "Commercial" }]).map((doc) => {
+                        const key = String(doc.label || "").trim();
+                        const docKey = key.toLowerCase();
+                        return (
+                        <div key={key} className="border border-gray-200 rounded-lg p-3">
                           <p className="text-xs text-gray-600 mb-2">
                             {doc.label} <span className="text-gray-400">({doc.category})</span>
                           </p>
                           <label className="block border-2 border-dashed border-gray-300 rounded-lg p-4 text-center hover:border-[#1D4E89] transition-colors cursor-pointer">
                             <Upload className="w-6 h-6 text-gray-400 mx-auto mb-2" />
                             <p className="text-sm text-gray-600 mb-1">
-                              {documentNames[doc.label] ? "Replace uploaded PDF" : "Upload PDF"}
+                              {documentNames[docKey] ? "Replace uploaded PDF" : "Upload PDF"}
                             </p>
                             <p className="text-xs text-gray-500">PDF only, up to 10MB</p>
                             <input
@@ -256,19 +268,40 @@ export function VendorTenders() {
                                 try {
                                   setFormError("");
                                   const encoded = await encodeFileToStoredDocument(file);
-                                  setDocumentUploads((prev) => ({ ...prev, [doc.label]: encoded }));
-                                  setDocumentNames((prev) => ({ ...prev, [doc.label]: file.name }));
+                                  setDocumentUploads((prev) => ({ ...prev, [docKey]: encoded }));
+                                  setDocumentNames((prev) => ({ ...prev, [docKey]: file.name }));
                                 } catch {
                                   setFormError("Failed to process selected document");
                                 }
                               }}
                             />
                           </label>
-                          {documentNames[doc.label] && (
-                            <p className="text-xs text-green-700 mt-2">Uploaded: {documentNames[doc.label]}</p>
+                          {documentNames[docKey] && (
+                            <div className="mt-2 flex items-center justify-between text-xs">
+                              <span className="text-green-700">Uploaded: {documentNames[docKey]}</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setDocumentUploads((prev) => {
+                                    const next = { ...prev };
+                                    delete next[docKey];
+                                    return next;
+                                  });
+                                  setDocumentNames((prev) => {
+                                    const next = { ...prev };
+                                    delete next[docKey];
+                                    return next;
+                                  });
+                                }}
+                                className="text-red-600 hover:underline"
+                              >
+                                Remove
+                              </button>
+                            </div>
                           )}
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
 

@@ -10,7 +10,10 @@ type Tender = {
   _id: string;
   title: string;
   status: "Draft" | "Published" | "Closed" | "Awarded" | "Completed";
+  evaluationMethod?: "L1" | "QCBS";
   qcbsConfig?: {
+    technicalWeight?: number;
+    commercialWeight?: number;
     technicalCriteria?: Array<{ name: string; maxMarks: number }>;
   };
   requiredDocuments?: Array<{ label: string; category: "Technical" | "Commercial" }>;
@@ -46,6 +49,7 @@ type Bid = {
     committeeMemberId?: string;
     technicalScore?: number;
     financialScore?: number;
+    eligibilityChecked?: boolean;
     comments?: string;
     evaluatedDate?: string;
   }>;
@@ -66,6 +70,8 @@ export function CommitteeDashboard() {
   const [technicalScore, setTechnicalScore] = useState<Record<string, string>>({});
   const [technicalDocScores, setTechnicalDocScores] = useState<Record<string, Record<string, string>>>({});
   const [financialScore, setFinancialScore] = useState<Record<string, string>>({});
+  const [eligibilityChecked, setEligibilityChecked] = useState<Record<string, boolean>>({});
+  const [showEvaluation, setShowEvaluation] = useState<Record<string, boolean>>({});
   const [comments, setComments] = useState<Record<string, string>>({});
   const [submittingBidId, setSubmittingBidId] = useState("");
   const [loading, setLoading] = useState(false);
@@ -112,12 +118,27 @@ export function CommitteeDashboard() {
     [selectedTender]
   );
 
+  const maxTechnicalMarks = useMemo(
+    () => (selectedTender?.qcbsConfig?.technicalCriteria || []).reduce(
+      (sum, criterion) => sum + Number(criterion.maxMarks || 0),
+      0
+    ),
+    [selectedTender]
+  );
+
   const getBidDocumentUrl = (doc: Bid["bidDocuments"][number]) => {
     if (doc.documentId && selectedTenderId) {
       return `/api/tenders/${selectedTenderId}/bid-documents/${doc.documentId}`;
     }
 
     return getStoredDocumentUrl(doc.document);
+  };
+
+  const resolveBidDocument = (bid: Bid, label: string) => {
+    const normalized = label.trim().toLowerCase();
+    return (bid.bidDocuments || []).find(
+      (doc) => doc.label.trim().toLowerCase() === normalized
+    );
   };
 
   const loadTenders = async () => {
@@ -156,14 +177,19 @@ export function CommitteeDashboard() {
 
   const submitEvaluation = async (bidId: string) => {
     if (!selectedTenderId) return;
+    if (selectedTender?.status === "Awarded" || selectedTender?.status === "Completed") return;
+
+    const evaluationMethod = selectedTender?.evaluationMethod || "QCBS";
+    const eligibilityValue = eligibilityChecked[bidId] !== false;
 
     const technicalTotal = technicalRequirements.reduce(
       (sum, doc) => sum + Number(technicalDocScores[bidId]?.[doc.label] || 0),
       0
     );
-    const technicalScoreValue = technicalRequirements.length
-      ? technicalTotal
-      : Number(technicalScore[bidId] || 0);
+    const technicalScoreValue = evaluationMethod === "QCBS"
+      ? (technicalRequirements.length ? technicalTotal : Number(technicalScore[bidId] || 0))
+      : 0;
+    const financialScoreValue = Number(financialScore[bidId] || 0);
 
     setSubmittingBidId(bidId);
     setError("");
@@ -173,8 +199,9 @@ export function CommitteeDashboard() {
       await apiRequest(`/api/tenders/${selectedTenderId}/bids/${bidId}/evaluate`, {
         method: "PUT",
         body: {
-          technicalScore: technicalScoreValue,
-          financialScore: Number(financialScore[bidId] || 0),
+          eligibilityChecked: eligibilityValue,
+          technicalScore: eligibilityValue ? technicalScoreValue : 0,
+          financialScore: eligibilityValue ? financialScoreValue : 0,
           comments: comments[bidId] || "",
         },
       });
@@ -195,6 +222,29 @@ export function CommitteeDashboard() {
       (evaluation) => evaluation.committeeMemberId === authUser._id
     ) || null;
   };
+
+  useEffect(() => {
+    if (!bids.length) return;
+    setEligibilityChecked((prev) => {
+      const next = { ...prev };
+      bids.forEach((bid) => {
+        if (typeof next[bid._id] === "undefined") {
+          const evaluation = getCommitteeMemberEvaluation(bid);
+          next[bid._id] = evaluation?.eligibilityChecked ?? true;
+        }
+      });
+      return next;
+    });
+    setShowEvaluation((prev) => {
+      const next = { ...prev };
+      bids.forEach((bid) => {
+        if (typeof next[bid._id] === "undefined") {
+          next[bid._id] = true;
+        }
+      });
+      return next;
+    });
+  }, [bids]);
 
   useEffect(() => {
     loadTenders();
@@ -341,6 +391,22 @@ export function CommitteeDashboard() {
                       (sum, doc) => sum + Number(technicalDocScores[bid._id]?.[doc.label] || 0),
                       0
                     );
+                    const eligibilityValue = eligibilityChecked[bid._id] !== false;
+                    const evaluationMethod = selectedTender?.evaluationMethod || "QCBS";
+                    const isFinalized = selectedTender?.status === "Awarded" || selectedTender?.status === "Completed";
+
+                    const evaluatedPrices = bids
+                      .map((entry) => Number(financialScore[entry._id] || entry.financialScore || entry.proposedAmount || 0))
+                      .filter((value) => Number.isFinite(value) && value > 0);
+                    const lowestPrice = evaluatedPrices.length ? Math.min(...evaluatedPrices) : 0;
+                    const technicalNormalized = maxTechnicalMarks > 0 ? (technicalTotal / maxTechnicalMarks) * 100 : 0;
+                    const priceValue = Number(financialScore[bid._id] || bid.financialScore || bid.proposedAmount || 0);
+                    const commercialNormalized = lowestPrice > 0 && priceValue > 0 ? (lowestPrice / priceValue) * 100 : 0;
+                    const technicalWeight = Number(selectedTender?.qcbsConfig?.technicalWeight || 0);
+                    const commercialWeight = Number(selectedTender?.qcbsConfig?.commercialWeight || 0);
+                    const weightedTechnical = technicalNormalized * (technicalWeight / 100);
+                    const weightedCommercial = commercialNormalized * (commercialWeight / 100);
+                    const qcbsFinal = weightedTechnical + weightedCommercial;
 
                     return (
                       <div key={bid._id} className="border border-gray-200 rounded-lg p-4">
@@ -348,7 +414,9 @@ export function CommitteeDashboard() {
                           <div>
                             <h4 className="text-sm text-[#0B3C5D]">{bid.vendorName || "Vendor"}</h4>
                             <p className="text-xs text-gray-500 mt-1">
-                              Aggregated score: Technical {bid.technicalScore ?? "-"} | Financial {bid.financialScore ?? "-"}
+                              {evaluationMethod === "QCBS"
+                                ? `Aggregated score: Technical ${Number.isFinite(weightedTechnical) ? weightedTechnical.toFixed(2) : "-"} | Commercial ${Number.isFinite(weightedCommercial) ? weightedCommercial.toFixed(2) : "-"} | QCBS ${Number.isFinite(qcbsFinal) ? qcbsFinal.toFixed(2) : "-"}`
+                                : `Aggregated score: Commercial ${Number.isFinite(priceValue) && priceValue > 0 ? priceValue.toLocaleString() : "-"}`}
                             </p>
                           </div>
                           <div className="text-right">
@@ -356,126 +424,174 @@ export function CommitteeDashboard() {
                             <p className="text-xs text-gray-500 mt-1">{evaluationCount} committee review(s)</p>
                           </div>
                         </div>
-                        {technicalRequirements.length > 0 ? (
-                          <div className="space-y-3">
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                              {technicalRequirements.map((doc) => {
-                                const maxMarks = technicalCriteriaMap.get(doc.label) ?? 0;
-                                const value = technicalDocScores[bid._id]?.[doc.label] ?? "";
-                                return (
-                                  <div key={doc.label} className="border border-gray-200 rounded-md p-3">
-                                    <p className="text-xs text-gray-600 mb-2">{doc.label}</p>
-                                    <div className="flex items-center gap-2">
-                                      <input
-                                        type="number"
-                                        min="0"
-                                        max={maxMarks}
-                                        value={value}
-                                        onChange={(e) => {
-                                          const nextValue = e.target.value;
-                                          const maxAllowed = Number.isFinite(maxMarks) ? maxMarks : 0;
-                                          const parsed = nextValue === "" ? "" : Math.min(Math.max(Number(nextValue), 0), maxAllowed);
-                                          setTechnicalDocScores((prev) => ({
-                                            ...prev,
-                                            [bid._id]: { ...(prev[bid._id] || {}), [doc.label]: String(parsed) },
-                                          }));
-                                        }}
-                                        className="w-full px-3 py-2 border border-gray-300 rounded-md"
-                                        placeholder={`0 - ${maxMarks}`}
-                                      />
-                                      <span className="text-xs text-gray-500">/ {maxMarks}</span>
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                            <div className="flex items-center justify-between">
-                              <p className="text-xs text-gray-500">Technical total</p>
-                              <p className="text-sm text-[#0B3C5D] font-medium">{technicalTotal}</p>
-                            </div>
-                            <div>
-                              <p className="text-sm text-gray-600 mb-2">Vendor Documents</p>
-                              {!!bid.bidDocuments?.length ? (
-                                <div className="space-y-2">
-                                  {bid.bidDocuments.map((doc) => {
-                                    const name = getStoredDocumentName(doc.document, doc.label);
-                                    const url = getBidDocumentUrl(doc);
-                                    return (
-                                      <div
-                                        key={doc.label}
-                                        className="flex items-center justify-between gap-3 border border-gray-200 rounded-md p-3 bg-white"
-                                      >
-                                        <div className="flex items-center gap-2">
-                                          <FileText className="w-4 h-4 text-[#1D4E89]" />
-                                          <div>
-                                            <p className="text-sm text-[#0B3C5D]">{doc.label}</p>
-                                            <p className="text-xs text-gray-500">{name}</p>
-                                          </div>
-                                        </div>
-                                        {url ? (
-                                          <a
-                                            href={url}
-                                            target="_blank"
-                                            rel="noreferrer"
-                                            className="text-xs text-[#1D4E89] hover:underline"
-                                          >
-                                            Open
-                                          </a>
-                                        ) : (
-                                          <span className="text-xs text-gray-400">Unavailable</span>
-                                        )}
-                                      </div>
-                                    );
-                                  })}
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between">
+                            <p className="text-sm text-gray-600">Evaluation Form</p>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setShowEvaluation((prev) => ({
+                                  ...prev,
+                                  [bid._id]: !(prev[bid._id] ?? true),
+                                }))
+                              }
+                              className="text-xs text-[#1D4E89] hover:underline"
+                            >
+                              {(showEvaluation[bid._id] ?? true) ? "Hide evaluation" : "Show evaluation"}
+                            </button>
+                          </div>
+                          {(showEvaluation[bid._id] ?? true) && (
+                            <>
+                              <div className="grid grid-cols-1 gap-2">
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs font-semibold text-gray-500">
+                                  <span>Field</span>
+                                  <span>Document Uploaded</span>
+                                  <span>Marking</span>
                                 </div>
-                              ) : (
-                                <p className="text-sm text-gray-400">No documents uploaded.</p>
+
+                            {(() => {
+                              const eligibilityDoc = resolveBidDocument(bid, "Eligibility Proof");
+                              const eligibilityUrl = eligibilityDoc ? getBidDocumentUrl(eligibilityDoc) : "";
+                              const eligibilityName = eligibilityDoc
+                                ? getStoredDocumentName(eligibilityDoc.document, eligibilityDoc.label)
+                                : "Not uploaded";
+
+                              return (
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-2 items-center border border-gray-200 rounded-md p-3">
+                                  <span className="text-sm text-[#0B3C5D]">Eligibility Proof</span>
+                                  <span className="text-sm">
+                                    {eligibilityUrl ? (
+                                      <a href={eligibilityUrl} target="_blank" rel="noreferrer" className="text-[#1D4E89] hover:underline">
+                                        {eligibilityName}
+                                      </a>
+                                    ) : (
+                                      <span className="text-gray-400">{eligibilityName}</span>
+                                    )}
+                                  </span>
+                                  <label className="inline-flex items-center gap-2 text-sm">
+                                    <input
+                                      type="checkbox"
+                                      checked={eligibilityValue}
+                                      onChange={(e) =>
+                                        setEligibilityChecked((prev) => ({
+                                          ...prev,
+                                          [bid._id]: e.target.checked,
+                                        }))
+                                      }
+                                      disabled={isFinalized}
+                                      className="h-4 w-4 text-[#1D4E89]"
+                                    />
+                                    Eligible
+                                  </label>
+                                </div>
+                              );
+                            })()}
+
+                            {eligibilityValue && evaluationMethod === "QCBS" && technicalRequirements.map((doc) => {
+                              const maxMarks = technicalCriteriaMap.get(doc.label) ?? 0;
+                              const value = technicalDocScores[bid._id]?.[doc.label] ?? "";
+                              const bidDoc = resolveBidDocument(bid, doc.label);
+                              const docUrl = bidDoc ? getBidDocumentUrl(bidDoc) : "";
+                              const docName = bidDoc ? getStoredDocumentName(bidDoc.document, doc.label) : "Not uploaded";
+
+                              return (
+                                <div key={doc.label} className="grid grid-cols-1 md:grid-cols-3 gap-2 items-center border border-gray-200 rounded-md p-3">
+                                  <span className="text-sm text-[#0B3C5D]">{doc.label}</span>
+                                  <span className="text-sm">
+                                    {docUrl ? (
+                                      <a href={docUrl} target="_blank" rel="noreferrer" className="text-[#1D4E89] hover:underline">
+                                        {docName}
+                                      </a>
+                                    ) : (
+                                      <span className="text-gray-400">{docName}</span>
+                                    )}
+                                  </span>
+                                  <div className="flex items-center gap-2">
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      max={maxMarks}
+                                      value={value}
+                                      onChange={(e) => {
+                                        const nextValue = e.target.value;
+                                        const maxAllowed = Number.isFinite(maxMarks) ? maxMarks : 0;
+                                        const parsed = nextValue === "" ? "" : Math.min(Math.max(Number(nextValue), 0), maxAllowed);
+                                        setTechnicalDocScores((prev) => ({
+                                          ...prev,
+                                          [bid._id]: { ...(prev[bid._id] || {}), [doc.label]: String(parsed) },
+                                        }));
+                                      }}
+                                      disabled={isFinalized}
+                                      className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                                      placeholder={`0 - ${maxMarks}`}
+                                    />
+                                    <span className="text-xs text-gray-500">/ {maxMarks}</span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+
+                            {eligibilityValue && (
+                              <div className="grid grid-cols-1 md:grid-cols-3 gap-2 items-center border border-gray-200 rounded-md p-3">
+                                <span className="text-sm text-[#0B3C5D]">Commercial Bid Document</span>
+                                <span className="text-sm">
+                                  {(() => {
+                                    const commercialDoc = resolveBidDocument(bid, "Commercial Bid Document");
+                                    const commercialUrl = commercialDoc ? getBidDocumentUrl(commercialDoc) : "";
+                                    const commercialName = commercialDoc
+                                      ? getStoredDocumentName(commercialDoc.document, commercialDoc.label)
+                                      : "Not uploaded";
+                                    return commercialUrl ? (
+                                      <a href={commercialUrl} target="_blank" rel="noreferrer" className="text-[#1D4E89] hover:underline">
+                                        {commercialName}
+                                      </a>
+                                    ) : (
+                                      <span className="text-gray-400">{commercialName}</span>
+                                    );
+                                  })()}
+                                </span>
+                                <input
+                                  type="number"
+                                  value={financialScore[bid._id] ?? String(myEvaluation?.financialScore ?? "")}
+                                  onChange={(e) => setFinancialScore({ ...financialScore, [bid._id]: e.target.value })}
+                                  disabled={isFinalized}
+                                  className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                                  placeholder="Enter price"
+                                />
+                              </div>
+                            )}
+                          </div>
+
+                              {eligibilityValue && evaluationMethod === "QCBS" && (
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs text-gray-600">
+                                  <div>
+                                    <p>Technical total</p>
+                                    <p className="text-sm text-[#0B3C5D] font-medium">{technicalTotal}</p>
+                                  </div>
+                                  <div>
+                                    <p>QCBS score</p>
+                                    <p className="text-sm text-[#0B3C5D] font-medium">{Number.isFinite(qcbsFinal) ? qcbsFinal.toFixed(2) : "-"}</p>
+                                  </div>
+                                  <div>
+                                    <p>Commercial price</p>
+                                    <p className="text-sm text-[#0B3C5D] font-medium">₹{priceValue ? priceValue.toLocaleString() : "-"}</p>
+                                  </div>
+                                </div>
                               )}
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                            <input
-                              type="number"
-                              value={technicalScore[bid._id] ?? String(myEvaluation?.technicalScore ?? "")}
-                              onChange={(e) => setTechnicalScore({ ...technicalScore, [bid._id]: e.target.value })}
-                              className="px-3 py-2 border border-gray-300 rounded-md"
-                              placeholder="Technical score"
-                            />
-                            <input
-                              type="number"
-                              value={financialScore[bid._id] ?? String(myEvaluation?.financialScore ?? "")}
-                              onChange={(e) => setFinancialScore({ ...financialScore, [bid._id]: e.target.value })}
-                              className="px-3 py-2 border border-gray-300 rounded-md"
-                              placeholder="Financial score"
-                            />
-                            <input
-                              type="text"
-                              value={comments[bid._id] ?? myEvaluation?.comments ?? ""}
-                              onChange={(e) => setComments({ ...comments, [bid._id]: e.target.value })}
-                              className="px-3 py-2 border border-gray-300 rounded-md"
-                              placeholder="Comments"
-                            />
-                          </div>
-                        )}
-                        {technicalRequirements.length > 0 && (
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
-                            <input
-                              type="number"
-                              value={financialScore[bid._id] ?? String(myEvaluation?.financialScore ?? "")}
-                              onChange={(e) => setFinancialScore({ ...financialScore, [bid._id]: e.target.value })}
-                              className="px-3 py-2 border border-gray-300 rounded-md"
-                              placeholder="Financial score"
-                            />
-                            <input
-                              type="text"
-                              value={comments[bid._id] ?? myEvaluation?.comments ?? ""}
-                              onChange={(e) => setComments({ ...comments, [bid._id]: e.target.value })}
-                              className="px-3 py-2 border border-gray-300 rounded-md"
-                              placeholder="Comments"
-                            />
-                          </div>
-                        )}
+
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <input
+                                  type="text"
+                                  value={comments[bid._id] ?? myEvaluation?.comments ?? ""}
+                                  onChange={(e) => setComments({ ...comments, [bid._id]: e.target.value })}
+                                  disabled={isFinalized}
+                                  className="px-3 py-2 border border-gray-300 rounded-md"
+                                  placeholder="Comments"
+                                />
+                              </div>
+                            </>
+                          )}
+                        </div>
                         <div className="mt-3 flex items-center justify-between gap-3">
                           {myEvaluation ? (
                             <p className="text-xs text-green-700">
@@ -489,7 +605,7 @@ export function CommitteeDashboard() {
                           )}
                           <button
                             onClick={() => submitEvaluation(bid._id)}
-                            disabled={isSubmitting}
+                            disabled={isSubmitting || isFinalized}
                             className={`px-4 py-2 rounded-md text-sm text-white ${
                               isSubmitting ? "bg-[#7aa0c5] cursor-not-allowed" : "bg-[#1D4E89] hover:bg-[#154068]"
                             }`}
@@ -497,6 +613,9 @@ export function CommitteeDashboard() {
                             {isSubmitting ? "Saving..." : myEvaluation ? "Update Evaluation" : "Mark Evaluated"}
                           </button>
                         </div>
+                        {isFinalized && (
+                          <p className="text-xs text-gray-500 mt-2">Tender finalized; editing disabled.</p>
+                        )}
                       </div>
                     );
                   })}

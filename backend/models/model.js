@@ -23,6 +23,7 @@ const committeeEvaluationSchema = new mongoose.Schema({
     committeeMemberId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     technicalScore: { type: Number, required: true },
     financialScore: { type: Number, required: true },
+    eligibilityChecked: { type: Boolean, default: true },
     comments: { type: String, default: '' },
     evaluatedDate: { type: Date, default: Date.now },
 }, { _id: false });

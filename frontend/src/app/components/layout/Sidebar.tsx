@@ -24,6 +24,7 @@ type NavItem = {
   icon: LucideIcon;
   label: string;
   aliases?: string[];
+  disabled?: boolean;
 };
 
 export function Sidebar({ role }: SidebarProps) {
@@ -33,13 +34,27 @@ export function Sidebar({ role }: SidebarProps) {
 
   const vendorItems: NavItem[] = [
     { path: "/vendor", icon: LayoutDashboard, label: "Dashboard", aliases: ["/bidder"] },
-    ...(vendorRestricted
-      ? []
-      : [
-          { path: "/vendor/contract-search", icon: Search, label: "Search Tenders", aliases: ["/bidder/contract-search"] },
-          { path: "/vendor/bids", icon: ClipboardList, label: "My Bids", aliases: ["/bidder/bids"] },
-          { path: "/vendor/contracts", icon: Calendar, label: "Contracts", aliases: ["/bidder/contracts"] },
-        ]),
+    {
+      path: "/vendor/contract-search",
+      icon: Search,
+      label: "Search Tenders",
+      aliases: ["/bidder/contract-search"],
+      disabled: vendorRestricted,
+    },
+    {
+      path: "/vendor/bids",
+      icon: ClipboardList,
+      label: "My Bids",
+      aliases: ["/bidder/bids"],
+      disabled: vendorRestricted,
+    },
+    {
+      path: "/vendor/contracts",
+      icon: Calendar,
+      label: "Contracts",
+      aliases: ["/bidder/contracts"],
+      disabled: vendorRestricted,
+    },
   ];
 
   const roleConfig: Record<SidebarProps["role"], { items: NavItem[] }> = {
@@ -96,6 +111,18 @@ export function Sidebar({ role }: SidebarProps) {
         <div className="space-y-1">
           {items.map((item) => {
             const isActive = location.pathname === item.path || (item.aliases || []).includes(location.pathname);
+            if (item.disabled) {
+              return (
+                <div
+                  key={item.path}
+                  className="flex items-center gap-3 px-4 py-3 rounded-md text-white/50 cursor-not-allowed"
+                >
+                  <item.icon className="w-5 h-5" />
+                  <span className="text-sm">{item.label}</span>
+                </div>
+              );
+            }
+
             return (
               <Link
                 key={item.path}

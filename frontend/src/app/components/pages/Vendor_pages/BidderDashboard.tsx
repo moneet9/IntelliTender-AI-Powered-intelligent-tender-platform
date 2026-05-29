@@ -223,9 +223,15 @@ export function BidderDashboard() {
     const requiredDocs = (selectedTender?.requiredDocuments || []).length
       ? selectedTender?.requiredDocuments || []
       : [{ label: "Commercial Bid Document", category: "Commercial" }];
-    const missingDocs = requiredDocs.filter((doc) => !documentUploads[doc.label]);
+
+    // Only Eligibility Proof and Commercial are mandatory
+    const mandatoryDocs = requiredDocs.filter(
+      (d) => d.category === "Commercial" || (d.label || "").trim().toLowerCase() === "eligibility proof"
+    );
+
+    const missingDocs = mandatoryDocs.filter((doc) => !documentUploads[doc.label]);
     if (missingDocs.length > 0) {
-      setError(`Upload all required documents: ${missingDocs.map((doc) => doc.label).join(", ")}`);
+      setError(`Upload required documents: ${missingDocs.map((doc) => doc.label).join(", ")}`);
       return;
     }
 
@@ -238,10 +244,7 @@ export function BidderDashboard() {
         method: "POST",
         body: {
           proposedAmount: Number(proposedAmount),
-          documents: requiredDocs.map((doc) => ({
-            label: doc.label,
-            document: documentUploads[doc.label],
-          })),
+          documents: Object.entries(documentUploads).map(([label, document]) => ({ label, document })),
         },
       });
 
@@ -613,7 +616,27 @@ export function BidderDashboard() {
                             />
                           </label>
                           {documentNames[doc.label] && (
-                            <p className="text-xs text-green-700 mt-2">Uploaded: {documentNames[doc.label]}</p>
+                            <div className="mt-2 flex items-center justify-between text-xs">
+                              <span className="text-green-700">Uploaded: {documentNames[doc.label]}</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setDocumentUploads((prev) => {
+                                    const next = { ...prev };
+                                    delete next[doc.label];
+                                    return next;
+                                  });
+                                  setDocumentNames((prev) => {
+                                    const next = { ...prev };
+                                    delete next[doc.label];
+                                    return next;
+                                  });
+                                }}
+                                className="text-red-600 hover:underline"
+                              >
+                                Remove
+                              </button>
+                            </div>
                           )}
                         </div>
                       ))}

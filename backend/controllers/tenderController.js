@@ -342,6 +342,7 @@ const mapBidWithVendorDetails = (bid) => {
             committeeMemberId: evaluation.committeeMemberId,
             technicalScore: evaluation.technicalScore,
             financialScore: evaluation.financialScore,
+            eligibilityChecked: evaluation.eligibilityChecked,
             comments: evaluation.comments,
             evaluatedDate: evaluation.evaluatedDate,
         })),
@@ -549,17 +550,20 @@ export const submitBid = async (req, res) => {
             ? tender.requiredDocuments
             : [{ label: 'Commercial Bid Document', category: 'Commercial' }];
         const submittedDocuments = Array.isArray(req.body.documents) ? req.body.documents : [];
-        if (!submittedDocuments.length) {
-            return res.status(400).json({ message: 'Bid documents are required' });
-        }
 
         const documentsByLabel = new Map(
             submittedDocuments.map((item) => [String(item?.label || '').trim(), item?.document])
         );
-        const missingDocuments = requiredDocuments.filter((doc) => !documentsByLabel.get(doc.label));
-        if (missingDocuments.length > 0) {
+
+        // Only Eligibility Proof and Commercial docs are mandatory for submission
+        const mandatoryDocs = requiredDocuments.filter((d) =>
+            d.category === 'Commercial' || String(d.label || '').trim().toLowerCase() === 'eligibility proof'
+        );
+
+        const missingMandatory = mandatoryDocs.filter((doc) => !documentsByLabel.get(doc.label));
+        if (missingMandatory.length > 0) {
             return res.status(400).json({
-                message: `Missing required documents: ${missingDocuments.map((doc) => doc.label).join(', ')}`,
+                message: `Missing required documents: ${missingMandatory.map((doc) => doc.label).join(', ')}`,
             });
         }
 
@@ -570,36 +574,42 @@ export const submitBid = async (req, res) => {
         let commercialDocumentId = null;
         let commercialDocumentReference = '';
 
-        for (const doc of requiredDocuments) {
-            const rawDocument = documentsByLabel.get(doc.label);
-            const decoded = decodeStoredDocument(rawDocument, doc.label);
+        // Process only the documents that were actually submitted. Technical docs are optional.
+        for (const submitted of submittedDocuments) {
+            const label = String(submitted?.label || '').trim();
+            const rawDocument = submitted?.document;
+            if (!label || !rawDocument) continue;
+
+            const docMeta = requiredDocuments.find((d) => d.label === label) || { label, category: 'Technical' };
+
+            const decoded = decodeStoredDocument(rawDocument, label);
             if (!decoded.content) {
-                return res.status(400).json({ message: `Document content is invalid for ${doc.label}` });
+                return res.status(400).json({ message: `Document content is invalid for ${label}` });
             }
 
             const storedBidDocument = await BidDocument.create({
                 tenderId: tender._id,
                 vendorId: req.user.id,
-                name: decoded.name || doc.label,
+                name: decoded.name || label,
                 content: decoded.content,
                 mimeType: decoded.mimeType,
             });
 
             const documentUrl = buildBidDocumentAccessUrl(req, tender._id, storedBidDocument._id);
             const documentReference = buildProposalDocumentReference({
-                name: decoded.name || doc.label,
+                name: decoded.name || label,
                 contentUrl: documentUrl,
                 mimeType: decoded.mimeType,
             });
 
             bidDocuments.push({
-                label: doc.label,
-                category: doc.category,
+                label: docMeta.label,
+                category: docMeta.category,
                 documentId: storedBidDocument._id,
                 document: documentReference,
             });
 
-            if (doc.category === 'Commercial' && !commercialDocumentReference) {
+            if (docMeta.category === 'Commercial' && !commercialDocumentReference) {
                 commercialDocumentId = storedBidDocument._id;
                 commercialDocumentReference = documentReference;
             }
@@ -669,6 +679,10 @@ export const evaluateBid = async (req, res) => {
         const tender = await Tender.findById(req.params.tenderId);
         if (!tender) return res.status(404).json({ message: 'Tender not found' });
 
+        if (tender.status === 'Awarded' || tender.status === 'Completed') {
+            return res.status(400).json({ message: 'Tender is finalized and cannot be edited' });
+        }
+
         const bid = tender.bids.id(req.params.bidId); // Mongoose specific syntax to find subdocument
         if (!bid) return res.status(404).json({ message: 'Bid not found' });
 
@@ -676,8 +690,12 @@ export const evaluateBid = async (req, res) => {
             return res.status(400).json({ message: 'Bid is not in evaluatable state' });
         }
 
-        if (typeof req.body.technicalScore !== 'number' || typeof req.body.financialScore !== 'number') {
-            return res.status(400).json({ message: 'technicalScore and financialScore must be numbers' });
+        const eligibilityChecked = req.body.eligibilityChecked !== false;
+
+        if (eligibilityChecked) {
+            if (typeof req.body.technicalScore !== 'number' || typeof req.body.financialScore !== 'number') {
+                return res.status(400).json({ message: 'technicalScore and financialScore must be numbers' });
+            }
         }
 
         if (!Array.isArray(bid.committeeEvaluations)) {
@@ -688,19 +706,39 @@ export const evaluateBid = async (req, res) => {
             (evaluation) => evaluation.committeeMemberId?.toString() === req.user.id
         );
 
+        const technicalScoreValue = eligibilityChecked ? Number(req.body.technicalScore || 0) : 0;
+        const financialScoreValue = eligibilityChecked ? Number(req.body.financialScore || 0) : 0;
+
         if (existingEvaluation) {
-            existingEvaluation.technicalScore = req.body.technicalScore;
-            existingEvaluation.financialScore = req.body.financialScore;
+            existingEvaluation.technicalScore = technicalScoreValue;
+            existingEvaluation.financialScore = financialScoreValue;
+            existingEvaluation.eligibilityChecked = eligibilityChecked;
             existingEvaluation.comments = req.body.comments || '';
             existingEvaluation.evaluatedDate = new Date();
         } else {
             bid.committeeEvaluations.push({
                 committeeMemberId: req.user.id,
-                technicalScore: req.body.technicalScore,
-                financialScore: req.body.financialScore,
+                technicalScore: technicalScoreValue,
+                financialScore: financialScoreValue,
+                eligibilityChecked,
                 comments: req.body.comments || '',
                 evaluatedDate: new Date(),
             });
+        }
+
+        const hasIneligibleEvaluation = bid.committeeEvaluations.some(
+            (evaluation) => evaluation.eligibilityChecked === false
+        );
+        if (hasIneligibleEvaluation) {
+            bid.technicalScore = 0;
+            bid.financialScore = 0;
+            bid.comments = req.body.comments || '';
+            bid.status = 'Rejected';
+            bid.evaluatedBy = req.user.id;
+            bid.evaluatedDate = new Date();
+
+            await tender.save();
+            return res.json({ message: 'Bid marked ineligible', bid });
         }
 
         const evaluationCount = bid.committeeEvaluations.length || 1;
@@ -730,12 +768,49 @@ export const getEvaluatedBids = async (req, res) => {
    try {
         const tender = await Tender.findById(req.params.id);
         if (!tender) return res.status(404).json({ message: 'Tender not found' });
-        const evaluatedBids = tender.bids.filter(b => b.status === 'Evaluated' || b.status === 'Selected' || b.status === 'Rejected');
-        
-        // Example: Sort by score descending then amount ascending
-        evaluatedBids.sort((a,b) => (b.technicalScore||0) - (a.technicalScore||0) || a.proposedAmount - b.proposedAmount);
+        const evaluatedBids = tender.bids.filter(
+            (b) => b.status === 'Evaluated' || b.status === 'Selected' || b.status === 'Rejected'
+        );
 
-        res.json(evaluatedBids);
+        const evaluationMethod = tender.evaluationMethod || 'QCBS';
+
+        if (evaluationMethod === 'L1') {
+            const withScore = evaluatedBids.map((bid) => ({
+                ...bid.toObject?.() || bid,
+                computedScore: null,
+                evaluatedPrice: bid.financialScore || bid.proposedAmount || 0,
+            }));
+            withScore.sort((a, b) => (a.evaluatedPrice || 0) - (b.evaluatedPrice || 0));
+            return res.json(withScore);
+        }
+
+        const technicalCriteria = tender.qcbsConfig?.technicalCriteria || [];
+        const maxTechnical = technicalCriteria.reduce((sum, criterion) => sum + Number(criterion.maxMarks || 0), 0) || 0;
+        const techWeight = Number(tender.qcbsConfig?.technicalWeight || 0);
+        const commercialWeight = Number(tender.qcbsConfig?.commercialWeight || 0);
+
+        const evaluatedPrices = evaluatedBids
+            .map((bid) => Number(bid.financialScore || bid.proposedAmount || 0))
+            .filter((value) => Number.isFinite(value) && value > 0);
+        const lowestPrice = evaluatedPrices.length ? Math.min(...evaluatedPrices) : 0;
+
+        const withScore = evaluatedBids.map((bid) => {
+            const technicalScore = Number(bid.technicalScore || 0);
+            const price = Number(bid.financialScore || bid.proposedAmount || 0);
+
+            const technicalNormalized = maxTechnical > 0 ? (technicalScore / maxTechnical) * 100 : 0;
+            const commercialNormalized = lowestPrice > 0 && price > 0 ? (lowestPrice / price) * 100 : 0;
+            const computedScore = (technicalNormalized * (techWeight / 100)) + (commercialNormalized * (commercialWeight / 100));
+
+            return {
+                ...(bid.toObject?.() || bid),
+                computedScore: Number(computedScore.toFixed(2)),
+                evaluatedPrice: price,
+            };
+        });
+
+        withScore.sort((a, b) => (b.computedScore || 0) - (a.computedScore || 0));
+        res.json(withScore);
     } catch (e) { res.status(500).json({ error: e.message }); } 
 };
 
