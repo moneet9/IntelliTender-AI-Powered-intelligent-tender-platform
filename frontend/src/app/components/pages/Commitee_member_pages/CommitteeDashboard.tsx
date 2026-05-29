@@ -4,7 +4,7 @@ import { AIAssistant } from "../../AIAssistant";
 import { useEffect, useMemo, useState } from "react";
 import { FileText } from "lucide-react";
 import { apiRequest, getAuthUser } from "../../../api";
-import { getStoredDocumentName, getStoredDocumentUrl } from "../../../document-utils";
+import { getStoredDocumentName, getStoredDocumentReference, getStoredDocumentUrl } from "../../../document-utils";
 
 type Tender = {
   _id: string;
@@ -17,6 +17,7 @@ type Tender = {
     technicalCriteria?: Array<{ name: string; maxMarks: number }>;
   };
   requiredDocuments?: Array<{ label: string; category: "Technical" | "Commercial" }>;
+  documents?: string[];
   bids?: Array<{ _id: string }>;
 };
 
@@ -64,6 +65,7 @@ type Bid = {
 
 export function CommitteeDashboard() {
   const authUser = getAuthUser();
+  const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:5000";
   const [tenders, setTenders] = useState<Tender[]>([]);
   const [selectedTenderId, setSelectedTenderId] = useState<string>("");
   const [bids, setBids] = useState<Bid[]>([]);
@@ -77,6 +79,9 @@ export function CommitteeDashboard() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [tenderDocCache, setTenderDocCache] = useState<Record<string, { name: string; content: string; mimeType?: string }>>({});
+  const [tenderDocLoading, setTenderDocLoading] = useState<Record<string, boolean>>({});
+  const [tenderDocError, setTenderDocError] = useState<Record<string, string>>({});
 
   const [tenderSearch, setTenderSearch] = useState("");
   const [tenderStatusFilter, setTenderStatusFilter] = useState("All");
@@ -126,12 +131,50 @@ export function CommitteeDashboard() {
     [selectedTender]
   );
 
+  const getApiUrl = (path: string) => `${apiBaseUrl}${path}`;
+
   const getBidDocumentUrl = (doc: Bid["bidDocuments"][number]) => {
     if (doc.documentId && selectedTenderId) {
-      return `/api/tenders/${selectedTenderId}/bid-documents/${doc.documentId}`;
+      return getApiUrl(`/api/tenders/${selectedTenderId}/bid-documents/${doc.documentId}`);
     }
 
     return getStoredDocumentUrl(doc.document);
+  };
+
+  const openDocument = (url: string) => {
+    if (!url) return;
+    window.open(url, "_blank", "noopener,noreferrer");
+  };
+
+  const loadTenderDocument = async (docIndex: number, fallbackName: string) => {
+    if (!selectedTenderId) return;
+    const cacheKey = `${selectedTenderId}-${docIndex}`;
+
+    setTenderDocLoading((prev) => ({ ...prev, [cacheKey]: true }));
+    setTenderDocError((prev) => ({ ...prev, [cacheKey]: "" }));
+
+    try {
+      const data = await apiRequest<{ name?: string; content?: string; mimeType?: string }>(
+        `/api/tenders/${selectedTenderId}/documents/${docIndex}`
+      );
+      const content = typeof data?.content === "string" ? data.content : "";
+      if (!content) {
+        throw new Error("Document content not available");
+      }
+      setTenderDocCache((prev) => ({
+        ...prev,
+        [cacheKey]: {
+          name: data?.name || fallbackName,
+          content,
+          mimeType: data?.mimeType,
+        },
+      }));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to load document";
+      setTenderDocError((prev) => ({ ...prev, [cacheKey]: message }));
+    } finally {
+      setTenderDocLoading((prev) => ({ ...prev, [cacheKey]: false }));
+    }
   };
 
   const resolveBidDocument = (bid: Bid, label: string) => {
@@ -376,6 +419,66 @@ export function CommitteeDashboard() {
 
               {error && <p className="text-sm text-red-600 mb-4">{error}</p>}
               {success && <p className="text-sm text-green-700 mb-4">{success}</p>}
+
+              {!!selectedTenderId && (
+                <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-100 mb-6">
+                  <h3 className="text-lg text-[#0B3C5D] mb-4">Tender Documents</h3>
+                  {selectedTender?.documents?.length ? (
+                    <div className="space-y-3">
+                      {selectedTender.documents.map((document, index) => {
+                        const reference = getStoredDocumentReference(document);
+                        const fallbackName = reference?.name || getStoredDocumentName(document, `Document ${index + 1}`);
+                        const cacheKey = `${selectedTenderId}-${reference?.docIndex ?? index}`;
+                        const cached = tenderDocCache[cacheKey];
+                        const isLoading = tenderDocLoading[cacheKey];
+                        const docError = tenderDocError[cacheKey];
+                        const directUrl = getStoredDocumentUrl(document);
+                        const resolvedUrl = cached?.content || directUrl || "";
+
+                        return (
+                          <div key={`${selectedTenderId}-${index}`} className="flex flex-wrap items-center justify-between gap-3 border border-gray-200 rounded-md px-4 py-3">
+                            <div className="flex items-center gap-2">
+                              <FileText className="h-4 w-4 text-[#1D4E89]" />
+                              <div>
+                                <p className="text-sm text-[#0B3C5D]">{fallbackName}</p>
+                                <p className="text-xs text-gray-500">{reference ? "Lazy document" : "Stored document"}</p>
+                                {docError && <p className="text-xs text-red-600 mt-1">{docError}</p>}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              {resolvedUrl ? (
+                                <button
+                                  type="button"
+                                  onClick={() => openDocument(resolvedUrl)}
+                                  className="text-sm text-[#1D4E89] hover:underline"
+                                >
+                                  View
+                                </button>
+                              ) : (
+                                <span className="text-xs text-gray-400">Not loaded</span>
+                              )}
+                              {reference && !cached && (
+                                <button
+                                  type="button"
+                                  onClick={() => loadTenderDocument(reference.docIndex, fallbackName)}
+                                  disabled={isLoading}
+                                  className={`px-3 py-1.5 rounded-md text-xs text-white ${
+                                    isLoading ? "bg-[#7aa0c5] cursor-not-allowed" : "bg-[#1D4E89] hover:bg-[#154068]"
+                                  }`}
+                                >
+                                  {isLoading ? "Loading..." : "Load"}
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-gray-600">No tender documents were uploaded.</p>
+                  )}
+                </div>
+              )}
 
               {/* Bid Evaluation */}
               <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-100">

@@ -6,12 +6,12 @@ import { AIAssistant } from "../../AIAssistant";
 import { apiRequest, getAuthUser } from "../../../api";
 import { encodeFileToStoredDocument } from "../../../document-utils";
 import {
-  DocumentLinks,
   formatCurrency,
   formatDate,
   hasExistingBid,
-  useVendorData,
-} from "./vendorShared";
+} from "./vendorHelpers";
+import { DocumentLinks } from "./vendorShared";
+import { useVendorData } from "./vendorData";
 
 export function VendorTenders() {
   const authUser = getAuthUser();

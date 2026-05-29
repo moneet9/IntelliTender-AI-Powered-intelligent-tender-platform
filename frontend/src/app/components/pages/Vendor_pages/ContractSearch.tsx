@@ -5,7 +5,8 @@ import { AIAssistant } from "../../AIAssistant";
 import { Search, Filter, X, Calendar, FileText, SlidersHorizontal, Upload, Check } from "lucide-react";
 import { apiRequest, getAuthUser } from "../../../api";
 import { encodeFileToStoredDocument } from "../../../document-utils";
-import { DocumentLinks, formatDateTime, hasExistingBid, TenderRecord } from "./vendorShared";
+import { DocumentLinks } from "./vendorShared";
+import { formatDateTime, hasExistingBid, type TenderRecord } from "./vendorHelpers";
 
 export function ContractSearch() {
   const authUser = getAuthUser();

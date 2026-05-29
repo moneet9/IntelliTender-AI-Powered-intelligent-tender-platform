@@ -6,8 +6,8 @@ import { getStoredDocumentName, getStoredDocumentUrl } from "../../../document-u
 import {
   formatCurrency,
   getBidStatusClass,
-  useVendorData,
-} from "./vendorShared";
+} from "./vendorHelpers";
+import { useVendorData } from "./vendorData";
 
 export function VendorBids() {
   const authUser = getAuthUser();

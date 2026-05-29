@@ -11,6 +11,8 @@ export type StoredDocumentReference = {
   mimeType?: string;
 };
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:5000";
+
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -122,5 +124,9 @@ export function getStoredDocumentReference(value?: string | null): StoredDocumen
 
 export function getStoredDocumentUrl(value?: string | null): string | null {
   const decoded = decodeStoredDocument(value);
-  return decoded?.content || null;
+  const content = decoded?.content || "";
+  if (content.startsWith("/api/")) {
+    return `${API_BASE_URL}${content}`;
+  }
+  return content || null;
 }

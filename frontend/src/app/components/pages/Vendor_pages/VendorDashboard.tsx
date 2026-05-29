@@ -10,8 +10,8 @@ import {
   getBidStatusClass,
   getContractProgress,
   getContractStatusClass,
-  useVendorData,
-} from "./vendorShared";
+} from "./vendorHelpers";
+import { useVendorData } from "./vendorData";
 
 export function VendorDashboard() {
   const authUser = getAuthUser();

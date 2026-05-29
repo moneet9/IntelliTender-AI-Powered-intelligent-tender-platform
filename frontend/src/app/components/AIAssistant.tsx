@@ -39,7 +39,7 @@ const demoConversations = [
 - Status: Open for Bidding
 - Documents Required: 4
 
-📋 **TND-2026-050 - Government Portal Development**
+📋 **TND-2026-050 - Enterprise Portal Development**
 - Budget: $1,200,000
 - Deadline: March 28, 2026
 - Status: Open for Bidding
@@ -303,7 +303,7 @@ For TND-2026-046 (Work Contract):
 📄 PDF format only
 ✍️ Digital signature required
 
-**Need Help?** Contact procurement@intellitender.gov`,
+**Need Help?** Contact procurement@intellitender.com`,
 
   performance: `**Your Performance Dashboard**
 

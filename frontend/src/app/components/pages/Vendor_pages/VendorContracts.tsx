@@ -3,13 +3,15 @@ import { Header } from "../../layout/Header";
 import { AIAssistant } from "../../AIAssistant";
 import { getAuthUser } from "../../../api";
 import {
-  DocumentLinks,
   formatDate,
   getContractProgress,
   getContractStatusClass,
   getCurrentMilestone,
-  useVendorData,
-} from "./vendorShared";
+  type ContractRecord,
+  type MilestoneSummary,
+} from "./vendorHelpers";
+import { DocumentLinks } from "./vendorShared";
+import { useVendorData } from "./vendorData";
 
 export function VendorContracts() {
   const authUser = getAuthUser();
@@ -33,7 +35,7 @@ export function VendorContracts() {
             {loading && <p className="text-sm text-gray-600">Loading active contracts...</p>}
             {!loading && !ongoingContracts.length && <p className="text-sm text-gray-600">No active awarded contracts yet.</p>}
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-              {ongoingContracts.map((contract) => {
+              {ongoingContracts.map((contract: ContractRecord) => {
                 const progress = getContractProgress(contract);
                 const currentMilestone = getCurrentMilestone(contract);
 
@@ -109,7 +111,7 @@ export function VendorContracts() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
-                    {completedContracts.map((contract) => (
+                    {completedContracts.map((contract: ContractRecord) => (
                       <tr key={contract._id} className="hover:bg-gray-50">
                         <td className="px-4 py-4 text-sm text-[#0B3C5D]">{contract.tenderId?.title || "Untitled Tender"}</td>
                         <td className="px-4 py-4 text-sm text-gray-700">{contract.tenderId?.category || "General"}</td>
@@ -117,7 +119,7 @@ export function VendorContracts() {
                           {formatDate(contract.timelineStartDate)} to {formatDate(contract.timelineEndDate)}
                         </td>
                         <td className="px-4 py-4 text-sm text-gray-700">
-                          {(contract.milestones || []).filter((milestone) => milestone.status === "Completed").length}/
+                          {(contract.milestones || []).filter((milestone: MilestoneSummary) => milestone.status === "Completed").length}/
                           {(contract.milestones || []).length}
                         </td>
                         <td className="px-4 py-4">

@@ -573,7 +573,7 @@ export function Login() {
           </form>
 
           <div className="mt-8 text-center text-xs text-gray-500 border-t border-gray-200 pt-6">
-            © 2026 Government Procurement Authority
+            © 2026 IntelliTender
           </div>
         </div>
       </div>

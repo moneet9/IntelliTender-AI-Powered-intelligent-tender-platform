@@ -101,7 +101,7 @@ export function Sidebar({ role }: SidebarProps) {
           <Shield className="w-8 h-8" />
           <div>
             <div className="font-semibold text-lg">IntelliTender</div>
-            <div className="text-xs text-white/70">Gov. Procurement</div>
+            <div className="text-xs text-white/70">Procurement Platform</div>
           </div>
         </div>
       </div>

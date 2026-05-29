@@ -45,6 +45,7 @@ type BidRecord = {
 };
 
 export function AIEvaluation() {
+  const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:5000";
   const [tenders, setTenders] = useState<TenderRecord[]>([]);
   const [selectedTenderId, setSelectedTenderId] = useState("");
   const [bids, setBids] = useState<BidRecord[]>([]);
@@ -175,9 +176,11 @@ export function AIEvaluation() {
     }
   };
 
+  const getApiUrl = (path: string) => `${apiBaseUrl}${path}`;
+
   const getBidDocumentUrl = (doc: BidRecord["bidDocuments"][number]) => {
     if (doc.documentId && selectedTenderId) {
-      return `/api/tenders/${selectedTenderId}/bid-documents/${doc.documentId}`;
+      return getApiUrl(`/api/tenders/${selectedTenderId}/bid-documents/${doc.documentId}`);
     }
 
     return getStoredDocumentUrl(doc.document);

@@ -206,7 +206,7 @@ export function CPODashboard() {
             </div>
           </div>
           <div className="mt-8 text-center text-xs text-gray-500 border-t border-gray-200 pt-6">
-            © 2026 Government Procurement Authority
+            © 2026 IntelliTender
           </div>
         <AIAssistant role="cpo" />
       </div>
