@@ -30,6 +30,11 @@ const emptyQcbsCriterion = (): QcbsCriterion => ({
   maxMarks: "",
 });
 
+const isValidPercentage = (value: string) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 100;
+};
+
 
 const emptyMilestone = (): MilestoneData => ({
   title: "",
@@ -53,6 +58,7 @@ export function TenderCreation() {
   const [documentNames, setDocumentNames] = useState<string[]>([]);
 
   const [evaluationMethod, setEvaluationMethod] = useState<EvaluationMethod>("QCBS");
+  const [l1TechnicalCutoff, setL1TechnicalCutoff] = useState("");
   const [qcbsWeights, setQcbsWeights] = useState({
     technical: 70,
     commercial: 30,
@@ -63,6 +69,8 @@ export function TenderCreation() {
   const hasMilestones = milestones.some((m) => m.title.trim() !== "");
 
   const qcbsWeightTotal = qcbsWeights.technical + qcbsWeights.commercial;
+  const l1CutoffValue = Number(l1TechnicalCutoff);
+  const isL1Valid = isValidPercentage(l1TechnicalCutoff);
   const hasTechnicalCriteria = technicalCriteria.some((criterion) => criterion.name.trim() !== "");
   const technicalCriteriaComplete = technicalCriteria.every((criterion) => {
     if (!criterion.name.trim()) return false;
@@ -73,7 +81,7 @@ export function TenderCreation() {
     qcbsWeightTotal === 100 &&
     hasTechnicalCriteria &&
     technicalCriteriaComplete;
-  const isEvaluationValid = evaluationMethod === "L1" ? true : isQcbsValid;
+  const isEvaluationValid = evaluationMethod === "L1" ? isL1Valid : isQcbsValid;
 
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -143,6 +151,13 @@ export function TenderCreation() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (evaluationMethod === "L1") {
+      if (!isL1Valid) {
+        setError("L1 technical cutoff must be a number between 0 and 100");
+        return;
+      }
+    }
+
     if (evaluationMethod === "QCBS") {
       const qcbsWeightTotal = qcbsWeights.technical + qcbsWeights.commercial;
       if (qcbsWeightTotal !== 100) {
@@ -195,6 +210,12 @@ export function TenderCreation() {
               })),
             }
           : undefined;
+      const l1Config =
+        evaluationMethod === "L1"
+          ? {
+              technicalCutoff: l1CutoffValue,
+            }
+          : undefined;
       const technicalDocs =
         evaluationMethod === "QCBS"
           ? technicalCriteria
@@ -221,6 +242,7 @@ export function TenderCreation() {
           preBidDate: formData.preBidDate,
           finalSubmissionDate: formData.finalSubmissionDate,
           evaluationMethod,
+          l1Config,
           qcbsSettings,
           requiredDocuments,
           documents,
@@ -513,6 +535,28 @@ export function TenderCreation() {
                         </div>
                       </div>
                     ))}
+                  </div>
+                </div>
+              )}
+
+              {evaluationMethod === "L1" && (
+                <div className="mt-5 space-y-3 rounded-lg border border-amber-200 bg-amber-50 p-4">
+                  <div>
+                    <h4 className="text-sm font-semibold text-[#0B3C5D]">L1 Technical Cutoff</h4>
+                    <p className="text-xs text-gray-600">Committee members score technical marks out of 100. Bids must meet this cutoff before commercial comparison.</p>
+                  </div>
+                  <div className="max-w-xs">
+                    <label className="block text-sm text-gray-700 mb-2">Minimum technical marks (%)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      value={l1TechnicalCutoff}
+                      onChange={(e) => setL1TechnicalCutoff(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89]"
+                      placeholder="0 - 100"
+                      required
+                    />
                   </div>
                 </div>
               )}

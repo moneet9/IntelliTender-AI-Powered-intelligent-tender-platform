@@ -367,6 +367,7 @@ export const createTender = async (req, res) => {
             preBidDate,
             finalSubmissionDate,
             evaluationMethod,
+            l1Config,
             qcbsSettings,
             requiredDocuments,
             documents,
@@ -384,6 +385,9 @@ export const createTender = async (req, res) => {
             preBidDate,
             finalSubmissionDate,
             evaluationMethod,
+            l1Config: evaluationMethod === 'L1' ? {
+                technicalCutoff: Number(l1Config?.technicalCutoff || 0),
+            } : undefined,
             qcbsConfig: qcbsSettings,
             requiredDocuments: derivedRequiredDocuments,
             status: 'Published',
@@ -413,7 +417,9 @@ export const getTenders = async (req, res) => {
             tenders.map(async (tender) => ({
                 ...tender,
                 documents: Array.isArray(tender.documents)
-                    ? tender.documents.map((document, index) => toLazyDocumentReference(document, tender._id, index))
+                    ? req.user?.role === 'Committee'
+                        ? tender.documents
+                        : tender.documents.map((document, index) => toLazyDocumentReference(document, tender._id, index))
                     : [],
                 bids: await enrichBidDocumentReferences(req, tender._id, tender.bids || []),
             }))
@@ -691,10 +697,15 @@ export const evaluateBid = async (req, res) => {
         }
 
         const eligibilityChecked = req.body.eligibilityChecked !== false;
+        const evaluationMethod = tender.evaluationMethod || 'QCBS';
 
         if (eligibilityChecked) {
-            if (typeof req.body.technicalScore !== 'number' || typeof req.body.financialScore !== 'number') {
-                return res.status(400).json({ message: 'technicalScore and financialScore must be numbers' });
+            if (typeof req.body.technicalScore !== 'number') {
+                return res.status(400).json({ message: 'technicalScore must be a number' });
+            }
+
+            if (evaluationMethod !== 'L1' && typeof req.body.financialScore !== 'number') {
+                return res.status(400).json({ message: 'financialScore must be a number' });
             }
         }
 
@@ -707,7 +718,9 @@ export const evaluateBid = async (req, res) => {
         );
 
         const technicalScoreValue = eligibilityChecked ? Number(req.body.technicalScore || 0) : 0;
-        const financialScoreValue = eligibilityChecked ? Number(req.body.financialScore || 0) : 0;
+        const financialScoreValue = eligibilityChecked
+            ? (evaluationMethod === 'L1' ? Number(bid.proposedAmount || 0) : Number(req.body.financialScore || 0))
+            : 0;
 
         if (existingEvaluation) {
             existingEvaluation.technicalScore = technicalScoreValue;
@@ -775,12 +788,38 @@ export const getEvaluatedBids = async (req, res) => {
         const evaluationMethod = tender.evaluationMethod || 'QCBS';
 
         if (evaluationMethod === 'L1') {
-            const withScore = evaluatedBids.map((bid) => ({
-                ...bid.toObject?.() || bid,
-                computedScore: null,
-                evaluatedPrice: bid.financialScore || bid.proposedAmount || 0,
-            }));
-            withScore.sort((a, b) => (a.evaluatedPrice || 0) - (b.evaluatedPrice || 0));
+            const technicalCutoff = Number(tender.l1Config?.technicalCutoff || 0);
+            const withScore = evaluatedBids.map((bid) => {
+                const evaluatedPrice = Number(bid.proposedAmount || bid.financialScore || 0);
+                const technicalScore = Number(bid.technicalScore || 0);
+                const isQualified = bid.status !== 'Rejected' && technicalScore >= technicalCutoff;
+
+                return {
+                    ...(bid.toObject?.() || bid),
+                    computedScore: Number(technicalScore.toFixed(2)),
+                    evaluatedPrice,
+                    technicalCutoff,
+                    isQualified,
+                };
+            });
+
+            const lowestQualifiedPrice = withScore
+                .filter((bid) => bid.isQualified)
+                .reduce((lowest, bid) => (lowest === null || bid.evaluatedPrice < lowest ? bid.evaluatedPrice : lowest), null);
+
+            withScore.forEach((bid) => {
+                bid.isLowestQualified = bid.isQualified && lowestQualifiedPrice !== null && bid.evaluatedPrice === lowestQualifiedPrice;
+            });
+
+            withScore.sort((a, b) => {
+                if (a.isQualified !== b.isQualified) {
+                    return a.isQualified ? -1 : 1;
+                }
+                if ((a.evaluatedPrice || 0) !== (b.evaluatedPrice || 0)) {
+                    return (a.evaluatedPrice || 0) - (b.evaluatedPrice || 0);
+                }
+                return String(a._id || '').localeCompare(String(b._id || ''));
+            });
             return res.json(withScore);
         }
 
@@ -824,6 +863,29 @@ export const selectWinner = async (req, res) => {
 
         if (winningBid.status !== 'Evaluated') {
             return res.status(400).json({ message: 'Only evaluated bid can be selected as winner' });
+        }
+
+        if ((tender.evaluationMethod || 'QCBS') === 'L1') {
+            const technicalCutoff = Number(tender.l1Config?.technicalCutoff || 0);
+            const qualifiedBids = tender.bids.filter((bid) => {
+                const technicalScore = Number(bid.technicalScore || 0);
+                return bid.status === 'Evaluated' && technicalScore >= technicalCutoff;
+            });
+
+            if (!qualifiedBids.length) {
+                return res.status(400).json({ message: 'No evaluated bids meet the L1 technical cutoff' });
+            }
+
+            const lowestQualifiedPrice = Math.min(...qualifiedBids.map((bid) => Number(bid.proposedAmount || bid.financialScore || 0)));
+            const winningPrice = Number(winningBid.proposedAmount || winningBid.financialScore || 0);
+
+            if (Number(winningBid.technicalScore || 0) < technicalCutoff) {
+                return res.status(400).json({ message: 'Selected bid does not meet the L1 technical cutoff' });
+            }
+
+            if (winningPrice !== lowestQualifiedPrice) {
+                return res.status(400).json({ message: 'Selected bid is not the lowest qualified commercial bid' });
+            }
         }
 
         tender.status = 'Awarded';

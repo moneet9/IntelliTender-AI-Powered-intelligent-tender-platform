@@ -44,17 +44,34 @@ type BidRecord = {
   comments?: string;
 };
 
+type AiSummary = {
+  _id: string;
+  tenderId: string;
+  bidId: string;
+  status: "pending" | "success" | "failed";
+  summary?: string;
+  rationale?: string[];
+  aiScores?: {
+    technicalScore?: number;
+    financialScore?: number;
+    overallScore?: number;
+  };
+};
+
 export function AIEvaluation() {
   const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:5000";
   const [tenders, setTenders] = useState<TenderRecord[]>([]);
   const [selectedTenderId, setSelectedTenderId] = useState("");
   const [bids, setBids] = useState<BidRecord[]>([]);
+  const [aiSummaries, setAiSummaries] = useState<AiSummary[]>([]);
   const [expandedBidId, setExpandedBidId] = useState<string | null>(null);
   const [loadingTenders, setLoadingTenders] = useState(false);
   const [loadingBids, setLoadingBids] = useState(false);
+  const [loadingAi, setLoadingAi] = useState(false);
   const [selectingBidId, setSelectingBidId] = useState("");
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [aiRunLoading, setAiRunLoading] = useState(false);
 
   // Tender search & filter
   const [tenderSearch, setTenderSearch] = useState("");
@@ -113,9 +130,29 @@ export function AIEvaluation() {
     }
   }, []);
 
+  const loadAiSummaries = useCallback(async (tenderId: string) => {
+    if (!tenderId) {
+      setAiSummaries([]);
+      return;
+    }
+    setLoadingAi(true);
+    try {
+      const data = await apiRequest<AiSummary[]>(`/api/ai/evaluations/tenders/${tenderId}`);
+      setAiSummaries(data || []);
+    } catch {
+      setAiSummaries([]);
+    } finally {
+      setLoadingAi(false);
+    }
+  }, []);
+
   useEffect(() => {
     void loadBids(selectedTenderId);
   }, [loadBids, selectedTenderId]);
+
+  useEffect(() => {
+    void loadAiSummaries(selectedTenderId);
+  }, [loadAiSummaries, selectedTenderId]);
 
   const selectedTender = useMemo(
     () => tenders.find((tender) => tender._id === selectedTenderId) || null,
@@ -149,6 +186,25 @@ export function AIEvaluation() {
     });
   }, [bids, bidSearch, bidStatusFilter]);
 
+  const aiSummaryMap = useMemo(() => {
+    const map = new Map<string, AiSummary>();
+    aiSummaries.forEach((summary) => {
+      map.set(summary.bidId, summary);
+    });
+    return map;
+  }, [aiSummaries]);
+
+  const aiRanking = useMemo(() => {
+    const scored = bids.map((bid) => {
+      const summary = aiSummaryMap.get(bid._id);
+      const overall = summary?.aiScores?.overallScore ?? summary?.aiScores?.technicalScore ?? 0;
+      return { bidId: bid._id, score: Number(overall || 0) };
+    });
+    return scored
+      .sort((a, b) => b.score - a.score)
+      .map((item, index) => ({ ...item, rank: index + 1 }));
+  }, [bids, aiSummaryMap]);
+
   const stats = useMemo(() => {
     const total = bids.length;
     const pending = bids.filter((b) => b.status === "Pending").length;
@@ -173,6 +229,23 @@ export function AIEvaluation() {
       setError(err instanceof Error ? err.message : "Failed to select winner");
     } finally {
       setSelectingBidId("");
+    }
+  };
+
+  const runAiAnalysis = async () => {
+    if (!selectedTenderId) return;
+    setAiRunLoading(true);
+    setError("");
+    setSuccess("");
+    try {
+      await apiRequest(`/api/ai/evaluations/tenders/${selectedTenderId}/run?manual=true&force=true`, {
+        method: "POST",
+      });
+      setSuccess("AI analysis completed for all bids in this tender.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to run AI analysis");
+    } finally {
+      setAiRunLoading(false);
     }
   };
 
@@ -258,6 +331,20 @@ export function AIEvaluation() {
                 </option>
               ))}
             </select>
+            <div className="mt-3">
+              <button
+                type="button"
+                onClick={runAiAnalysis}
+                disabled={!selectedTenderId || aiRunLoading}
+                className={`px-4 py-2 rounded-md text-sm text-white ${
+                  !selectedTenderId || aiRunLoading
+                    ? "bg-gray-400 cursor-not-allowed"
+                    : "bg-[#1D4E89] hover:bg-[#154068]"
+                }`}
+              >
+                {aiRunLoading ? "Running AI analysis..." : "Run AI analysis"}
+              </button>
+            </div>
             {loadingTenders && <p className="text-sm text-gray-500 mt-2">Loading tenders...</p>}
             {!loadingTenders && tenders.length === 0 && (
               <p className="text-sm text-amber-700 mt-2">No published/closed/awarded tenders found.</p>
@@ -319,6 +406,61 @@ export function AIEvaluation() {
               <p className="text-3xl text-[#2E8B57]">{stats.selected}</p>
             </div>
           </div>
+
+          {selectedTender && (
+            <div className="bg-white rounded-lg shadow-sm border border-gray-100 p-5 mb-6">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h3 className="text-lg text-[#0B3C5D]">Committee vs AI Evaluation</h3>
+                  <p className="text-sm text-gray-500">Side-by-side scoring with AI rationale and ranking</p>
+                </div>
+                {loadingAi && <span className="text-xs text-gray-400">Loading AI summaries...</span>}
+              </div>
+              {!bids.length && (
+                <p className="text-sm text-gray-500">No bids available for comparison.</p>
+              )}
+              {!!bids.length && (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-gray-50 border-b border-gray-100">
+                      <tr>
+                        <th className="px-4 py-3 text-left text-xs text-gray-600 uppercase">Vendor</th>
+                        <th className="px-4 py-3 text-left text-xs text-gray-600 uppercase">Committee Technical</th>
+                        <th className="px-4 py-3 text-left text-xs text-gray-600 uppercase">Committee Financial</th>
+                        <th className="px-4 py-3 text-left text-xs text-gray-600 uppercase">AI Technical</th>
+                        <th className="px-4 py-3 text-left text-xs text-gray-600 uppercase">AI Financial</th>
+                        <th className="px-4 py-3 text-left text-xs text-gray-600 uppercase">AI Overall</th>
+                        <th className="px-4 py-3 text-left text-xs text-gray-600 uppercase">AI Rank</th>
+                        <th className="px-4 py-3 text-left text-xs text-gray-600 uppercase">AI Rationale</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {bids.map((bid) => {
+                        const summary = aiSummaryMap.get(bid._id);
+                        const rank = aiRanking.find((item) => item.bidId === bid._id)?.rank || "-";
+                        return (
+                          <tr key={bid._id} className="hover:bg-gray-50">
+                            <td className="px-4 py-3 text-[#0B3C5D] font-medium">
+                              {bid.vendorName || bid.vendorDetails?.name || "Vendor"}
+                            </td>
+                            <td className="px-4 py-3">{Number(bid.technicalScore || 0).toFixed(2)}</td>
+                            <td className="px-4 py-3">{Number(bid.financialScore || 0).toFixed(2)}</td>
+                            <td className="px-4 py-3">{Number(summary?.aiScores?.technicalScore || 0).toFixed(2)}</td>
+                            <td className="px-4 py-3">{Number(summary?.aiScores?.financialScore || 0).toFixed(2)}</td>
+                            <td className="px-4 py-3">{Number(summary?.aiScores?.overallScore || 0).toFixed(2)}</td>
+                            <td className="px-4 py-3">{rank}</td>
+                            <td className="px-4 py-3 text-xs text-gray-600">
+                              {summary?.summary || summary?.rationale?.join(" ") || "AI summary pending"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="bg-white rounded-lg shadow-sm border border-gray-100">
             <div className="p-5 border-b border-gray-100 flex flex-wrap items-center justify-between gap-3">

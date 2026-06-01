@@ -2,6 +2,7 @@ import { buildHybridAssistantContext, buildOllamaMessages, sensitiveVendorPatter
 
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen3.5';
+const OLLAMA_AUTH_TOKEN = process.env.OLLAMA_AUTH_TOKEN || '';
 
 export const chatWithAssistant = async (req, res) => {
     try {
@@ -31,6 +32,7 @@ export const chatWithAssistant = async (req, res) => {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
+                ...(OLLAMA_AUTH_TOKEN ? { Authorization: `Bearer ${OLLAMA_AUTH_TOKEN}` } : {}),
             },
             body: JSON.stringify({
                 model: OLLAMA_MODEL,

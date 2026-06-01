@@ -1,0 +1,111 @@
+import { AIMilestoneReport, AINotification, Tender } from '../../models/model.js';
+import { runMilestoneAiReview } from './aiMilestoneService.js';
+
+const normalizeTimeline = (value) => ({
+    plannedStartDate: value?.plannedStartDate ? new Date(value.plannedStartDate) : undefined,
+    plannedEndDate: value?.plannedEndDate ? new Date(value.plannedEndDate) : undefined,
+    actualStartDate: value?.actualStartDate ? new Date(value.actualStartDate) : undefined,
+    actualEndDate: value?.actualEndDate ? new Date(value.actualEndDate) : undefined,
+    delayedDays: Number(value?.delayedDays || 0),
+    status: value?.status || '',
+});
+
+const normalizeReport = (parsed) => ({
+    timeline: normalizeTimeline(parsed?.timeline),
+    checklistSummary: Array.isArray(parsed?.checklistSummary)
+        ? parsed.checklistSummary.map((item) => String(item))
+        : [],
+    observations: Array.isArray(parsed?.observations)
+        ? parsed.observations.map((item) => String(item))
+        : [],
+    alerts: Array.isArray(parsed?.alerts)
+        ? parsed.alerts.map((item) => String(item))
+        : [],
+    severity: ['low', 'medium', 'high'].includes(parsed?.severity) ? parsed.severity : 'low',
+    penaltyEstimate: parsed?.penaltyEstimate ?? null,
+    summary: parsed?.summary || '',
+});
+
+export const evaluateMilestoneWithAi = async ({ contract, milestone, update, report }) => {
+    const tender = await Tender.findById(contract.tenderId).lean();
+    if (!tender) throw new Error('Tender not found for contract');
+
+    const result = await runMilestoneAiReview({ tender, contract, milestone, update, report });
+    const normalized = normalizeReport(result.parsed);
+
+    const saved = await AIMilestoneReport.findOneAndUpdate(
+        { contractId: contract._id, milestoneId: milestone._id },
+        {
+            contractId: contract._id,
+            milestoneId: milestone._id,
+            tenderId: tender._id,
+            reportedBy: update?.verifiedBy || update?.updatedBy || report?.reportedBy,
+            status: 'success',
+            model: result.model,
+            promptVersion: result.promptVersion,
+            generatedAt: new Date(),
+            timeline: normalized.timeline,
+            checklistSummary: normalized.checklistSummary,
+            observations: normalized.observations,
+            alerts: normalized.alerts,
+            severity: normalized.severity,
+            penaltyEstimate: normalized.penaltyEstimate,
+            summary: normalized.summary,
+            rawResponse: result.parsed,
+            error: undefined,
+        },
+        { upsert: true, new: true }
+    );
+
+    const poUserId = tender.createdBy;
+    if (normalized.alerts.length) {
+        await AINotification.create({
+            userId: poUserId,
+            type: 'milestone-alert',
+            title: `${milestone.title} milestone alert`,
+            message: normalized.summary || normalized.alerts[0],
+            severity: normalized.severity,
+            link: `/po/milestones?contract=${contract._id}&milestone=${milestone._id}`,
+        });
+    }
+
+    return saved;
+};
+
+export const getMilestoneReports = async (req, res) => {
+    try {
+        const contractId = req.params.contractId;
+        const reports = await AIMilestoneReport.find({ contractId }).lean();
+        res.json(reports);
+    } catch (error) {
+        res.status(500).json({ message: error instanceof Error ? error.message : 'Failed to load milestone reports' });
+    }
+};
+
+export const getNotifications = async (req, res) => {
+    try {
+        const userId = req.user?.id;
+        if (!userId) return res.status(401).json({ message: 'Unauthorized' });
+        const items = await AINotification.find({ userId }).sort({ createdAt: -1 }).limit(10).lean();
+        const unreadCount = await AINotification.countDocuments({ userId, read: false });
+        res.json({ items, unreadCount });
+    } catch (error) {
+        res.status(500).json({ message: error instanceof Error ? error.message : 'Failed to load notifications' });
+    }
+};
+
+export const markNotificationRead = async (req, res) => {
+    try {
+        const userId = req.user?.id;
+        const notificationId = req.params.notificationId;
+        const updated = await AINotification.findOneAndUpdate(
+            { _id: notificationId, userId },
+            { read: true },
+            { new: true }
+        );
+        if (!updated) return res.status(404).json({ message: 'Notification not found' });
+        res.json(updated);
+    } catch (error) {
+        res.status(500).json({ message: error instanceof Error ? error.message : 'Failed to update notification' });
+    }
+};

@@ -12,6 +12,7 @@ import {
   UserPlus,
   BarChart2,
   FileCheck,
+  Bell,
 } from "lucide-react";
 import { getAuthUser } from "../../api";
 
@@ -74,6 +75,7 @@ export function Sidebar({ role }: SidebarProps) {
         { path: "/po/create-committee", icon: UserPlus, label: "Create Committee" },
         { path: "/po/milestones", icon: Calendar, label: "Milestones" },
         { path: "/po/evaluation", icon: ClipboardList, label: "Tender Evaluation" },
+        { path: "/po/ai-alerts", icon: Bell, label: "AI Alerts" },
         { path: "/po/bidders", icon: Users, label: "Vendor Profiles" },
       ],
     },

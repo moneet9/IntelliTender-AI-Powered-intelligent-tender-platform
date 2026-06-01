@@ -8,6 +8,9 @@ import contractRoutes from './routes/contractRoutes.js';
 import mockRoutes from './routes/mockRoutes.js';
 import adminRoutes from './routes/adminRoutes.js';
 import chatbotRoutes from './AI/chatbot/chatbotRoutes.js';
+import aiScoringRoutes from './AI/evaluation/aiScoringRoutes.js';
+import aiMilestoneRoutes from './AI/evaluation/aiMilestoneRoutes.js';
+import { runAutoAiScoring } from './AI/evaluation/aiScoringController.js';
 
 dotenv.config();
 
@@ -30,7 +33,18 @@ app.use('/api/contracts', contractRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/mock', mockRoutes);
 app.use('/api/ai', chatbotRoutes);
+app.use('/api/ai/evaluations', aiScoringRoutes);
+app.use('/api/ai/milestones', aiMilestoneRoutes);
 
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => console.log(`Server started on port ${PORT}`));
+
+const autoRunInterval = Number(process.env.AI_AUTO_RUN_INTERVAL_MS || 600000);
+if (autoRunInterval > 0) {
+	setInterval(() => {
+		runAutoAiScoring().catch((error) => {
+			console.error('AI auto-scoring failed:', error.message || error);
+		});
+	}, autoRunInterval);
+}

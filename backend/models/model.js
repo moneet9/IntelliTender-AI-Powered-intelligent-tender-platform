@@ -73,6 +73,9 @@ const tenderSchema = new mongoose.Schema({
     preBidDate: { type: Date, required: true },
     finalSubmissionDate: { type: Date, required: true },
     evaluationMethod: { type: String, enum: ['L1', 'QCBS'], default: 'QCBS' },
+    l1Config: {
+        technicalCutoff: { type: Number },
+    },
     qcbsConfig: {
         technicalWeight: { type: Number },
         commercialWeight: { type: Number },
@@ -98,6 +101,90 @@ const bidDocumentSchema = new mongoose.Schema({
     name: { type: String, required: true },
     content: { type: String, required: true },
     mimeType: { type: String },
+}, { timestamps: true });
+
+const aiCriteriaScoreSchema = new mongoose.Schema({
+    criterion: { type: String, required: true },
+    maxMarks: { type: Number, required: true },
+    awardedMarks: { type: Number, required: true },
+    ruleType: { type: String, enum: ['binary', 'ratio', 'numeric', 'textual'], default: 'textual' },
+    evidence: { type: [String], default: [] },
+}, { _id: false });
+
+const aiBidSummarySchema = new mongoose.Schema({
+    tenderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Tender', required: true, index: true },
+    bidId: { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
+    vendorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+    evaluationMethod: { type: String, enum: ['L1', 'QCBS'], required: true },
+    status: { type: String, enum: ['pending', 'success', 'failed'], default: 'pending' },
+    model: { type: String },
+    promptVersion: { type: String, default: 'v1' },
+    generatedAt: { type: Date, default: Date.now },
+    eligibility: {
+        passed: { type: Boolean, default: false },
+        reasons: { type: [String], default: [] },
+    },
+    criteriaScores: { type: [aiCriteriaScoreSchema], default: [] },
+    commercialAnalysis: {
+        statedValue: { type: Number },
+        adjustedValue: { type: Number },
+        rationale: { type: String },
+        risks: { type: [String], default: [] },
+    },
+    genuityChecks: {
+        warnings: { type: [String], default: [] },
+        confidence: { type: Number },
+    },
+    aiScores: {
+        technicalScore: { type: Number },
+        financialScore: { type: Number },
+        overallScore: { type: Number },
+    },
+    summary: { type: String },
+    rationale: { type: [String], default: [] },
+    rawResponse: { type: mongoose.Schema.Types.Mixed },
+    error: { type: String },
+}, { timestamps: true });
+
+aiBidSummarySchema.index({ tenderId: 1, bidId: 1 }, { unique: true });
+
+const aiMilestoneReportSchema = new mongoose.Schema({
+    contractId: { type: mongoose.Schema.Types.ObjectId, ref: 'Contract', required: true, index: true },
+    milestoneId: { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
+    tenderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Tender', required: true, index: true },
+    reportedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    status: { type: String, enum: ['success', 'failed'], default: 'success' },
+    model: { type: String },
+    promptVersion: { type: String, default: 'v1' },
+    generatedAt: { type: Date, default: Date.now },
+    timeline: {
+        plannedStartDate: { type: Date },
+        plannedEndDate: { type: Date },
+        actualStartDate: { type: Date },
+        actualEndDate: { type: Date },
+        delayedDays: { type: Number, default: 0 },
+        status: { type: String },
+    },
+    checklistSummary: { type: [String], default: [] },
+    observations: { type: [String], default: [] },
+    alerts: { type: [String], default: [] },
+    severity: { type: String, enum: ['low', 'medium', 'high'], default: 'low' },
+    penaltyEstimate: { type: Number },
+    summary: { type: String },
+    rawResponse: { type: mongoose.Schema.Types.Mixed },
+    error: { type: String },
+}, { timestamps: true });
+
+aiMilestoneReportSchema.index({ contractId: 1, milestoneId: 1 }, { unique: true });
+
+const aiNotificationSchema = new mongoose.Schema({
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+    type: { type: String, enum: ['milestone-alert', 'ai-evaluation'], default: 'milestone-alert' },
+    title: { type: String, required: true },
+    message: { type: String, required: true },
+    severity: { type: String, enum: ['low', 'medium', 'high'], default: 'low' },
+    link: { type: String },
+    read: { type: Boolean, default: false },
 }, { timestamps: true });
 
 const milestoneChecklistItemSchema = new mongoose.Schema({
@@ -183,3 +270,6 @@ export const Tender = mongoose.model('Tender', tenderSchema);
 export const Contract = mongoose.model('Contract', contractSchema);
 export const BidDocument = mongoose.model('BidDocument', bidDocumentSchema);
 export const MilestoneAsset = mongoose.model('MilestoneAsset', milestoneAssetSchema);
+export const AIBidSummary = mongoose.model('AIBidSummary', aiBidSummarySchema);
+export const AIMilestoneReport = mongoose.model('AIMilestoneReport', aiMilestoneReportSchema);
+export const AINotification = mongoose.model('AINotification', aiNotificationSchema);

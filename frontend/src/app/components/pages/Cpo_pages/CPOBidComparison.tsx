@@ -74,6 +74,13 @@ export function CPOBidComparison() {
     return sorted;
   }, [evaluatedBids, bidSearch, bidStatusFilter, bidSort]);
 
+  const selectedTender = useMemo(
+    () => tenders.find((tender) => tender._id === selectedTenderId) || null,
+    [tenders, selectedTenderId]
+  );
+
+  const evaluationMethod = selectedTender?.evaluationMethod || "QCBS";
+
   const loadTenders = async () => {
     try {
       const data = await apiRequest<any[]>("/api/tenders");
@@ -259,6 +266,10 @@ export function CPOBidComparison() {
             <p className="text-sm text-gray-400 py-2 text-center">No bids match your filters.</p>
           )}
 
+          {evaluationMethod === "L1" && selectedTender?.l1Config?.technicalCutoff !== undefined && (
+            <p className="text-xs text-gray-500 mb-3">L1 cutoff: {selectedTender.l1Config.technicalCutoff}% technical marks. Only the lowest commercial bid among qualified bids can be approved.</p>
+          )}
+
           <div className="space-y-3">
             {filteredBids.map((bid) => (
               <div
@@ -271,6 +282,12 @@ export function CPOBidComparison() {
                     <span className={`px-2 py-1 rounded-full text-xs ${statusBadgeClass(bid.status)}`}>
                       {bid.status || "Pending"}
                     </span>
+                    {evaluationMethod === "L1" && bid.isQualified && (
+                      <span className="px-2 py-1 rounded-full text-xs bg-green-100 text-green-700">Qualified</span>
+                    )}
+                    {evaluationMethod === "L1" && bid.isQualified === false && (
+                      <span className="px-2 py-1 rounded-full text-xs bg-red-100 text-red-700">Below cutoff</span>
+                    )}
                   </div>
                   <div className="flex flex-wrap gap-4 mt-1">
                     <span className="text-xs text-gray-600">
@@ -282,13 +299,17 @@ export function CPOBidComparison() {
                     <span className="text-xs text-gray-600">
                       Amount: <strong>₹{Number(bid.proposedAmount).toLocaleString()}</strong>
                     </span>
+                    {evaluationMethod === "L1" && bid.isLowestQualified && (
+                      <span className="text-xs text-green-700 font-medium">Lowest qualified commercial bid</span>
+                    )}
                   </div>
                 </div>
                 <button
                   onClick={() => selectWinner(bid._id)}
-                  className="px-5 py-2 bg-[#2E8B57] hover:bg-[#267347] text-white rounded-md text-sm"
+                  disabled={evaluationMethod === "L1" && !bid.isLowestQualified}
+                  className={`px-5 py-2 rounded-md text-sm text-white ${evaluationMethod === "L1" && !bid.isLowestQualified ? "bg-gray-400 cursor-not-allowed" : "bg-[#2E8B57] hover:bg-[#267347]"}`}
                 >
-                  Approve & Select Winner
+                  {evaluationMethod === "L1" ? "Approve Lowest Qualified Bid" : "Approve & Select Winner"}
                 </button>
               </div>
             ))}

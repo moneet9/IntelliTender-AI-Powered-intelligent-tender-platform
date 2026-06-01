@@ -1,4 +1,5 @@
 import { Contract, Tender, MilestoneAsset } from '../models/model.js';
+import { evaluateMilestoneWithAi } from '../AI/evaluation/aiMilestoneController.js';
 
 const MILESTONE_STATUSES = ['Not Started', 'In Progress', 'Completed', 'Delayed'];
 
@@ -370,6 +371,27 @@ export const updateContractStatus = async (req, res) => {
         contract.status = status;
         await contract.save();
 
+        try {
+            await evaluateMilestoneWithAi({
+                contract,
+                milestone,
+                update: {
+                    status: milestone.status,
+                    progress: milestone.progress,
+                    actualStartDate: milestone.actualStartDate,
+                    actualEndDate: milestone.actualEndDate,
+                    remarks: milestone.remarks,
+                    checklist: milestone.checklist,
+                    documents: milestone.documents,
+                    images: milestone.images,
+                    verifiedBy: milestone.verifiedBy,
+                },
+                report: null,
+            });
+        } catch {
+            // AI milestone review is best-effort and should not block updates.
+        }
+
         // Sync tender status to reflect contract state
         if (contract.tenderId) {
             const tenderStatus = status === 'Completed' ? 'Completed' : status === 'Cancelled' ? 'Closed' : null;
@@ -623,6 +645,30 @@ export const submitProgressReport = async (req, res) => {
         await contract.save();
 
         const createdReport = contract.progressReports[contract.progressReports.length - 1];
+
+        try {
+            const milestone = milestoneId ? contract.milestones.id(milestoneId) : null;
+            if (milestone) {
+                await evaluateMilestoneWithAi({
+                    contract,
+                    milestone,
+                    update: {
+                        status: milestone.status,
+                        progress: milestone.progress,
+                        actualStartDate: milestone.actualStartDate,
+                        actualEndDate: milestone.actualEndDate,
+                        remarks: milestone.remarks,
+                        checklist: milestone.checklist,
+                        documents: milestone.documents,
+                        images: milestone.images,
+                        verifiedBy: milestone.verifiedBy,
+                    },
+                    report: createdReport,
+                });
+            }
+        } catch {
+            // AI milestone review is best-effort and should not block reporting.
+        }
         res.status(201).json({ message: 'Progress report submitted', report: createdReport });
     } catch (error) {
         res.status(500).json({ error: error.message });

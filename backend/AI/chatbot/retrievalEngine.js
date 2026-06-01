@@ -1,12 +1,13 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { Contract, Tender, User } from '../../models/model.js';
+import { Contract, Tender, User, AIMilestoneReport } from '../../models/model.js';
 import { classifyIntent } from './intentRouter.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
 const EMBEDDING_MODEL = process.env.OLLAMA_EMBED_MODEL || process.env.OLLAMA_MODEL || 'nomic-embed-text';
+const OLLAMA_AUTH_TOKEN = process.env.OLLAMA_AUTH_TOKEN || '';
 
 const stopWords = new Set([
     'the', 'and', 'for', 'with', 'that', 'this', 'from', 'what', 'show', 'tell', 'give', 'about', 'please',
@@ -154,7 +155,42 @@ function summarizeContract(contract, role) {
             : [];
     }
 
+    if (contract.aiMilestoneSummary) {
+        summary.aiMilestoneSummary = contract.aiMilestoneSummary;
+    }
+
     return summary;
+}
+
+async function attachAiMilestoneSummaries(contracts) {
+    const contractIds = Array.isArray(contracts)
+        ? contracts.map((contract) => String(contract._id)).filter(Boolean)
+        : [];
+
+    if (!contractIds.length) return contracts;
+
+    const reports = await AIMilestoneReport.find({ contractId: { $in: contractIds } })
+        .sort({ generatedAt: -1 })
+        .lean();
+
+    const summaryByContract = new Map();
+    reports.forEach((report) => {
+        const key = String(report.contractId);
+        if (summaryByContract.has(key)) return;
+        summaryByContract.set(key, {
+            severity: report.severity,
+            alerts: report.alerts || [],
+            penaltyEstimate: report.penaltyEstimate,
+            delayedDays: report.timeline?.delayedDays || 0,
+            summary: report.summary || '',
+            generatedAt: report.generatedAt,
+        });
+    });
+
+    return contracts.map((contract) => ({
+        ...contract,
+        aiMilestoneSummary: summaryByContract.get(String(contract._id)) || null,
+    }));
 }
 
 export function buildRoleInstruction(role) {
@@ -200,34 +236,6 @@ export function buildOllamaMessages({ role, message, history, context }) {
     ];
 }
 
-async function readKnowledgeDocs() {
-    const docs = [];
-
-    for (const sourcePath of knowledgeSources) {
-        try {
-            const cached = textCache.get(sourcePath);
-            if (cached) {
-                docs.push(cached);
-                continue;
-            }
-
-            const content = await fs.readFile(sourcePath, 'utf8');
-            const document = {
-                path: sourcePath,
-                title: path.basename(sourcePath),
-                content,
-            };
-
-            textCache.set(sourcePath, document);
-            docs.push(document);
-        } catch {
-            // Ignore missing knowledge docs and continue with available sources.
-        }
-    }
-
-    return docs;
-}
-
 function splitKnowledgeChunks(document) {
     return String(document.content || '')
         .split(/\n{2,}/)
@@ -257,6 +265,7 @@ async function getEmbedding(text) {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
+            ...(OLLAMA_AUTH_TOKEN ? { Authorization: `Bearer ${OLLAMA_AUTH_TOKEN}` } : {}),
         },
         body: JSON.stringify({
             model: EMBEDDING_MODEL,
@@ -431,6 +440,8 @@ async function buildStructuredBranch(role, userId, query) {
         fetchRoleScopedContracts(role, userId, contractFilters),
     ]);
 
+    const contractsWithAi = await attachAiMilestoneSummaries(contracts);
+
     return {
         branch: 'structured',
         summary: {
@@ -440,7 +451,7 @@ async function buildStructuredBranch(role, userId, query) {
         },
         tenders: rankItems(tenders, queryText, (tender) => `${tender.title} ${tender.description} ${tender.category} ${tender.status}`, 6)
             .map((tender) => summarizeTender(tender, role, userId)),
-        contracts: rankItems(contracts, queryText, (contract) => `${contract?.tenderId?.title || ''} ${contract?.status || ''}`, 6)
+        contracts: rankItems(contractsWithAi, queryText, (contract) => `${contract?.tenderId?.title || ''} ${contract?.status || ''}`, 6)
             .map((contract) => summarizeContract(contract, role)),
     };
 }
@@ -448,6 +459,7 @@ async function buildStructuredBranch(role, userId, query) {
 async function buildSemanticBranch(role, userId, query) {
     const tenders = await fetchRoleScopedTenders(role, userId, {});
     const contracts = await fetchRoleScopedContracts(role, userId, {});
+    const contractsWithAi = await attachAiMilestoneSummaries(contracts);
 
     const candidates = [
         ...tenders.map((tender) => ({
@@ -455,7 +467,7 @@ async function buildSemanticBranch(role, userId, query) {
             item: tender,
             snippet: buildTenderSnippet(tender, role, userId),
         })),
-        ...contracts.map((contract) => ({
+        ...contractsWithAi.map((contract) => ({
             kind: 'contract',
             item: contract,
             snippet: buildContractSnippet(contract, role),
@@ -533,20 +545,6 @@ async function readKnowledgeDocs() {
     }
 
     return docs;
-}
-
-function splitKnowledgeChunks(document) {
-    return String(document.content || '')
-        .split(/\n{2,}/)
-        .map((chunk) => chunk.trim())
-        .filter(Boolean)
-        .slice(0, 20)
-        .map((chunk, index) => ({
-            source: document.title,
-            path: document.path,
-            chunk,
-            chunkId: index + 1,
-        }));
 }
 
 async function buildKnowledgeBranch(query) {

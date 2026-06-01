@@ -11,6 +11,9 @@ type Tender = {
   title: string;
   status: "Draft" | "Published" | "Closed" | "Awarded" | "Completed";
   evaluationMethod?: "L1" | "QCBS";
+  l1Config?: {
+    technicalCutoff?: number;
+  };
   qcbsConfig?: {
     technicalWeight?: number;
     commercialWeight?: number;
@@ -224,6 +227,9 @@ export function CommitteeDashboard() {
 
     const evaluationMethod = selectedTender?.evaluationMethod || "QCBS";
     const eligibilityValue = eligibilityChecked[bidId] !== false;
+    const currentBid = bids.find((bid) => bid._id === bidId) || null;
+    const currentEvaluation = currentBid ? getCommitteeMemberEvaluation(currentBid) : null;
+    const technicalEntry = technicalScore[bidId];
 
     const technicalTotal = technicalRequirements.reduce(
       (sum, doc) => sum + Number(technicalDocScores[bidId]?.[doc.label] || 0),
@@ -231,8 +237,19 @@ export function CommitteeDashboard() {
     );
     const technicalScoreValue = evaluationMethod === "QCBS"
       ? (technicalRequirements.length ? technicalTotal : Number(technicalScore[bidId] || 0))
-      : 0;
-    const financialScoreValue = Number(financialScore[bidId] || 0);
+      : Number(technicalEntry ?? currentEvaluation?.technicalScore ?? 0);
+    const financialScoreValue = evaluationMethod === "L1"
+      ? Number(currentBid?.proposedAmount || currentEvaluation?.financialScore || 0)
+      : Number(financialScore[bidId] || 0);
+
+    if (
+      evaluationMethod === "L1" &&
+      currentEvaluation?.technicalScore === undefined &&
+      (technicalEntry === undefined || technicalEntry.trim() === "")
+    ) {
+      setError("Enter technical marks out of 100 for L1 evaluation");
+      return;
+    }
 
     setSubmittingBidId(bidId);
     setError("");
@@ -441,7 +458,7 @@ export function CommitteeDashboard() {
                               <FileText className="h-4 w-4 text-[#1D4E89]" />
                               <div>
                                 <p className="text-sm text-[#0B3C5D]">{fallbackName}</p>
-                                <p className="text-xs text-gray-500">{reference ? "Lazy document" : "Stored document"}</p>
+                                <p className="text-xs text-gray-500">Tender document</p>
                                 {docError && <p className="text-xs text-red-600 mt-1">{docError}</p>}
                               </div>
                             </div>
@@ -452,10 +469,10 @@ export function CommitteeDashboard() {
                                   onClick={() => openDocument(resolvedUrl)}
                                   className="text-sm text-[#1D4E89] hover:underline"
                                 >
-                                  View
+                                  Open document
                                 </button>
                               ) : (
-                                <span className="text-xs text-gray-400">Not loaded</span>
+                                <span className="text-xs text-gray-400">Unavailable</span>
                               )}
                               {reference && !cached && (
                                 <button
@@ -466,7 +483,7 @@ export function CommitteeDashboard() {
                                     isLoading ? "bg-[#7aa0c5] cursor-not-allowed" : "bg-[#1D4E89] hover:bg-[#154068]"
                                   }`}
                                 >
-                                  {isLoading ? "Loading..." : "Load"}
+                                  {isLoading ? "Loading..." : "Preview"}
                                 </button>
                               )}
                             </div>
@@ -496,7 +513,10 @@ export function CommitteeDashboard() {
                     );
                     const eligibilityValue = eligibilityChecked[bid._id] !== false;
                     const evaluationMethod = selectedTender?.evaluationMethod || "QCBS";
+                    const isL1 = evaluationMethod === "L1";
                     const isFinalized = selectedTender?.status === "Awarded" || selectedTender?.status === "Completed";
+                    const l1TechnicalCutoff = Number(selectedTender?.l1Config?.technicalCutoff || 0);
+                    const technicalScoreValue = technicalScore[bid._id] ?? String(myEvaluation?.technicalScore ?? "");
 
                     const evaluatedPrices = bids
                       .map((entry) => Number(financialScore[entry._id] || entry.financialScore || entry.proposedAmount || 0))
@@ -510,6 +530,7 @@ export function CommitteeDashboard() {
                     const weightedTechnical = technicalNormalized * (technicalWeight / 100);
                     const weightedCommercial = commercialNormalized * (commercialWeight / 100);
                     const qcbsFinal = weightedTechnical + weightedCommercial;
+                    const l1Marks = Number(technicalScoreValue || 0);
 
                     return (
                       <div key={bid._id} className="border border-gray-200 rounded-lg p-4">
@@ -519,7 +540,7 @@ export function CommitteeDashboard() {
                             <p className="text-xs text-gray-500 mt-1">
                               {evaluationMethod === "QCBS"
                                 ? `Aggregated score: Technical ${Number.isFinite(weightedTechnical) ? weightedTechnical.toFixed(2) : "-"} | Commercial ${Number.isFinite(weightedCommercial) ? weightedCommercial.toFixed(2) : "-"} | QCBS ${Number.isFinite(qcbsFinal) ? qcbsFinal.toFixed(2) : "-"}`
-                                : `Aggregated score: Commercial ${Number.isFinite(priceValue) && priceValue > 0 ? priceValue.toLocaleString() : "-"}`}
+                                : `Technical ${Number.isFinite(l1Marks) ? l1Marks.toFixed(2) : "-"} / 100 | Cutoff ${l1TechnicalCutoff}% | Commercial ₹${Number(bid.proposedAmount).toLocaleString()}`}
                             </p>
                           </div>
                           <div className="text-right">
@@ -571,97 +592,142 @@ export function CommitteeDashboard() {
                                       <span className="text-gray-400">{eligibilityName}</span>
                                     )}
                                   </span>
-                                  <label className="inline-flex items-center gap-2 text-sm">
-                                    <input
-                                      type="checkbox"
-                                      checked={eligibilityValue}
-                                      onChange={(e) =>
+                                  <div className="flex items-center gap-3 text-sm">
+                                    <label className="inline-flex items-center gap-2">
+                                      <input
+                                        type="checkbox"
+                                        checked={eligibilityValue}
+                                        onChange={(e) =>
+                                          setEligibilityChecked((prev) => ({
+                                            ...prev,
+                                            [bid._id]: e.target.checked,
+                                          }))
+                                        }
+                                        disabled={isFinalized}
+                                        className="h-4 w-4 text-[#1D4E89]"
+                                      />
+                                      Eligible
+                                    </label>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
                                         setEligibilityChecked((prev) => ({
                                           ...prev,
-                                          [bid._id]: e.target.checked,
+                                          [bid._id]: false,
                                         }))
                                       }
-                                      disabled={isFinalized}
-                                      className="h-4 w-4 text-[#1D4E89]"
-                                    />
-                                    Eligible
-                                  </label>
+                                      disabled={isFinalized || eligibilityValue === false}
+                                      className="text-xs text-gray-500 hover:text-gray-700 underline disabled:cursor-not-allowed disabled:no-underline"
+                                    >
+                                      Clear
+                                    </button>
+                                  </div>
                                 </div>
                               );
                             })()}
 
-                            {eligibilityValue && evaluationMethod === "QCBS" && technicalRequirements.map((doc) => {
-                              const maxMarks = technicalCriteriaMap.get(doc.label) ?? 0;
-                              const value = technicalDocScores[bid._id]?.[doc.label] ?? "";
-                              const bidDoc = resolveBidDocument(bid, doc.label);
-                              const docUrl = bidDoc ? getBidDocumentUrl(bidDoc) : "";
-                              const docName = bidDoc ? getStoredDocumentName(bidDoc.document, doc.label) : "Not uploaded";
+                            {!eligibilityValue ? (
+                              <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                                This bid will be rejected when you save this evaluation. No further scoring fields are shown until the bid is marked eligible.
+                              </div>
+                            ) : (
+                              <>
+                                {isL1 && (
+                                  <div className="grid grid-cols-1 md:grid-cols-3 gap-2 items-center border border-gray-200 rounded-md p-3">
+                                    <span className="text-sm text-[#0B3C5D]">Technical Marks</span>
+                                    <span className="text-sm text-gray-500">Enter the committee score out of 100.</span>
+                                    <div className="flex items-center gap-2">
+                                      <input
+                                        type="number"
+                                        min="0"
+                                        max="100"
+                                        value={technicalScoreValue}
+                                        onChange={(e) => setTechnicalScore({ ...technicalScore, [bid._id]: e.target.value })}
+                                        disabled={isFinalized}
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                                        placeholder="0 - 100"
+                                      />
+                                      <span className="text-xs text-gray-500">/ 100</span>
+                                    </div>
+                                  </div>
+                                )}
 
-                              return (
-                                <div key={doc.label} className="grid grid-cols-1 md:grid-cols-3 gap-2 items-center border border-gray-200 rounded-md p-3">
-                                  <span className="text-sm text-[#0B3C5D]">{doc.label}</span>
+                                {evaluationMethod === "QCBS" && technicalRequirements.map((doc) => {
+                                  const maxMarks = technicalCriteriaMap.get(doc.label) ?? 0;
+                                  const value = technicalDocScores[bid._id]?.[doc.label] ?? "";
+                                  const bidDoc = resolveBidDocument(bid, doc.label);
+                                  const docUrl = bidDoc ? getBidDocumentUrl(bidDoc) : "";
+                                  const docName = bidDoc ? getStoredDocumentName(bidDoc.document, doc.label) : "Not uploaded";
+
+                                  return (
+                                    <div key={doc.label} className="grid grid-cols-1 md:grid-cols-3 gap-2 items-center border border-gray-200 rounded-md p-3">
+                                      <span className="text-sm text-[#0B3C5D]">{doc.label}</span>
+                                      <span className="text-sm">
+                                        {docUrl ? (
+                                          <a href={docUrl} target="_blank" rel="noreferrer" className="text-[#1D4E89] hover:underline">
+                                            {docName}
+                                          </a>
+                                        ) : (
+                                          <span className="text-gray-400">{docName}</span>
+                                        )}
+                                      </span>
+                                      <div className="flex items-center gap-2">
+                                        <input
+                                          type="number"
+                                          min="0"
+                                          max={maxMarks}
+                                          value={value}
+                                          onChange={(e) => {
+                                            const nextValue = e.target.value;
+                                            const maxAllowed = Number.isFinite(maxMarks) ? maxMarks : 0;
+                                            const parsed = nextValue === "" ? "" : Math.min(Math.max(Number(nextValue), 0), maxAllowed);
+                                            setTechnicalDocScores((prev) => ({
+                                              ...prev,
+                                              [bid._id]: { ...(prev[bid._id] || {}), [doc.label]: String(parsed) },
+                                            }));
+                                          }}
+                                          disabled={isFinalized}
+                                          className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                                          placeholder={`0 - ${maxMarks}`}
+                                        />
+                                        <span className="text-xs text-gray-500">/ {maxMarks}</span>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-2 items-center border border-gray-200 rounded-md p-3">
+                                  <span className="text-sm text-[#0B3C5D]">Commercial Bid Document</span>
                                   <span className="text-sm">
-                                    {docUrl ? (
-                                      <a href={docUrl} target="_blank" rel="noreferrer" className="text-[#1D4E89] hover:underline">
-                                        {docName}
-                                      </a>
-                                    ) : (
-                                      <span className="text-gray-400">{docName}</span>
-                                    )}
+                                    {(() => {
+                                      const commercialDoc = resolveBidDocument(bid, "Commercial Bid Document");
+                                      const commercialUrl = commercialDoc ? getBidDocumentUrl(commercialDoc) : "";
+                                      const commercialName = commercialDoc
+                                        ? getStoredDocumentName(commercialDoc.document, commercialDoc.label)
+                                        : "Not uploaded";
+                                      return commercialUrl ? (
+                                        <a href={commercialUrl} target="_blank" rel="noreferrer" className="text-[#1D4E89] hover:underline">
+                                          {commercialName}
+                                        </a>
+                                      ) : (
+                                        <span className="text-gray-400">{commercialName}</span>
+                                      );
+                                    })()}
                                   </span>
-                                  <div className="flex items-center gap-2">
+                                  {isL1 ? (
+                                    <span className="text-sm font-medium text-[#0B3C5D]">₹{Number(bid.proposedAmount).toLocaleString()}</span>
+                                  ) : (
                                     <input
                                       type="number"
-                                      min="0"
-                                      max={maxMarks}
-                                      value={value}
-                                      onChange={(e) => {
-                                        const nextValue = e.target.value;
-                                        const maxAllowed = Number.isFinite(maxMarks) ? maxMarks : 0;
-                                        const parsed = nextValue === "" ? "" : Math.min(Math.max(Number(nextValue), 0), maxAllowed);
-                                        setTechnicalDocScores((prev) => ({
-                                          ...prev,
-                                          [bid._id]: { ...(prev[bid._id] || {}), [doc.label]: String(parsed) },
-                                        }));
-                                      }}
+                                      value={financialScore[bid._id] ?? String(myEvaluation?.financialScore ?? "")}
+                                      onChange={(e) => setFinancialScore({ ...financialScore, [bid._id]: e.target.value })}
                                       disabled={isFinalized}
                                       className="w-full px-3 py-2 border border-gray-300 rounded-md"
-                                      placeholder={`0 - ${maxMarks}`}
+                                      placeholder="Enter price"
                                     />
-                                    <span className="text-xs text-gray-500">/ {maxMarks}</span>
-                                  </div>
+                                  )}
                                 </div>
-                              );
-                            })}
-
-                            {eligibilityValue && (
-                              <div className="grid grid-cols-1 md:grid-cols-3 gap-2 items-center border border-gray-200 rounded-md p-3">
-                                <span className="text-sm text-[#0B3C5D]">Commercial Bid Document</span>
-                                <span className="text-sm">
-                                  {(() => {
-                                    const commercialDoc = resolveBidDocument(bid, "Commercial Bid Document");
-                                    const commercialUrl = commercialDoc ? getBidDocumentUrl(commercialDoc) : "";
-                                    const commercialName = commercialDoc
-                                      ? getStoredDocumentName(commercialDoc.document, commercialDoc.label)
-                                      : "Not uploaded";
-                                    return commercialUrl ? (
-                                      <a href={commercialUrl} target="_blank" rel="noreferrer" className="text-[#1D4E89] hover:underline">
-                                        {commercialName}
-                                      </a>
-                                    ) : (
-                                      <span className="text-gray-400">{commercialName}</span>
-                                    );
-                                  })()}
-                                </span>
-                                <input
-                                  type="number"
-                                  value={financialScore[bid._id] ?? String(myEvaluation?.financialScore ?? "")}
-                                  onChange={(e) => setFinancialScore({ ...financialScore, [bid._id]: e.target.value })}
-                                  disabled={isFinalized}
-                                  className="w-full px-3 py-2 border border-gray-300 rounded-md"
-                                  placeholder="Enter price"
-                                />
-                              </div>
+                              </>
                             )}
                           </div>
 
@@ -678,6 +744,23 @@ export function CommitteeDashboard() {
                                   <div>
                                     <p>Commercial price</p>
                                     <p className="text-sm text-[#0B3C5D] font-medium">₹{priceValue ? priceValue.toLocaleString() : "-"}</p>
+                                  </div>
+                                </div>
+                              )}
+
+                              {eligibilityValue && isL1 && (
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs text-gray-600">
+                                  <div>
+                                    <p>Technical score</p>
+                                    <p className="text-sm text-[#0B3C5D] font-medium">{Number.isFinite(l1Marks) ? l1Marks.toFixed(2) : "-"}</p>
+                                  </div>
+                                  <div>
+                                    <p>Cutoff</p>
+                                    <p className="text-sm text-[#0B3C5D] font-medium">{l1TechnicalCutoff}%</p>
+                                  </div>
+                                  <div>
+                                    <p>Commercial price</p>
+                                    <p className="text-sm text-[#0B3C5D] font-medium">₹{Number(bid.proposedAmount).toLocaleString()}</p>
                                   </div>
                                 </div>
                               )}
