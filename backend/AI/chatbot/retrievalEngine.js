@@ -3,11 +3,9 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { Contract, Tender, User, AIMilestoneReport } from '../../models/model.js';
 import { classifyIntent } from './intentRouter.js';
+import { callLocalEmbedding, LOCAL_AI_EMBED_MODEL } from '../localModelClient.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
-const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
-const EMBEDDING_MODEL = process.env.OLLAMA_EMBED_MODEL || process.env.OLLAMA_MODEL || 'nomic-embed-text';
-const OLLAMA_AUTH_TOKEN = process.env.OLLAMA_AUTH_TOKEN || '';
 
 const stopWords = new Set([
     'the', 'and', 'for', 'with', 'that', 'this', 'from', 'what', 'show', 'tell', 'give', 'about', 'please',
@@ -104,6 +102,13 @@ function summarizeTender(tender, role, userId) {
 }
 
 function summarizeContract(contract, role) {
+    const milestones = Array.isArray(contract.milestones) ? contract.milestones : [];
+    const totalMilestones = milestones.length;
+    const completedMilestones = milestones.filter((milestone) => String(milestone.status || '').toLowerCase() === 'completed').length;
+    const averageProgress = totalMilestones
+        ? Math.round(milestones.reduce((sum, milestone) => sum + (Number(milestone.progress) || 0), 0) / totalMilestones)
+        : 0;
+
     const summary = {
         id: String(contract._id),
         status: contract.status,
@@ -155,6 +160,17 @@ function summarizeContract(contract, role) {
             : [];
     }
 
+    summary.milestoneStats = {
+        total: totalMilestones,
+        completed: completedMilestones,
+        pending: Math.max(totalMilestones - completedMilestones, 0),
+        averageProgress,
+    };
+
+    if (Array.isArray(contract.aiMilestoneReports) && contract.aiMilestoneReports.length) {
+        summary.aiMilestoneReports = contract.aiMilestoneReports;
+    }
+
     if (contract.aiMilestoneSummary) {
         summary.aiMilestoneSummary = contract.aiMilestoneSummary;
     }
@@ -174,22 +190,37 @@ async function attachAiMilestoneSummaries(contracts) {
         .lean();
 
     const summaryByContract = new Map();
+    const reportsByContract = new Map();
     reports.forEach((report) => {
         const key = String(report.contractId);
-        if (summaryByContract.has(key)) return;
-        summaryByContract.set(key, {
+        const compact = {
             severity: report.severity,
             alerts: report.alerts || [],
             penaltyEstimate: report.penaltyEstimate,
             delayedDays: report.timeline?.delayedDays || 0,
             summary: report.summary || '',
+            milestoneId: String(report.milestoneId || ''),
+            committeeReport: report.committeeReport || null,
+            aiAssessment: report.aiAssessment || null,
+            timeline: report.timeline || null,
             generatedAt: report.generatedAt,
-        });
+        };
+
+        if (!summaryByContract.has(key)) {
+            summaryByContract.set(key, compact);
+        }
+
+        const recent = reportsByContract.get(key) || [];
+        if (recent.length < 3) {
+            recent.push(compact);
+            reportsByContract.set(key, recent);
+        }
     });
 
     return contracts.map((contract) => ({
         ...contract,
         aiMilestoneSummary: summaryByContract.get(String(contract._id)) || null,
+        aiMilestoneReports: reportsByContract.get(String(contract._id)) || [],
     }));
 }
 
@@ -198,9 +229,17 @@ export function buildRoleInstruction(role) {
 
     return [
         `You are IntelliTender AI for the ${roleName} role.`,
-        'Answer only from the provided database context, knowledge docs, tool output, and conversation history.',
+        'You are a MongoDB-aware procurement assistant. Think from the database records provided to you.',
+        'Talk naturally like a helpful chat assistant.',
+        'Use the provided database context, knowledge docs, tool output, and conversation history as grounding, not as a script.',
         'If the user asks for data outside their role, say it is unavailable in their role and do not invent it.',
-        'Be concise, specific, and procurement-focused.',
+        'If the context includes structured tender or contract records, answer from those records first.',
+        'For latest, recent, newest, or most recent tender questions, use the first structured tender match in the context.',
+        'If no matching records are available, say that clearly instead of giving a generic explanation.',
+        'Be warm, clear, and short by default, but expand when the user asks for more detail.',
+        'If local facts are provided, treat them as authoritative and weave them into the answer naturally.',
+        'When the answer is uncertain, ask one short clarifying question instead of giving a vague reply.',
+        'Do not mention internal branches, retrieval names, or fallback mechanics.',
         roleName === 'Vendor'
             ? 'Vendor users can see published tenders, their own bids, and their own contracts. Do not reveal evaluation marks, technical scores, financial scores, or committee-only comments.'
             : '',
@@ -216,7 +255,7 @@ export function buildRoleInstruction(role) {
     ].filter(Boolean).join('\n');
 }
 
-export function buildOllamaMessages({ role, message, history, context }) {
+export function buildAssistantMessages({ role, message, history, context }) {
     const system = buildRoleInstruction(role);
     const conversation = Array.isArray(history)
         ? history
@@ -229,11 +268,60 @@ export function buildOllamaMessages({ role, message, history, context }) {
         { role: 'system', content: system },
         {
             role: 'system',
-            content: `Hybrid retrieval context for the ${role} role:\n${JSON.stringify(context, null, 2)}`,
+            content: buildContextDigest(context),
+        },
+        {
+            role: 'system',
+            content: [
+                'Answer style:',
+                '- Start with a direct, friendly answer.',
+                '- Use a natural conversational tone.',
+                '- If the user asks a follow-up, continue naturally from the previous message.',
+                '- Only mention sources if the user asks or if it helps explain the answer briefly.',
+            ].join('\n'),
         },
         ...conversation,
         { role: 'user', content: message },
     ];
+}
+
+function buildContextDigest(context) {
+    const sections = [];
+
+    sections.push([
+        'Mongo schema guide:',
+        '- Tender: title, description, category, budget, preBidDate, finalSubmissionDate, evaluationMethod, status, createdBy, documents, bids, requiredDocuments, qcbsConfig.',
+        '- Contract: status, timelineDefined, timelineStartDate, timelineEndDate, tenderId, vendorId, milestones, milestoneStats, aiMilestoneReports, aiMilestoneSummary.',
+        '- User: name, role, department, designation, specialization, managerPo, accountStatus.',
+        '- Rule: answer from the records shown here; do not invent Mongo data.',
+    ].join('\n'));
+
+    const localFacts = Array.isArray(context?.localFacts) ? context.localFacts : [];
+    if (localFacts.length) {
+        sections.push(`Local facts:\n${localFacts.map((fact) => `- ${fact}`).join('\n')}`);
+    }
+
+    const structuredTenders = Array.isArray(context?.structured?.tenders) ? context.structured.tenders : [];
+    if (structuredTenders.length) {
+        sections.push([
+            'Top tender matches:',
+            ...structuredTenders.slice(0, 5).map((tender) => `- ${tender.title} | status: ${tender.status} | final submission: ${tender.finalSubmissionDate} | budget: ${tender.budget}`),
+        ].join('\n'));
+    }
+
+    const structuredContracts = Array.isArray(context?.structured?.contracts) ? context.structured.contracts : [];
+    if (structuredContracts.length) {
+        sections.push([
+            'Top contract matches:',
+            ...structuredContracts.slice(0, 5).map((contract) => `- ${contract.id} | status: ${contract.status}`),
+        ].join('\n'));
+    }
+
+    if (!sections.length) {
+        return 'No local context records were found.';
+    }
+
+    return sections.join('\n\n');
 }
 
 function splitKnowledgeChunks(document) {
@@ -261,25 +349,11 @@ async function getEmbedding(text) {
         return cached;
     }
 
-    const response = await fetch(`${OLLAMA_URL}/api/embeddings`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            ...(OLLAMA_AUTH_TOKEN ? { Authorization: `Bearer ${OLLAMA_AUTH_TOKEN}` } : {}),
-        },
-        body: JSON.stringify({
-            model: EMBEDDING_MODEL,
-            prompt: key,
-        }),
+    const embedding = await callLocalEmbedding({
+        input: key,
+        model: LOCAL_AI_EMBED_MODEL,
     });
 
-    if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Embedding error: ${response.status} ${errorText}`);
-    }
-
-    const data = await response.json();
-    const embedding = Array.isArray(data.embedding) ? data.embedding : [];
     embeddingCache.set(key, embedding);
     return embedding;
 }
@@ -322,15 +396,27 @@ function buildTenderSnippet(tender, role, userId) {
     ].filter(Boolean).join(' | ');
 }
 
+function compareTenderRecency(left, right) {
+    const leftDate = new Date(left?.finalSubmissionDate || left?.createdAt || 0).getTime();
+    const rightDate = new Date(right?.finalSubmissionDate || right?.createdAt || 0).getTime();
+    return rightDate - leftDate;
+}
+
 function buildContractSnippet(contract, role) {
     const summary = summarizeContract(contract, role);
     const tenderTitle = summary.tender && typeof summary.tender === 'object' ? summary.tender.title : String(summary.tender || '');
+    const latestReport = Array.isArray(summary.aiMilestoneReports) && summary.aiMilestoneReports.length
+        ? summary.aiMilestoneReports[0]
+        : summary.aiMilestoneSummary;
 
     return [
         `Contract status: ${summary.status}`,
         `Tender: ${tenderTitle}`,
         `Timeline: ${summary.timelineStartDate} -> ${summary.timelineEndDate}`,
         `Milestones: ${Array.isArray(summary.milestones) ? summary.milestones.length : 0}`,
+        latestReport && latestReport.penaltyEstimate ? `Penalty estimate: ${latestReport.penaltyEstimate}` : '',
+        latestReport && latestReport.delayedDays ? `Delay days: ${latestReport.delayedDays}` : '',
+        latestReport ? `Latest AI milestone note: ${latestReport.summary || latestReport.alerts?.[0] || ''}` : '',
     ].join(' | ');
 }
 
@@ -395,49 +481,11 @@ async function fetchRoleScopedContracts(role, userId, filters = {}) {
 async function buildStructuredBranch(role, userId, query) {
     const queryText = String(query || '').trim();
     const lowerQuery = queryText.toLowerCase();
-
-    const statuses = ['draft', 'published', 'closed', 'awarded', 'completed', 'pending', 'evaluated', 'selected', 'rejected', 'signed', 'cancelled']
-        .filter((status) => lowerQuery.includes(status));
-
-    const categories = ['supply', 'work', 'service', 'general']
-        .filter((category) => lowerQuery.includes(category));
-
-    const tenderFilters = {};
-    const contractFilters = {};
-
-    if (statuses.length) {
-        const tenderStatuses = statuses
-            .filter((status) => ['draft', 'published', 'closed', 'awarded', 'completed'].includes(status))
-            .map((status) => status.charAt(0).toUpperCase() + status.slice(1));
-        if (tenderStatuses.length) {
-            tenderFilters.status = { $in: tenderStatuses };
-        }
-
-        const contractStatuses = statuses
-            .filter((status) => ['awarded', 'signed', 'completed', 'cancelled'].includes(status))
-            .map((status) => status.charAt(0).toUpperCase() + status.slice(1));
-        if (contractStatuses.length) {
-            contractFilters.status = { $in: contractStatuses };
-        }
-    }
-
-    if (categories.length) {
-        tenderFilters.category = { $in: categories.map((category) => category.charAt(0).toUpperCase() + category.slice(1)) };
-    }
-
-    if (queryText.length >= 3) {
-        tenderFilters.$or = [
-            { title: { $regex: queryText, $options: 'i' } },
-            { description: { $regex: queryText, $options: 'i' } },
-        ];
-        contractFilters.$or = [
-            { status: { $regex: queryText, $options: 'i' } },
-        ];
-    }
+    const wantsRecency = /\b(latest|recent|newest|most recent|new)\b/i.test(lowerQuery);
 
     const [tenders, contracts] = await Promise.all([
-        fetchRoleScopedTenders(role, userId, tenderFilters),
-        fetchRoleScopedContracts(role, userId, contractFilters),
+        fetchRoleScopedTenders(role, userId, {}),
+        fetchRoleScopedContracts(role, userId, {}),
     ]);
 
     const contractsWithAi = await attachAiMilestoneSummaries(contracts);
@@ -447,9 +495,15 @@ async function buildStructuredBranch(role, userId, query) {
         summary: {
             matchedTenders: tenders.length,
             matchedContracts: contracts.length,
+            recencyRequested: wantsRecency,
             role,
         },
-        tenders: rankItems(tenders, queryText, (tender) => `${tender.title} ${tender.description} ${tender.category} ${tender.status}`, 6)
+        tenders: rankItems(
+            wantsRecency ? [...tenders].sort(compareTenderRecency) : tenders,
+            queryText,
+            (tender) => `${tender.title} ${tender.description} ${tender.category} ${tender.status}`,
+            6
+        )
             .map((tender) => summarizeTender(tender, role, userId)),
         contracts: rankItems(contractsWithAi, queryText, (contract) => `${contract?.tenderId?.title || ''} ${contract?.status || ''}`, 6)
             .map((contract) => summarizeContract(contract, role)),
@@ -483,19 +537,18 @@ async function buildSemanticBranch(role, userId, query) {
         queryEmbedding = null;
     }
 
-    const scored = [];
-    for (const candidate of candidates) {
+    const scored = await Promise.all(candidates.map(async (candidate) => {
         try {
             const candidateEmbedding = await getEmbedding(candidate.snippet);
             const score = queryEmbedding ? cosineSimilarity(queryEmbedding, candidateEmbedding) : scoreText(candidate.snippet, queryTokens) / 10;
-            scored.push({ ...candidate, score });
+            return { ...candidate, score };
         } catch {
-            scored.push({
+            return {
                 ...candidate,
                 score: scoreText(candidate.snippet, queryTokens) / 10,
-            });
+            };
         }
-    }
+    }));
 
     const topMatches = scored
         .sort((left, right) => right.score - left.score)
@@ -506,7 +559,7 @@ async function buildSemanticBranch(role, userId, query) {
         summary: {
             candidates: candidates.length,
             matched: topMatches.length,
-            embeddingModel: EMBEDDING_MODEL,
+            embeddingModel: LOCAL_AI_EMBED_MODEL,
         },
         matches: topMatches.map((match) => ({
             kind: match.kind,
@@ -568,20 +621,18 @@ async function buildKnowledgeBranch(query) {
         queryEmbedding = null;
     }
 
-    const scored = [];
-
-    for (const chunk of chunks) {
+    const scored = await Promise.all(chunks.map(async (chunk) => {
         try {
             const chunkEmbedding = await getEmbedding(chunk.chunk);
             const score = queryEmbedding ? cosineSimilarity(queryEmbedding, chunkEmbedding) : scoreText(chunk.chunk, queryTokens) / 10;
-            scored.push({ ...chunk, score });
+            return { ...chunk, score };
         } catch {
-            scored.push({
+            return {
                 ...chunk,
                 score: scoreText(chunk.chunk, queryTokens) / 10,
-            });
+            };
         }
-    }
+    }));
 
     const topMatches = scored
         .sort((left, right) => right.score - left.score)
@@ -664,11 +715,12 @@ async function buildToolsBranch(role, userId, query) {
     };
 }
 
-function mergeContext({ role, userId, query, intent, structured, semantic, knowledge, tools }) {
+function mergeContext({ role, userId, query, localFacts, intent, structured, semantic, knowledge, tools }) {
     return {
         role,
         userId: String(userId),
         query,
+        localFacts: Array.isArray(localFacts) ? localFacts : [],
         intent,
         retrievalPlan: intent.branches,
         structured,
@@ -676,6 +728,7 @@ function mergeContext({ role, userId, query, intent, structured, semantic, knowl
         knowledge,
         tools,
         summary: {
+            localFacts: Array.isArray(localFacts) ? localFacts.length : 0,
             structuredMatches: structured?.summary?.matchedTenders || 0,
             semanticMatches: semantic?.summary?.matched || 0,
             knowledgeMatches: knowledge?.matches?.length || 0,
@@ -684,7 +737,7 @@ function mergeContext({ role, userId, query, intent, structured, semantic, knowl
     };
 }
 
-export async function buildHybridAssistantContext({ role, userId, query }) {
+export async function buildHybridAssistantContext({ role, userId, query, localFacts = [] }) {
     const intent = classifyIntent(query);
     const branchSet = new Set(intent.branches);
 
@@ -735,6 +788,7 @@ export async function buildHybridAssistantContext({ role, userId, query }) {
         role,
         userId,
         query,
+        localFacts,
         intent,
         structured: branches.structured,
         semantic: branches.semantic,

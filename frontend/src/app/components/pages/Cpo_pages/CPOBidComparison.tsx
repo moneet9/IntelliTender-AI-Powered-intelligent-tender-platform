@@ -2,6 +2,7 @@ import { Sidebar } from "../../layout/Sidebar";
 import { Header } from "../../layout/Header";
 import { AIAssistant } from "../../AIAssistant";
 import { useEffect, useMemo, useState } from "react";
+import { Award } from "lucide-react";
 import { apiRequest, getAuthUser } from "../../../api";
 
 export function CPOBidComparison() {
@@ -9,6 +10,7 @@ export function CPOBidComparison() {
   const [tenders, setTenders] = useState<any[]>([]);
   const [selectedTenderId, setSelectedTenderId] = useState("");
   const [evaluatedBids, setEvaluatedBids] = useState<any[]>([]);
+  const [aiSummaries, setAiSummaries] = useState<any[]>([]);
   const [tenderSearch, setTenderSearch] = useState("");
   const [tenderStatusFilter, setTenderStatusFilter] = useState("All");
   const [tenderSort, setTenderSort] = useState<"title-asc" | "title-desc" | "status">("title-asc");
@@ -79,6 +81,24 @@ export function CPOBidComparison() {
     [tenders, selectedTenderId]
   );
 
+  const aiSummaryMap = useMemo(() => {
+    const map = new Map<string, any>();
+    aiSummaries.forEach((summary) => {
+      map.set(summary.bidId, summary);
+    });
+    return map;
+  }, [aiSummaries]);
+
+  const aiRanking = useMemo(() => {
+    return [...evaluatedBids]
+      .map((bid) => ({
+        bidId: bid._id,
+        score: Number(aiSummaryMap.get(bid._id)?.aiScores?.overallScore || 0),
+      }))
+      .sort((a, b) => b.score - a.score)
+      .map((item, index) => ({ ...item, rank: index + 1 }));
+  }, [evaluatedBids, aiSummaryMap]);
+
   const evaluationMethod = selectedTender?.evaluationMethod || "QCBS";
 
   const loadTenders = async () => {
@@ -99,11 +119,14 @@ export function CPOBidComparison() {
     setBidSort("vendor");
     if (!tenderId) {
       setEvaluatedBids([]);
+      setAiSummaries([]);
       return;
     }
     try {
       const data = await apiRequest<any[]>(`/api/tenders/${tenderId}/evaluated-bids`);
       setEvaluatedBids(data);
+      const aiData = await apiRequest<any[]>(`/api/ai/evaluations/tenders/${tenderId}`);
+      setAiSummaries(aiData || []);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Failed to load evaluated bids");
     }
@@ -264,6 +287,69 @@ export function CPOBidComparison() {
           )}
           {!!selectedTenderId && !!evaluatedBids.length && !filteredBids.length && (
             <p className="text-sm text-gray-400 py-2 text-center">No bids match your filters.</p>
+          )}
+
+          {!!selectedTenderId && !!evaluatedBids.length && (
+            <div className="bg-white rounded-lg shadow-sm border border-gray-100 p-5 mb-6">
+              <div className="flex items-center justify-between gap-3 mb-4">
+                <div>
+                  <h3 className="text-lg text-[#0B3C5D]">Committee vs AI Selection Table</h3>
+                  <p className="text-sm text-gray-500">Committee marks, AI marks, vendor document rationale, and final rank</p>
+                </div>
+                <span className="text-xs text-gray-400">{evaluatedBids.length} bid(s)</span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 border-b border-gray-100">
+                    <tr>
+                      <th className="px-4 py-3 text-left text-xs text-gray-600 uppercase">Vendor</th>
+                      <th className="px-4 py-3 text-left text-xs text-gray-600 uppercase">Committee Avg</th>
+                      <th className="px-4 py-3 text-left text-xs text-gray-600 uppercase">AI Tech</th>
+                      <th className="px-4 py-3 text-left text-xs text-gray-600 uppercase">AI Fin</th>
+                      <th className="px-4 py-3 text-left text-xs text-gray-600 uppercase">AI Total</th>
+                      <th className="px-4 py-3 text-left text-xs text-gray-600 uppercase">AI Rank</th>
+                      <th className="px-4 py-3 text-left text-xs text-gray-600 uppercase">AI Comment</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {filteredBids.map((bid) => {
+                      const ai = aiSummaryMap.get(bid._id);
+                      const committeeAvg = Array.isArray(bid.committeeEvaluations) && bid.committeeEvaluations.length
+                        ? Math.round(
+                            bid.committeeEvaluations.reduce((sum: number, item: any) => sum + Number(item.technicalScore || 0), 0) /
+                              bid.committeeEvaluations.length
+                          )
+                        : Number(bid.technicalScore || 0);
+                      const rank = aiRanking.find((item) => item.bidId === bid._id)?.rank || "-";
+                      return (
+                        <tr key={bid._id} className="hover:bg-gray-50">
+                          <td className="px-4 py-3">
+                            <div className="font-medium text-[#0B3C5D]">{bid.vendorName || bid.vendorDetails?.name || "Vendor"}</div>
+                            <div className="text-xs text-gray-500">₹{Number(bid.proposedAmount || 0).toLocaleString()}</div>
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="font-medium">{committeeAvg}</div>
+                            <div className="text-xs text-gray-400">{(bid.committeeEvaluations || []).length} review(s)</div>
+                          </td>
+                          <td className="px-4 py-3">{Number(ai?.aiScores?.technicalScore || 0).toFixed(2)}</td>
+                          <td className="px-4 py-3">{Number(ai?.aiScores?.financialScore || 0).toFixed(2)}</td>
+                          <td className="px-4 py-3 font-medium">{Number(ai?.aiScores?.overallScore || 0).toFixed(2)}</td>
+                          <td className="px-4 py-3">
+                            <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 text-blue-800 px-2 py-1 text-xs">
+                              <Award className="w-3.5 h-3.5" />
+                              #{rank}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-xs text-gray-600 max-w-[280px]">
+                            {ai?.summary || ai?.rationale?.join(" ") || "AI analysis pending"}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           )}
 
           {evaluationMethod === "L1" && selectedTender?.l1Config?.technicalCutoff !== undefined && (

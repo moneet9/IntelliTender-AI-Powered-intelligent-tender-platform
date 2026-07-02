@@ -1,8 +1,5 @@
 import { BidDocument } from '../../models/model.js';
-
-const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen3.5:9b';
-const OLLAMA_AUTH_TOKEN = process.env.OLLAMA_AUTH_TOKEN || '';
+import { callLocalChat, LOCAL_AI_MODEL } from '../localModelClient.js';
 
 const MAX_TEXT_CHARS = 12000;
 
@@ -203,42 +200,19 @@ const buildPrompt = ({ tender, bid, tenderDocs, bidDocs }) => {
         proposedAmount: bid?.proposedAmount,
     };
 
-    return `You are an AI evaluation engine for procurement tenders.\n\nRules:\n- Use tender documents and required documents to infer criteria and conditions.\n- Score each criterion using maxMarks. Binary criteria are full marks or zero.\n- Ratio criteria: award proportional marks (e.g., 2/3 * 20).\n- Validate certificate issuing authority when specified (logo/letterhead/issuer).\n- Flag suspected document tampering or manipulation.\n- Provide 2-3 lines of reasoning for awarded marks.\n- For commercial values: validate calculations and adjust if context implies realistic market variance.\n\nReturn STRICT JSON with this shape:\n{\n  "eligibility": {"passed": boolean, "reasons": [string]},\n  "criteriaScores": [{"criterion": string, "maxMarks": number, "awardedMarks": number, "ruleType": "binary|ratio|numeric|textual", "evidence": [string]}],\n  "commercialAnalysis": {"statedValue": number, "adjustedValue": number, "rationale": string, "risks": [string]},\n  "genuityChecks": {"warnings": [string], "confidence": number},\n  "aiScores": {"technicalScore": number, "financialScore": number, "overallScore": number},\n  "summary": string,\n  "rationale": [string]\n}\n\nTender metadata:\n${JSON.stringify(tenderMeta)}\n\nTender documents (text extracts):\n${JSON.stringify(tenderDocs)}\n\nBid metadata:\n${JSON.stringify(bidMeta)}\n\nBid documents (text extracts):\n${JSON.stringify(bidDocs)}\n`;
+    return `You are an AI evaluation engine for procurement tenders.\n\nRules:\n- First decide eligibility by comparing the tender document, required documents, and submitted bid documents. If the bid is ineligible, explain why and set technical and financial scores to zero.\n- If eligible, evaluate the uploaded documents line by line against each required technical criterion and award marks with evidence.\n- Score each criterion using maxMarks. Binary criteria are full marks or zero.\n- Ratio criteria: award proportional marks (e.g., 2/3 * 20).\n- Validate certificate issuing authority when specified (logo/letterhead/issuer).\n- Flag suspected document tampering or manipulation.\n- Provide 2-3 lines of reasoning for awarded marks.\n- For commercial values, apply the tender evaluation method. Use QCBS weights when QCBS is selected and use the lowest-price commercial logic for L1-style evaluation.\n- Keep the answer structured so the PO can review committee marks, AI marks, and the final award decision.\n\nReturn STRICT JSON with this shape:\n{\n  "eligibility": {"passed": boolean, "reasons": [string]},\n  "criteriaScores": [{"criterion": string, "maxMarks": number, "awardedMarks": number, "ruleType": "binary|ratio|numeric|textual", "evidence": [string]}],\n  "commercialAnalysis": {"statedValue": number, "adjustedValue": number, "rationale": string, "risks": [string]},\n  "genuityChecks": {"warnings": [string], "confidence": number},\n  "aiScores": {"technicalScore": number, "financialScore": number, "overallScore": number},\n  "summary": string,\n  "rationale": [string]\n}\n\nTender metadata:\n${JSON.stringify(tenderMeta)}\n\nTender documents (text extracts):\n${JSON.stringify(tenderDocs)}\n\nBid metadata:\n${JSON.stringify(bidMeta)}\n\nBid documents (text extracts):\n${JSON.stringify(bidDocs)}\n`;
 };
 
-const callOllama = async (prompt) => {
-    const headers = {
-        'Content-Type': 'application/json',
-    };
-
-    if (OLLAMA_AUTH_TOKEN) {
-        headers.Authorization = `Bearer ${OLLAMA_AUTH_TOKEN}`;
-    }
-
-    const response = await fetch(`${OLLAMA_URL}/api/chat`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-            model: OLLAMA_MODEL,
-            stream: false,
-            messages: [
-                { role: 'system', content: 'Return only valid JSON. No markdown.' },
-                { role: 'user', content: prompt },
-            ],
-            options: {
-                temperature: 0.2,
-            },
-        }),
+const callLocalModel = async (prompt) => {
+    return callLocalChat({
+        model: LOCAL_AI_MODEL,
+        temperature: 0.2,
+        messages: [
+            { role: 'system', content: 'Return only valid JSON. No markdown.' },
+            { role: 'user', content: prompt },
+        ],
+        responseFormat: { type: 'json_object' },
     });
-
-    if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Ollama error: ${response.status} ${errorText}`);
-    }
-
-    const data = await response.json();
-    const content = data?.message?.content || data?.response || '';
-    return content;
 };
 
 export const runAiScoring = async ({ tender, bid }) => {
@@ -246,7 +220,7 @@ export const runAiScoring = async ({ tender, bid }) => {
     const bidDocs = await collectBidDocuments(bid);
     const prompt = buildPrompt({ tender, bid, tenderDocs, bidDocs });
 
-    const responseText = await callOllama(prompt);
+    const responseText = await callLocalModel(prompt);
     const parsed = safeJsonParse(responseText);
 
     if (!parsed || typeof parsed !== 'object') {
@@ -259,6 +233,6 @@ export const runAiScoring = async ({ tender, bid }) => {
         tenderDocs,
         bidDocs,
         promptVersion: 'v1',
-        model: OLLAMA_MODEL,
+        model: LOCAL_AI_MODEL,
     };
 };

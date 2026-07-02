@@ -26,6 +26,7 @@ type NavItem = {
   label: string;
   aliases?: string[];
   disabled?: boolean;
+  section?: string;
 };
 
 export function Sidebar({ role }: SidebarProps) {
@@ -74,9 +75,10 @@ export function Sidebar({ role }: SidebarProps) {
         { path: "/po/publish-tender", icon: FileText, label: "Publish Tender", aliases: ["/po/create-tender"] },
         { path: "/po/create-committee", icon: UserPlus, label: "Create Committee" },
         { path: "/po/milestones", icon: Calendar, label: "Milestones" },
-        { path: "/po/evaluation", icon: ClipboardList, label: "Tender Evaluation" },
-        { path: "/po/ai-alerts", icon: Bell, label: "AI Alerts" },
-        { path: "/po/bidders", icon: Users, label: "Vendor Profiles" },
+        { section: "AI Evaluation", path: "/po/ai-evaluation", icon: ClipboardList, label: "AI Queue" },
+        { section: "AI Evaluation", path: "/po/evaluation", icon: FileCheck, label: "AI Results" },
+        { section: "Monitoring", path: "/po/ai-alerts", icon: Bell, label: "AI Alerts" },
+        { section: "Monitoring", path: "/po/bidders", icon: Users, label: "Vendor Profiles" },
       ],
     },
     committee: {
@@ -111,21 +113,20 @@ export function Sidebar({ role }: SidebarProps) {
       {/* Navigation */}
       <nav className="flex-1 p-4">
         <div className="space-y-1">
-          {items.map((item) => {
+          {items.map((item, index) => {
             const isActive = location.pathname === item.path || (item.aliases || []).includes(location.pathname);
-            if (item.disabled) {
-              return (
-                <div
-                  key={item.path}
-                  className="flex items-center gap-3 px-4 py-3 rounded-md text-white/50 cursor-not-allowed"
-                >
-                  <item.icon className="w-5 h-5" />
-                  <span className="text-sm">{item.label}</span>
-                </div>
-              );
-            }
+            const previousSection = index > 0 ? items[index - 1].section : "";
+            const showSectionHeader = Boolean(item.section) && item.section !== previousSection;
 
-            return (
+            const navItem = item.disabled ? (
+              <div
+                key={item.path}
+                className="flex items-center gap-3 px-4 py-3 rounded-md text-white/50 cursor-not-allowed"
+              >
+                <item.icon className="w-5 h-5" />
+                <span className="text-sm">{item.label}</span>
+              </div>
+            ) : (
               <Link
                 key={item.path}
                 to={item.path}
@@ -137,8 +138,21 @@ export function Sidebar({ role }: SidebarProps) {
               >
                 <item.icon className="w-5 h-5" />
                 <span className="text-sm">{item.label}</span>
-              </Link>
-            );
+                </Link>
+              );
+
+            if (showSectionHeader) {
+              return (
+                <div key={item.section} className="space-y-1">
+                  <div className="px-4 pt-2 pb-1 text-[11px] uppercase tracking-[0.2em] text-white/45">
+                    {item.section}
+                  </div>
+                  {navItem}
+                </div>
+              );
+            }
+
+            return navItem;
           })}
         </div>
       </nav>

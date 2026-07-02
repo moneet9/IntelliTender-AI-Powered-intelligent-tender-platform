@@ -8,6 +8,7 @@ import { PODashboard } from "./components/pages/Po_pages/PODashboard";
 import { CommitteeDashboard } from "./components/pages/Commitee_member_pages/CommitteeDashboard";
 import { TenderCreation } from "./components/pages/Po_pages/TenderCreation";
 import { AIEvaluation } from "./components/pages/Po_pages/AIEvaluation";
+import { AIEvaluationQueue } from "./components/pages/Po_pages/AIEvaluationQueue";
 import { PoAlerts } from "./components/pages/Po_pages/PoAlerts";
 import { BidderProfile } from "./components/pages/Vendor_pages/BidderProfile";
 import { POMilestones } from "./components/pages/Po_pages/POMilestones";
@@ -70,6 +71,10 @@ export const router = createBrowserRouter([
   {
     path: "/po/evaluation",
     Component: AIEvaluation,
+  },
+  {
+    path: "/po/ai-evaluation",
+    Component: AIEvaluationQueue,
   },
   {
     path: "/po/ai-alerts",

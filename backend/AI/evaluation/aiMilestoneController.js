@@ -24,6 +24,12 @@ const normalizeReport = (parsed) => ({
     severity: ['low', 'medium', 'high'].includes(parsed?.severity) ? parsed.severity : 'low',
     penaltyEstimate: parsed?.penaltyEstimate ?? null,
     summary: parsed?.summary || '',
+    committeeReport: parsed?.committeeReport && typeof parsed.committeeReport === 'object'
+        ? parsed.committeeReport
+        : null,
+    aiAssessment: parsed?.aiAssessment && typeof parsed.aiAssessment === 'object'
+        ? parsed.aiAssessment
+        : null,
 });
 
 export const evaluateMilestoneWithAi = async ({ contract, milestone, update, report }) => {
@@ -40,6 +46,8 @@ export const evaluateMilestoneWithAi = async ({ contract, milestone, update, rep
             milestoneId: milestone._id,
             tenderId: tender._id,
             reportedBy: update?.verifiedBy || update?.updatedBy || report?.reportedBy,
+            committeeReport: update?.committeeReport || report?.committeeReport || null,
+            aiAssessment: normalized.aiAssessment,
             status: 'success',
             model: result.model,
             promptVersion: result.promptVersion,
@@ -75,7 +83,9 @@ export const evaluateMilestoneWithAi = async ({ contract, milestone, update, rep
 export const getMilestoneReports = async (req, res) => {
     try {
         const contractId = req.params.contractId;
-        const reports = await AIMilestoneReport.find({ contractId }).lean();
+        const reports = await AIMilestoneReport.find({ contractId })
+            .sort({ generatedAt: -1 })
+            .lean();
         res.json(reports);
     } catch (error) {
         res.status(500).json({ message: error instanceof Error ? error.message : 'Failed to load milestone reports' });

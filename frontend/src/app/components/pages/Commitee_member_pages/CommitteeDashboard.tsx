@@ -54,6 +54,12 @@ type Bid = {
     technicalScore?: number;
     financialScore?: number;
     eligibilityChecked?: boolean;
+    criteriaScores?: Array<{
+      criterion: string;
+      maxMarks?: number;
+      awardedMarks?: number;
+      documentLabel?: string;
+    }>;
     comments?: string;
     evaluatedDate?: string;
   }>;
@@ -241,6 +247,19 @@ export function CommitteeDashboard() {
     const financialScoreValue = evaluationMethod === "L1"
       ? Number(currentBid?.proposedAmount || currentEvaluation?.financialScore || 0)
       : Number(financialScore[bidId] || 0);
+    const criteriaScores = evaluationMethod === "QCBS"
+      ? technicalRequirements.map((doc) => ({
+          criterion: doc.label,
+          documentLabel: doc.label,
+          maxMarks: Number(technicalCriteriaMap.get(doc.label) || 0),
+          awardedMarks: eligibilityValue ? Number(technicalDocScores[bidId]?.[doc.label] || 0) : 0,
+        }))
+      : [{
+          criterion: "Technical Marks",
+          documentLabel: "Technical Marks",
+          maxMarks: 100,
+          awardedMarks: eligibilityValue ? technicalScoreValue : 0,
+        }];
 
     if (
       evaluationMethod === "L1" &&
@@ -262,6 +281,7 @@ export function CommitteeDashboard() {
           eligibilityChecked: eligibilityValue,
           technicalScore: eligibilityValue ? technicalScoreValue : 0,
           financialScore: eligibilityValue ? financialScoreValue : 0,
+          criteriaScores,
           comments: comments[bidId] || "",
         },
       });

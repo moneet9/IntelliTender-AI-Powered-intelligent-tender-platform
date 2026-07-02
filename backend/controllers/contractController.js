@@ -484,6 +484,7 @@ export const updateMilestone = async (req, res) => {
             remarks,
             documents,
             images,
+            committeeReport,
         } = req.body;
 
         if (status !== undefined) {
@@ -576,10 +577,33 @@ export const updateMilestone = async (req, res) => {
                 progress: milestone.progress,
                 remarks: milestone.remarks || '',
                 checklistSnapshot: (milestone.checklist || []).map((item) => ({ label: item.label, checked: item.checked })),
+                committeeReport: committeeReport || null,
             });
         }
 
         await contract.save();
+
+        try {
+            await evaluateMilestoneWithAi({
+                contract,
+                milestone,
+                update: {
+                    status: milestone.status,
+                    progress: milestone.progress,
+                    actualStartDate: milestone.actualStartDate,
+                    actualEndDate: milestone.actualEndDate,
+                    remarks: milestone.remarks,
+                    checklist: milestone.checklist,
+                    documents: milestone.documents,
+                    images: milestone.images,
+                    verifiedBy: milestone.verifiedBy,
+                    committeeReport: committeeReport || null,
+                },
+                report: null,
+            });
+        } catch {
+            // AI milestone review is best-effort and should not block milestone updates.
+        }
 
         res.json({
             message: 'Milestone updated successfully',

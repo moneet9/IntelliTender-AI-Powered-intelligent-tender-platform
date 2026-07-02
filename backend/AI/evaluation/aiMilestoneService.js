@@ -1,8 +1,5 @@
 import { MilestoneAsset } from '../../models/model.js';
-
-const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen3.5:9b';
-const OLLAMA_AUTH_TOKEN = process.env.OLLAMA_AUTH_TOKEN || '';
+import { callLocalChat, LOCAL_AI_MODEL } from '../localModelClient.js';
 
 const MAX_TEXT_CHARS = 12000;
 let tesseractWorkerPromise = null;
@@ -181,37 +178,27 @@ const buildPrompt = ({ tender, contract, milestone, update, report, tenderDocs, 
     };
 
     const reportMeta = report || null;
+    const committeeReport = update?.committeeReport || report?.committeeReport || null;
+    const contractMeta = {
+        status: contract?.status,
+        timelineDefined: contract?.timelineDefined,
+        timelineStartDate: contract?.timelineStartDate,
+        timelineEndDate: contract?.timelineEndDate,
+    };
 
-    return `You are an AI milestone review engine.\n\nTasks:\n- Compare milestone planned vs actual dates and detect delays.\n- Validate checklist completion vs reported status.\n- Review tender clauses for penalties or quality requirements.\n- Review milestone attachments for evidence (use OCR text extracts).\n- Produce alerts for PO if delay/quality risks exist.\n\nReturn STRICT JSON with this shape:\n{\n  "timeline": {"plannedStartDate": string, "plannedEndDate": string, "actualStartDate": string, "actualEndDate": string, "delayedDays": number, "status": string},\n  "checklistSummary": [string],\n  "observations": [string],\n  "alerts": [string],\n  "severity": "low|medium|high",\n  "penaltyEstimate": number,\n  "summary": string\n}\n\nTender metadata:\n${JSON.stringify(tenderMeta)}\n\nTender documents (text extracts):\n${JSON.stringify(tenderDocs)}\n\nMilestone context:\n${JSON.stringify(milestoneMeta)}\n\nProgress report:\n${JSON.stringify(reportMeta)}\n\nAttachments (text extracts):\n${JSON.stringify(attachments)}\n`;
+    return `You are an AI milestone review engine.\n\nTasks:\n- Compare milestone planned vs actual dates and detect delays.\n- Validate checklist completion vs reported status.\n- Review tender clauses for penalties or quality requirements.\n- Review milestone attachments for evidence (use OCR text extracts).\n- Produce alerts for PO if delay/quality risks exist.\n- Compare the committee report against the original tender and contract timeline.\n- If the tender or contract mentions late delivery, low-quality material, rejected work, or replacement obligations, estimate a reasonable penalty.\n- Cite specific clause language or document signals in the reasoning when possible.\n\nReturn STRICT JSON with this shape:\n{\n  "timeline": {"plannedStartDate": string, "plannedEndDate": string, "actualStartDate": string, "actualEndDate": string, "delayedDays": number, "status": string},\n  "checklistSummary": [string],\n  "observations": [string],\n  "alerts": [string],\n  "severity": "low|medium|high",\n  "penaltyEstimate": number,\n  "summary": string,\n  "committeeReport": object,\n  "aiAssessment": {\n    "clauseReferences": [string],\n    "documentSignals": [string],\n    "qualityNotes": [string],\n    "penaltyReason": string\n  }\n}\n\nTender metadata:\n${JSON.stringify(tenderMeta)}\n\nContract metadata:\n${JSON.stringify(contractMeta)}\n\nTender documents (text extracts):\n${JSON.stringify(tenderDocs)}\n\nMilestone context:\n${JSON.stringify(milestoneMeta)}\n\nCommittee report:\n${JSON.stringify(committeeReport)}\n\nProgress report:\n${JSON.stringify(reportMeta)}\n\nAttachments (text extracts):\n${JSON.stringify(attachments)}\n`;
 };
 
-const callOllama = async (prompt) => {
-    const headers = { 'Content-Type': 'application/json' };
-    if (OLLAMA_AUTH_TOKEN) {
-        headers.Authorization = `Bearer ${OLLAMA_AUTH_TOKEN}`;
-    }
-
-    const response = await fetch(`${OLLAMA_URL}/api/chat`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-            model: OLLAMA_MODEL,
-            stream: false,
-            messages: [
-                { role: 'system', content: 'Return only valid JSON. No markdown.' },
-                { role: 'user', content: prompt },
-            ],
-            options: { temperature: 0.2 },
-        }),
+const callLocalModel = async (prompt) => {
+    return callLocalChat({
+        model: LOCAL_AI_MODEL,
+        temperature: 0.2,
+        messages: [
+            { role: 'system', content: 'Return only valid JSON. No markdown.' },
+            { role: 'user', content: prompt },
+        ],
+        responseFormat: { type: 'json_object' },
     });
-
-    if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Ollama error: ${response.status} ${errorText}`);
-    }
-
-    const data = await response.json();
-    return data?.message?.content || data?.response || '';
 };
 
 export const runMilestoneAiReview = async ({ tender, contract, milestone, update, report }) => {
@@ -225,7 +212,7 @@ export const runMilestoneAiReview = async ({ tender, contract, milestone, update
     const tenderDocs = await collectTenderDocuments(tender);
     const prompt = buildPrompt({ tender, contract, milestone, update, report, tenderDocs, attachments });
 
-    const responseText = await callOllama(prompt);
+    const responseText = await callLocalModel(prompt);
     let parsed = null;
     try {
         parsed = JSON.parse(responseText);
@@ -236,7 +223,7 @@ export const runMilestoneAiReview = async ({ tender, contract, milestone, update
     return {
         parsed,
         raw: responseText,
-        model: OLLAMA_MODEL,
+        model: LOCAL_AI_MODEL,
         promptVersion: 'v1',
     };
 };

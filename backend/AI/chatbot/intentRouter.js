@@ -1,6 +1,7 @@
 const structuredKeywords = [
     'count', 'how many', 'list', 'show', 'find', 'search', 'status', 'tender id', 'contract id',
     'my tenders', 'my bids', 'my contracts', 'assigned', 'published', 'awarded', 'completed',
+    'latest', 'recent', 'newest', 'most recent', 'by me', 'mine',
     'pending', 'rejected', 'signed', 'frozen', 'active', 'overdue', 'delayed', 'budget', 'category',
 ];
 

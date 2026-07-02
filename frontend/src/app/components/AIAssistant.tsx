@@ -1,527 +1,597 @@
-import { useState, useRef, useEffect } from "react";
-import { MessageSquare, Send, X, Bot } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Bot, Clock, MessageSquare, Plus, Send, Trash2, X } from "lucide-react";
 import { apiRequest } from "../api";
 
-interface AIAssistantProps {
-  role: "cpo" | "po" | "committee" | "vendor" | "bidder";
-}
+type Role = "cpo" | "po" | "committee" | "vendor" | "bidder";
 
-interface Message {
+type ChatMeta = {
+  model?: string;
+  responseMode?: string;
+  collection?: string | null;
+  count?: number;
+  records?: unknown[];
+};
+
+type ChatMessage = {
+  id: string;
   role: "user" | "assistant";
   content: string;
   timestamp: string;
+  pending?: boolean;
+  meta?: ChatMeta;
+};
+
+type ChatSession = {
+  _id: string;
+  title: string;
+  preview?: string;
+  lastMessageAt?: string;
+  messageCount?: number;
+  messages?: ChatEntry[];
+};
+
+type ChatEntry = {
+  role: "user" | "assistant";
+  content: string;
+  createdAt?: string;
+  meta?: ChatMeta;
+};
+
+type ChatResponse = {
+  chatId: string;
+  chat?: ChatSession;
+  reply: string;
+  model?: string;
+  responseMode?: string;
+  collection?: string | null;
+  count?: number;
+  records?: unknown[];
+};
+
+interface AIAssistantProps {
+  role: Role;
 }
 
-const sampleQuestions = [
-  "What is the delay status for TND-2026-046?",
-  "Show penalty clause for late delivery",
-  "What is the risk history of Premier IT Services?",
-  "Explain AI evaluation for TND-2026-047",
-  "Show audit trail for contract CNT-2026-045",
-  "How to submit a bid?",
-  "What documents are required for tender?",
-  "Show my contract performance score",
-];
-
-const demoConversations = [
-  {
-    user: "Show me active tenders in IT category",
-    assistant: `**Active IT Tenders (3 found)**
-
-📋 **TND-2026-048 - Cloud Infrastructure Setup**
-- Budget: $850,000
-- Deadline: March 15, 2026
-- Status: Open for Bidding
-- Documents Required: 5
-
-📋 **TND-2026-049 - Cybersecurity Assessment**
-- Budget: $320,000  
-- Deadline: March 22, 2026
-- Status: Open for Bidding
-- Documents Required: 4
-
-📋 **TND-2026-050 - Enterprise Portal Development**
-- Budget: $1,200,000
-- Deadline: March 28, 2026
-- Status: Open for Bidding
-- Documents Required: 6
-
-💡 **Tip:** Click on any tender to view full details and submit your bid.`,
-  },
-  {
-    user: "What documents do I need for tender submission?",
-    assistant: `**Required Documents for Tender Submission**
-
-✅ **Mandatory Documents:**
-1. Company Registration Certificate
-2. Tax Compliance Certificate (Valid)
-3. Financial Statements (Last 3 years)
-4. Bank Reference Letter
-5. Technical Proposal Document
-6. Commercial/Price Proposal
-
-✅ **Supporting Documents:**
-7. Previous Project References (minimum 3)
-8. Quality Certifications (ISO 9001, etc.)
-9. Professional Licenses
-10. Insurance Coverage Certificate
-
-⚠️ **Important Notes:**
-- All documents must be less than 6 months old
-- Scanned copies must be clear and legible
-- Submit in PDF format only
-- Maximum file size: 5MB per document
-
-📎 **Upload Format:** PDF only
-🕐 **Submission Deadline:** Check individual tender`,
-  },
-  {
-    user: "Show my performance analytics",
-    assistant: `**Your Performance Dashboard**
-
-**Overall Performance Score: 91.2/100** 🌟
-
-**Contract Success Rate:**
-✅ Completed Successfully: 22 contracts
-⚠️ Minor Issues: 1 contract
-❌ Failed: 0 contracts
-
-**Financial Performance:**
-- Total Contract Value: $8,700,000
-- Average Contract Size: $378,261
-- On-Time Payment: 100%
-
-**Quality Metrics:**
-- Technical Compliance: 96%
-- Documentation Quality: 94%
-- Delivery Timeliness: 91%
-
-**Risk Assessment:**
-- Current Risk Level: **LOW (5%)**
-- Risk Trend: ⬇️ Decreasing
-- Compliance Score: 94/100
-
-**Recent Achievements:**
-🏆 Perfect delivery record in Q4 2025
-🏆 Zero quality complaints in 2025
-🏆 Fastest bid response time (avg 2.3 days)
-
-**Areas for Improvement:**
-- Reduce average delivery time by 2 days
-- Improve document submission speed
-
-Keep up the excellent work! 👏`,
-  },
-];
-
-const demoResponses: { [key: string]: string } = {
-  delay: `**Project Delay Analysis - TND-2026-046**
-
-**Contract:** Road Construction Project
-**Contractor:** BuildTech Solutions
-**Status:** 12 days behind schedule
-
-**Timeline Analysis:**
-- Original Completion Date: February 18, 2026
-- Current Date: March 1, 2026
-- Delay Duration: 12 days
-
-**Milestone Status:**
-✓ Foundation Work - Completed (On Time)
-✓ Initial Construction - Completed (2 days delay)
-⚠ Primary Structure - In Progress (12 days delay)
-
-**Risk Assessment:** Medium Risk
-**Recommended Action:** Review penalty clause 7.3`,
-
-  penalty: `**Penalty Clause Analysis**
-
-**Contract Reference:** Standard Procurement Terms & Conditions
-**Clause 7.3 - Late Delivery Penalties**
-
-**For Supply Contracts:**
-- First 5 days: Warning only
-- 6-10 days: $1,000 per day
-- Over 10 days: $2,400 per day
-
-**For Work Contracts:**
-- First 7 days: Warning only
-- 8-14 days: $2,400 per day
-- Over 14 days: $3,500 per day + potential contract termination
-
-**Current Application:**
-For TND-2026-046 (Work Contract):
-- Delay: 12 days
-- Penalty Rate: $2,400/day
-- **Total Penalty: $28,800**
-
-**Payment Terms:** Deducted from final payment
-**Appeal Period:** 10 business days from notice`,
-
-  risk: `**Bidder Risk Profile - Premier IT Services**
-
-**Company ID:** BID-00152
-**Registration Date:** January 2019
-
-**Performance Metrics:**
-- Total Contracts: 23
-- Success Rate: 96%
-- Average Performance Score: 91.2/100
-- Compliance Score: 94/100
-
-**Risk Evolution (Last 6 Months):**
-- August 2025: 12% (Medium)
-- December 2025: 8% (Low)
-- **February 2026: 5% (Low)**
-
-**Historical Flags:**
-- Total Flags: 3 (All resolved)
-- High Risk Incidents: 0
-- Penalties Imposed: 1 ($5,500 - Late delivery 2024)
-
-**Contract Value:**
-- Total Awarded: $8.7M
-- Average Contract: $378,000
-
-**Recommendation:** ✅ Low Risk - Approved for high-value contracts
-**Last Updated:** March 1, 2026`,
-
-  evaluation: `**AI Evaluation Explanation - TND-2026-047**
-
-**Tender:** Medical Equipment Supply
-**Evaluation Date:** February 28, 2026
-**Total Bidders:** 4
-
-**Top Ranked Bidder: Premier IT Services**
-
-**Weighted Score Breakdown:**
-1. **Price (40% weight):**
-   - Bid Amount: $492,000
-   - Budget: $750,000
-   - Competitiveness: 93.2%
-   - Score: 37.3/40
-
-2. **Quality (25% weight):**
-   - Technical Compliance: 96%
-   - Certification Score: 100%
-   - Score: 24.0/25
-
-3. **Experience (20% weight):**
-   - Years in Business: 15
-   - Similar Projects: 12
-   - Score: 19.2/20
-
-4. **Timeline (15% weight):**
-   - Proposed Duration: 45 days
-   - Required: 60 days
-   - Score: 14.0/15
-
-**Final AI Score: 91.2/100**
-
-**Risk Assessment:**
-- Document Verification: ✅ Passed
-- Financial Stability: ✅ Strong
-- Past Performance: ✅ Excellent
-- **Overall Risk: 5% (Low)**
-
-**AI Recommendation:** ✅ **APPROVE** - Highest scored bidder with low risk profile`,
-
-  audit: `**Audit Trail - Contract CNT-2026-045**
-
-**Contract:** Office Furniture Supply
-**Contractor:** Premier IT Services
-**Value:** $285,000
-**Status:** Completed
-
-**Complete Activity Log:**
-
-**2026-01-15 09:23:45** - Tender Published (TND-2026-045)
-- Officer: Michael Chen (PO)
-- Budget Allocated: $300,000
-
-**2026-01-28 14:32:10** - Bid Submission
-- Bidder: Premier IT Services
-- Amount: $285,000
-
-**2026-01-28 14:35:22** - Bid Submission
-- Bidder: Office Solutions Inc
-- Amount: $295,000
-
-**2026-02-05 10:15:30** - AI Evaluation Completed
-- System: AI Engine v3.2
-- Top Score: Premier IT Services (91.2)
-
-**2026-02-06 11:20:15** - Committee Review
-- Officer: David Rodriguez (Committee)
-- Decision: Approved with recommendation
-
-**2026-02-10 15:45:00** - Final Award Approval
-- Officer: Sarah Johnson (CPO)
-- **Contract Awarded to: Premier IT Services**
-
-**2026-02-28 09:00:00** - Delivery Completed
-- Verification: All items received
-- Quality Check: Passed
-
-**2026-03-01 10:30:00** - Payment Released
-- Amount: $285,000
-- Status: Completed
-
-**Compliance Status:** ✅ Fully Compliant
-**No Flags or Violations Recorded**`,
-
-  submit: `**How to Submit a Bid - Step by Step Guide**
-
-**Step 1: Review Tender Requirements**
-- Read tender document thoroughly
-- Check eligibility criteria
-- Note submission deadline
-
-**Step 2: Prepare Documents**
-✅ Technical Proposal
-✅ Financial Proposal
-✅ Company Registration
-✅ Tax Compliance Certificate
-✅ Previous Project References
-✅ Financial Statements
-
-**Step 3: Submit Online**
-1. Navigate to "Available Tenders"
-2. Click on desired tender
-3. Click "Submit Bid" button
-4. Upload required documents
-5. Fill pricing details
-6. Review and confirm submission
-
-**Step 4: Track Status**
-- Check "My Submissions" page
-- Monitor evaluation progress
-- Respond to clarifications if requested
-
-**Important:**
-⏰ Submit before deadline
-📎 Max file size: 5MB per document
-📄 PDF format only
-✍️ Digital signature required
-
-**Need Help?** Contact procurement@intellitender.com`,
-
-  performance: `**Your Performance Dashboard**
-
-**Overall Score: 91.2/100** ⭐⭐⭐⭐⭐
-
-**Contract Statistics:**
-- Total Contracts: 23
-- Active: 2
-- Completed: 21
-- Success Rate: 96%
-
-**Financial Overview:**
-- Total Value: $8,700,000
-- Avg Contract: $378,261
-- Payment Status: 100% On-time
-
-**Quality Metrics:**
- Technical Compliance: 96%
-📊 Delivery Timeliness: 91%
-📊 Documentation Quality: 94%
-📊 Customer Satisfaction: 4.8/5
-
-**Risk Profile:**
-✅ Current Risk: LOW (5%)
-✅ Compliance: 94/100
-✅ Financial Health: Strong
-
-**Monthly Trend:**
-Jan 2026: 90.5
-Feb 2026: 91.2 (↑ 0.7)
-
-**Recommendations:**
-- Maintain current quality standards
-- Improve delivery speed by 5%
-- Continue excellent documentation`,
+const roleGreetings: Record<Role, string> = {
+  cpo: "Hello! I can help with procurement-wide tenders, contracts, audits, and milestone tracking.",
+  po: "Hello! I can help with your tenders, bids, contracts, committee members, and milestone progress.",
+  committee: "Hello! I can help with your assigned tenders, bid reviews, and milestone updates.",
+  vendor: "Hello! I can help with your visible tenders, bids, and contracts.",
+  bidder: "Hello! I can help with your visible tenders, bids, and contracts.",
 };
+
+const quickQuestions: Record<Role, string[]> = {
+  cpo: [
+    "Show me the newest tenders",
+    "How many contracts are in progress?",
+    "Which milestones are delayed?",
+  ],
+  po: [
+    "Show my latest tenders",
+    "Which milestones are yet to review?",
+    "How much work is completed on my contracts?",
+  ],
+  committee: [
+    "Show me tenders under my PO",
+    "Which milestone updates are pending?",
+    "How much progress is complete?",
+  ],
+  vendor: [
+    "Show published tenders",
+    "What bids have I submitted?",
+    "Show my contracts",
+  ],
+  bidder: [
+    "Show published tenders",
+    "What bids have I submitted?",
+    "Show my contracts",
+  ],
+};
+
+const getNowStamp = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+const mapChatMessage = (entry: ChatEntry, index: number): ChatMessage => ({
+  id: `${entry.role}-${entry.createdAt || index}-${index}`,
+  role: entry.role,
+  content: entry.content,
+  timestamp: entry.createdAt ? new Date(entry.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : getNowStamp(),
+  meta: entry.meta,
+});
+
+const buildInitialMessages = (role: Role): ChatMessage[] => [
+  {
+    id: "welcome",
+    role: "assistant",
+    content: roleGreetings[role],
+    timestamp: getNowStamp(),
+  },
+];
+
+const normalizeChatList = (items: ChatSession[] = []) =>
+  [...items].sort((left, right) => {
+    const leftTime = new Date(left.lastMessageAt || 0).getTime();
+    const rightTime = new Date(right.lastMessageAt || 0).getTime();
+    return rightTime - leftTime;
+  });
+
+function renderRecordCards(message: ChatMessage) {
+  const records = Array.isArray(message.meta?.records) ? message.meta.records : [];
+  if (!records.length) return null;
+
+  const collection = String(message.meta?.collection || "").toLowerCase();
+  const visibleRecords = records.slice(0, 3);
+
+  if (collection === "tender") {
+    return (
+      <div className="mt-3 space-y-2">
+        {visibleRecords.map((record: any, index) => (
+          <div key={`${message.id}-tender-${index}`} className="rounded-xl border border-sky-100 bg-sky-50/80 p-3 text-xs text-slate-700">
+            <div className="flex items-center justify-between gap-3">
+              <p className="font-semibold text-slate-900">{record.title || "Untitled tender"}</p>
+              <span className="rounded-full bg-white px-2 py-0.5 text-[10px] uppercase tracking-wide text-sky-700">
+                {record.status || "Unknown"}
+              </span>
+            </div>
+            <div className="mt-2 grid grid-cols-1 gap-1 sm:grid-cols-2">
+              <span>Category: {record.category || "-"}</span>
+              <span>Budget: {record.budget ?? "-"}</span>
+              <span>Final submission: {record.finalSubmissionDate || "-"}</span>
+              <span>Created: {record.createdAt ? new Date(record.createdAt).toLocaleDateString() : "-"}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (collection === "contract") {
+    return (
+      <div className="mt-3 space-y-2">
+        {visibleRecords.map((record: any, index) => (
+          <div key={`${message.id}-contract-${index}`} className="rounded-xl border border-emerald-100 bg-emerald-50/80 p-3 text-xs text-slate-700">
+            <div className="flex items-center justify-between gap-3">
+              <p className="font-semibold text-slate-900">{record.tender || `Contract ${record.id || index + 1}`}</p>
+              <span className="rounded-full bg-white px-2 py-0.5 text-[10px] uppercase tracking-wide text-emerald-700">
+                {record.status || "Unknown"}
+              </span>
+            </div>
+            <div className="mt-2 grid grid-cols-1 gap-1 sm:grid-cols-2">
+              <span>Timeline: {record.timelineStartDate || "-"} to {record.timelineEndDate || "-"}</span>
+              <span>Avg progress: {record.milestoneStats?.averageProgress ?? 0}%</span>
+              <span>Milestones completed: {record.milestoneStats?.completed ?? 0}/{record.milestoneStats?.total ?? 0}</span>
+              <span>Pending: {record.milestoneStats?.pending ?? 0}</span>
+            </div>
+            {Array.isArray(record.milestones) && record.milestones.length > 0 && (
+              <div className="mt-2 space-y-1">
+                {record.milestones.slice(0, 3).map((milestone: any, milestoneIndex: number) => (
+                  <div key={`${message.id}-milestone-${index}-${milestoneIndex}`} className="rounded-lg bg-white/80 px-2 py-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium text-slate-800">{milestone.title || `Milestone ${milestoneIndex + 1}`}</span>
+                      <span>{Number(milestone.progress || 0)}%</span>
+                    </div>
+                    <p className="text-[11px] text-slate-500">{milestone.status || "Unknown"}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-3 space-y-2">
+      {visibleRecords.map((record: any, index) => (
+        <div key={`${message.id}-record-${index}`} className="rounded-xl border border-gray-200 bg-gray-50 p-3 text-xs text-slate-700">
+          <p className="font-semibold text-slate-900">{record.name || record.title || record.id || "Record"}</p>
+          <div className="mt-1 grid grid-cols-1 gap-1 sm:grid-cols-2">
+            <span>Role: {record.role || "-"}</span>
+            <span>Status: {record.accountStatus || record.status || "-"}</span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export function AIAssistant({ role }: AIAssistantProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [isSending, setIsSending] = useState(false);
-  
-  // Role-specific welcome messages
-  const getWelcomeMessage = () => {
-    switch (role) {
-      case "vendor":
-      case "bidder":
-        return "Hello! I can help you find contracts, understand tender requirements, check your performance scores, and guide you through the bidding process. What would you like to know?";
-      case "po":
-        return "Hello! I can assist you with creating tenders, evaluating bids, tracking milestones, and managing procurement workflows. How can I help you today?";
-      case "committee":
-        return "Hello! I can help you with bid evaluations, AI scoring explanations, risk assessments, and milestone updates. What do you need assistance with?";
-      case "cpo":
-        return "Hello! I can provide insights on overall procurement performance, audit trails, compliance reports, and strategic oversight. How may I assist you?";
-      default:
-        return "Hello! I'm the IntelliTender AI Assistant. How may I assist you today?";
-    }
-  };
-  
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      role: "assistant",
-      content: getWelcomeMessage(),
-      timestamp: new Date().toLocaleTimeString(),
-    },
-  ]);
+  const [isLoadingChats, setIsLoadingChats] = useState(false);
+  const [chats, setChats] = useState<ChatSession[]>([]);
+  const [currentChatId, setCurrentChatId] = useState<string>("");
+  const [messages, setMessages] = useState<ChatMessage[]>(buildInitialMessages(role));
   const [input, setInput] = useState("");
+  const [error, setError] = useState("");
   const chatContainerRef = useRef<HTMLDivElement>(null);
 
-  const handleSend = async (question?: string) => {
-    const messageText = question || input;
-    if (!messageText.trim()) return;
+  const activeChat = useMemo(
+    () => chats.find((chat) => chat._id === currentChatId) || null,
+    [chats, currentChatId]
+  );
 
-    // Add user message
-    const userMessage: Message = {
+  const setChatMessages = (chat?: ChatSession | null) => {
+    if (!chat || !Array.isArray(chat.messages) || !chat.messages.length) {
+      setMessages(buildInitialMessages(role));
+      return;
+    }
+
+    setMessages(chat.messages.map(mapChatMessage));
+  };
+
+  const refreshChats = async (preferredChatId?: string) => {
+    setIsLoadingChats(true);
+    try {
+      const response = await apiRequest<{ items: ChatSession[] }>("/api/ai/chats");
+      const items = normalizeChatList(response.items || []);
+      setChats(items);
+
+      const targetId = preferredChatId || currentChatId || items[0]?._id || "";
+      if (!targetId) {
+        setCurrentChatId("");
+        setChatMessages(null);
+        return;
+      }
+
+      const chat = items.find((item) => item._id === targetId);
+      if (chat) {
+        setCurrentChatId(chat._id);
+        setChatMessages(chat);
+        return;
+      }
+
+      const detailed = await apiRequest<{ chat: ChatSession }>(`/api/ai/chats/${targetId}`);
+      setCurrentChatId(detailed.chat._id);
+      setChatMessages(detailed.chat);
+    } catch {
+      if (!currentChatId) {
+        setChatMessages(null);
+      }
+    } finally {
+      setIsLoadingChats(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!isOpen) return;
+    void refreshChats();
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!chatContainerRef.current) return;
+    chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+  }, [messages]);
+
+  const startNewChat = async () => {
+    setError("");
+    try {
+      const response = await apiRequest<{ chat: ChatSession }>("/api/ai/chats", {
+        method: "POST",
+      });
+
+      setChats((prev) => normalizeChatList([response.chat, ...prev.filter((chat) => chat._id !== response.chat._id)]));
+      setCurrentChatId(response.chat._id);
+      setChatMessages(response.chat);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create a new chat");
+    }
+  };
+
+  const openChat = async (chatId: string) => {
+    if (!chatId) return;
+    setError("");
+    try {
+      const response = await apiRequest<{ chat: ChatSession }>(`/api/ai/chats/${chatId}`);
+      setCurrentChatId(response.chat._id);
+      setChatMessages(response.chat);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load the selected chat");
+    }
+  };
+
+  const deleteChat = async (chatId: string) => {
+    if (!chatId) return;
+    if (!window.confirm("Delete this chat thread?")) return;
+
+    setError("");
+    try {
+      await apiRequest(`/api/ai/chats/${chatId}`, { method: "DELETE" });
+      const remaining = chats.filter((chat) => chat._id !== chatId);
+      setChats(remaining);
+
+      const nextChat = remaining[0] || null;
+      if (nextChat) {
+        setCurrentChatId(nextChat._id);
+        setChatMessages(nextChat);
+        return;
+      }
+
+      const response = await apiRequest<{ chat: ChatSession }>("/api/ai/chats", {
+        method: "POST",
+      });
+      setChats([response.chat]);
+      setCurrentChatId(response.chat._id);
+      setChatMessages(response.chat);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete the chat");
+    }
+  };
+
+  const handleSend = async (question?: string) => {
+    const messageText = String(question || input).trim();
+    if (!messageText) return;
+
+    const pendingId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const userMessage: ChatMessage = {
+      id: `${pendingId}-user`,
       role: "user",
       content: messageText,
-      timestamp: new Date().toLocaleTimeString(),
+      timestamp: getNowStamp(),
+    };
+    const pendingMessage: ChatMessage = {
+      id: pendingId,
+      role: "assistant",
+      content: "Thinking...",
+      timestamp: getNowStamp(),
+      pending: true,
     };
 
-    setMessages((prev) => [...prev, userMessage]);
+    setError("");
+    setMessages((prev) => [...prev, userMessage, pendingMessage]);
     setInput("");
     setIsSending(true);
 
     try {
-      const conversation = [...messages, userMessage]
-        .slice(-8)
-        .map((entry) => ({ role: entry.role, content: entry.content }));
-
-      const response = await apiRequest<{ reply: string }>("/api/ai/chat", {
+      const response = await apiRequest<ChatResponse>("/api/ai/chat", {
         method: "POST",
         body: {
           message: messageText,
-          role,
-          messages: conversation,
+          chatId: currentChatId || undefined,
         },
       });
 
-      const aiMessage: Message = {
-        role: "assistant",
-        content: response.reply || "No response received from the AI service.",
-        timestamp: new Date().toLocaleTimeString(),
-      };
-
-      setMessages((prev) => [...prev, aiMessage]);
-    } catch (error) {
-      const aiMessage: Message = {
-        role: "assistant",
-        content:
-          error instanceof Error
-            ? `I couldn't reach the AI service: ${error.message}`
-            : "I couldn't reach the AI service. Make sure Ollama is running and try again.",
-        timestamp: new Date().toLocaleTimeString(),
-      };
-
-      setMessages((prev) => [...prev, aiMessage]);
+      if (response.chat) {
+        setChats((prev) => normalizeChatList([response.chat as ChatSession, ...prev.filter((chat) => chat._id !== response.chat?._id)]));
+        setCurrentChatId(response.chat._id);
+        setChatMessages(response.chat);
+      } else {
+        setCurrentChatId(response.chatId);
+        await refreshChats(response.chatId);
+      }
+    } catch (err) {
+      setMessages((prev) =>
+        prev.map((entry) =>
+          entry.id === pendingId
+            ? {
+                ...entry,
+                content: err instanceof Error ? `I could not reach the AI service: ${err.message}` : "I could not reach the AI service right now.",
+                pending: false,
+                timestamp: getNowStamp(),
+                meta: { model: "fallback", responseMode: "fallback" },
+              }
+            : entry
+        )
+      );
     } finally {
       setIsSending(false);
     }
   };
 
-  useEffect(() => {
-    if (chatContainerRef.current) {
-      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
-    }
-  }, [messages]);
+  const questions = quickQuestions[role];
 
   if (!isOpen) {
     return (
       <button
         onClick={() => setIsOpen(true)}
-        className="fixed bottom-6 right-6 w-12 h-12 bg-[#1D4E89] hover:bg-[#154068] text-white rounded-full shadow-lg flex items-center justify-center transition-all hover:scale-110 z-50"
+        className="fixed bottom-6 right-6 z-50 flex h-14 w-14 items-center justify-center rounded-full bg-[#0B3C5D] text-white shadow-lg transition-transform hover:scale-105 hover:bg-[#154068]"
+        aria-label="Open IntelliTender assistant"
       >
-        <MessageSquare className="w-6 h-6" />
+        <MessageSquare className="h-6 w-6" />
       </button>
     );
   }
 
   return (
-    <div className="fixed bottom-6 right-6 w-96 h-[600px] bg-white rounded-lg shadow-2xl flex flex-col z-50 border border-gray-200">
-      {/* Header */}
-      <div className="bg-[#0B3C5D] text-white p-4 rounded-t-lg flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Bot className="w-5 h-5" />
+    <div className="fixed bottom-4 right-4 z-50 flex h-[min(88vh,44rem)] w-[min(94vw,60rem)] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+      <div className="flex items-center justify-between border-b border-slate-200 bg-[#0B3C5D] px-4 py-3 text-white">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-white/10">
+            <Bot className="h-5 w-5" />
+          </div>
           <div>
-            <h3 className="text-sm">IntelliTender AI Assistant</h3>
-            <p className="text-xs text-white/70">Always here to help</p>
+            <h3 className="text-sm font-semibold">IntelliTender AI Assistant</h3>
+            <p className="text-xs text-white/70">
+              {activeChat?.title || "New chat"} {isLoadingChats ? " - loading chats..." : ""}
+            </p>
           </div>
         </div>
         <button
           onClick={() => setIsOpen(false)}
-          className="hover:bg-white/10 p-1 rounded transition-colors"
+          className="rounded-full p-1.5 transition-colors hover:bg-white/10"
+          aria-label="Close assistant"
         >
-          <X className="w-5 h-5" />
+          <X className="h-5 w-5" />
         </button>
       </div>
 
-      {/* Sample Questions */}
-      <div className="p-3 bg-blue-50 border-b border-gray-200">
-        <p className="text-xs text-gray-600 mb-2">Quick Questions:</p>
-        <div className="flex flex-wrap gap-1">
-          {sampleQuestions.slice(0, 3).map((q, i) => (
-            <button
-              key={i}
-              onClick={() => handleSend(q)}
-              className="text-xs px-2 py-1 bg-white border border-blue-200 rounded-full hover:bg-blue-100 transition-colors text-[#1D4E89]"
+      <div className="border-b border-slate-200 bg-slate-50 px-4 py-3">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Conversation</p>
+            <p className="text-sm text-slate-700">{chats.length ? `${chats.length} saved chat${chats.length === 1 ? "" : "s"}` : "No saved chats yet"}</p>
+          </div>
+          <button
+            onClick={startNewChat}
+            className="inline-flex items-center gap-2 rounded-full bg-[#1D4E89] px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-[#154068]"
+          >
+            <Plus className="h-4 w-4" />
+            New chat
+          </button>
+        </div>
+        <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
+          {normalizeChatList(chats).slice(0, 8).map((chat) => (
+            <div
+              key={chat._id}
+              className={`min-w-[10rem] rounded-xl border px-3 py-2 text-left text-xs transition-colors ${
+                chat._id === currentChatId
+                  ? "border-[#1D4E89] bg-white text-[#0B3C5D]"
+                  : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-100"
+              }`}
             >
-              {q.length > 30 ? q.substring(0, 30) + "..." : q}
-            </button>
+              <div className="flex items-start justify-between gap-2">
+                <button className="min-w-0 flex-1 text-left" onClick={() => openChat(chat._id)}>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold line-clamp-1">{chat.title || "New chat"}</span>
+                    <Clock className="h-3 w-3 shrink-0 opacity-60" />
+                  </div>
+                  <p className="mt-1 line-clamp-1 text-[11px] text-slate-500">{chat.preview || "No messages yet"}</p>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => deleteChat(chat._id)}
+                  className="rounded-full p-1 text-slate-400 transition-colors hover:bg-red-50 hover:text-red-600"
+                  aria-label={`Delete ${chat.title || "chat"}`}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
           ))}
         </div>
       </div>
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4" ref={chatContainerRef}>
-        {messages.map((message, index) => (
-          <div
-            key={index}
-            className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
-          >
-            <div
-              className={`max-w-[85%] rounded-lg p-3 ${
-                message.role === "user"
-                  ? "bg-[#1D4E89] text-white"
-                  : "bg-gray-100 text-gray-800"
-              }`}
-            >
-              <p className="text-sm whitespace-pre-line">{message.content}</p>
-              <p
-                className={`text-xs mt-1 ${
-                  message.role === "user" ? "text-white/70" : "text-gray-500"
+      <div className="flex min-h-0 flex-1">
+        <aside className="hidden w-64 flex-col border-r border-slate-200 bg-white md:flex">
+          <div className="border-b border-slate-100 px-4 py-3">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Saved chats</p>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto p-2">
+            {normalizeChatList(chats).length === 0 && (
+              <p className="px-3 py-4 text-sm text-slate-500">Start a conversation and it will appear here.</p>
+            )}
+            {normalizeChatList(chats).map((chat) => (
+              <div
+                key={chat._id}
+                className={`mb-2 w-full rounded-xl border px-3 py-3 text-left transition-colors ${
+                  chat._id === currentChatId
+                    ? "border-[#1D4E89] bg-[#F2F7FC]"
+                    : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50"
                 }`}
               >
-                {message.timestamp}
-              </p>
+                <div className="flex items-start gap-2">
+                  <button className="min-w-0 flex-1 text-left" onClick={() => openChat(chat._id)}>
+                    <p className="line-clamp-1 text-sm font-semibold text-slate-900">{chat.title || "New chat"}</p>
+                    <p className="mt-1 line-clamp-2 text-xs text-slate-500">{chat.preview || "No preview available yet."}</p>
+                    <p className="mt-2 text-[11px] uppercase tracking-wide text-slate-400">
+                      {chat.messageCount || 0} message{(chat.messageCount || 0) === 1 ? "" : "s"}
+                    </p>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => deleteChat(chat._id)}
+                    className="rounded-full p-1.5 text-slate-400 transition-colors hover:bg-red-50 hover:text-red-600"
+                    aria-label={`Delete ${chat.title || "chat"}`}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </aside>
+
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div className="border-b border-slate-200 bg-white px-4 py-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="rounded-full bg-slate-900 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-white">
+                {role.toUpperCase()}
+              </span>
+              <span className="text-sm text-slate-600">
+                Ask about tenders, contracts, committee reviews, or milestone progress.
+              </span>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {questions.slice(0, 3).map((question) => (
+                <button
+                  key={question}
+                  onClick={() => handleSend(question)}
+                  className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-700 transition-colors hover:border-slate-300 hover:bg-white"
+                >
+                  {question}
+                </button>
+              ))}
             </div>
           </div>
-        ))}
-      </div>
 
-      {/* Input */}
-      <div className="p-4 border-t border-gray-200">
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyPress={(e) => e.key === "Enter" && handleSend()}
-            placeholder="Ask me anything..."
-            className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89] text-sm"
-          />
-          <button
-            onClick={() => handleSend()}
-            disabled={isSending}
-            className="px-4 py-2 bg-[#1D4E89] hover:bg-[#154068] text-white rounded-md transition-colors"
-          >
-            <Send className="w-4 h-4" />
-          </button>
+          <div ref={chatContainerRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto bg-[linear-gradient(180deg,#ffffff_0%,#f8fbff_100%)] p-4">
+            {error && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                {error}
+              </div>
+            )}
+
+            {messages.map((message) => (
+              <div key={message.id} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}>
+                <div
+                  className={`max-w-[92%] rounded-2xl px-4 py-3 shadow-sm ${
+                    message.role === "user"
+                      ? "bg-[#1D4E89] text-white"
+                      : message.pending
+                        ? "border border-dashed border-slate-300 bg-white text-slate-500"
+                        : "border border-slate-200 bg-white text-slate-800"
+                  }`}
+                >
+                  <p className={`whitespace-pre-line text-sm leading-6 ${message.pending ? "animate-pulse" : ""}`}>
+                    {message.content}
+                  </p>
+                  {message.pending && (
+                    <p className="mt-2 text-xs text-slate-400">Looking through your records...</p>
+                  )}
+                  {!message.pending && message.role === "assistant" && message.meta?.responseMode && (
+                    <p className="mt-2 text-[11px] uppercase tracking-wide text-slate-400">
+                      {message.meta.responseMode === "lmstudio"
+                        ? "Live AI + DB"
+                        : message.meta.responseMode === "local"
+                          ? "Local record answer"
+                          : message.meta.responseMode}
+                      {typeof message.meta.count === "number" ? ` | ${message.meta.count} result${message.meta.count === 1 ? "" : "s"}` : ""}
+                    </p>
+                  )}
+                  {!message.pending && message.role === "assistant" && renderRecordCards(message)}
+                  <p className={`mt-2 text-xs ${message.role === "user" ? "text-white/70" : "text-slate-400"}`}>
+                    {message.timestamp}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="border-t border-slate-200 bg-white p-4">
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={input}
+                onChange={(event) => setInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void handleSend();
+                  }
+                }}
+                placeholder="Type a message..."
+                className="flex-1 rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none transition focus:border-[#1D4E89] focus:ring-2 focus:ring-[#1D4E89]/20"
+              />
+              <button
+                onClick={() => handleSend()}
+                disabled={isSending}
+                className="inline-flex items-center gap-2 rounded-xl bg-[#1D4E89] px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#154068] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <Send className="h-4 w-4" />
+                Send
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>

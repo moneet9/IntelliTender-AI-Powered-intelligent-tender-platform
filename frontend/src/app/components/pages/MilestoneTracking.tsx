@@ -20,6 +20,13 @@ type HistoryEntry = {
   progress?: number;
   remarks?: string;
   checklistSnapshot?: ChecklistItem[];
+  committeeReport?: {
+    workDone?: string;
+    materialQuality?: string;
+    delayReason?: string;
+    clauseReference?: string;
+    recommendation?: string;
+  } | null;
 };
 
 type Milestone = {
@@ -53,6 +60,33 @@ type ProgressReport = {
   reportType: "Checklist" | "WorkProgress" | "General";
   createdAt: string;
   reportedBy?: { name?: string; role?: string };
+};
+
+type AiMilestoneReport = {
+  _id: string;
+  milestoneId: string;
+  severity?: "low" | "medium" | "high";
+  penaltyEstimate?: number;
+  summary?: string;
+  alerts?: string[];
+  observations?: string[];
+  checklistSummary?: string[];
+  timeline?: {
+    plannedStartDate?: string;
+    plannedEndDate?: string;
+    actualStartDate?: string;
+    actualEndDate?: string;
+    delayedDays?: number;
+    status?: string;
+  };
+  committeeReport?: Record<string, unknown> | null;
+  aiAssessment?: {
+    clauseReferences?: string[];
+    documentSignals?: string[];
+    qualityNotes?: string[];
+    penaltyReason?: string;
+  } | null;
+  generatedAt?: string;
 };
 
 type TenderRecord = {
@@ -109,6 +143,13 @@ type MilestoneUpdateForm = {
   actualStartDate: string;
   actualEndDate: string;
   remarks: string;
+  committeeReport: {
+    workDone: string;
+    materialQuality: string;
+    delayReason: string;
+    clauseReference: string;
+    recommendation: string;
+  };
   documents: string[];
   documentNames: string[];
   images: string[];
@@ -145,6 +186,7 @@ export function MilestoneTracking({ userRole = "committee" }: MilestoneTrackingP
   const [modalOpen, setModalOpen] = useState(false);
   const [modalTab, setModalTab] = useState<"update" | "history">("update");
   const [delayAnalysis, setDelayAnalysis] = useState<DelayAnalysis | null>(null);
+  const [aiReports, setAiReports] = useState<AiMilestoneReport[]>([]);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -156,6 +198,13 @@ export function MilestoneTracking({ userRole = "committee" }: MilestoneTrackingP
     actualStartDate: "",
     actualEndDate: "",
     remarks: "",
+    committeeReport: {
+      workDone: "",
+      materialQuality: "",
+      delayReason: "",
+      clauseReference: "",
+      recommendation: "",
+    },
     documents: [],
     documentNames: [],
     images: [],
@@ -238,6 +287,20 @@ export function MilestoneTracking({ userRole = "committee" }: MilestoneTrackingP
     }
   };
 
+  const loadAiReports = async (contractId: string) => {
+    if (!contractId) {
+      setAiReports([]);
+      return;
+    }
+
+    try {
+      const data = await apiRequest<AiMilestoneReport[]>(`/api/ai/milestones/contracts/${contractId}`);
+      setAiReports(Array.isArray(data) ? data : []);
+    } catch {
+      setAiReports([]);
+    }
+  };
+
   useEffect(() => {
     loadContracts();
   }, []);
@@ -245,6 +308,7 @@ export function MilestoneTracking({ userRole = "committee" }: MilestoneTrackingP
   useEffect(() => {
     if (!selectedContractId) return;
     loadDelayAnalysis(selectedContractId);
+    loadAiReports(selectedContractId);
   }, [selectedContractId]);
 
   const selectedContract = useMemo(
@@ -289,6 +353,13 @@ export function MilestoneTracking({ userRole = "committee" }: MilestoneTrackingP
       actualStartDate: selectedMilestone.actualStartDate ? selectedMilestone.actualStartDate.slice(0, 10) : "",
       actualEndDate: selectedMilestone.actualEndDate ? selectedMilestone.actualEndDate.slice(0, 10) : "",
       remarks: selectedMilestone.remarks || "",
+      committeeReport: {
+        workDone: "",
+        materialQuality: "",
+        delayReason: "",
+        clauseReference: "",
+        recommendation: "",
+      },
       documents: selectedMilestone.documents || [],
       documentNames: (selectedMilestone.documents || []).map((document, index) =>
         getStoredDocumentName(document, `Document ${index + 1}`)
@@ -300,6 +371,11 @@ export function MilestoneTracking({ userRole = "committee" }: MilestoneTrackingP
       checklist: selectedMilestone.checklist || [],
     });
   }, [selectedMilestone]);
+
+  const selectedAiReport = useMemo(
+    () => aiReports.find((report) => report.milestoneId === selectedMilestoneId) || aiReports[0] || null,
+    [aiReports, selectedMilestoneId]
+  );
 
   const summary = useMemo(() => {
     const milestones = selectedContract?.milestones || [];
@@ -400,6 +476,7 @@ export function MilestoneTracking({ userRole = "committee" }: MilestoneTrackingP
           actualStartDate: milestoneUpdate.actualStartDate || undefined,
           actualEndDate: milestoneUpdate.actualEndDate || undefined,
           remarks: milestoneUpdate.remarks,
+          committeeReport: milestoneUpdate.committeeReport,
           checklist: milestoneUpdate.checklist,
           documents: milestoneUpdate.documents,
           images: milestoneUpdate.images,
@@ -800,6 +877,85 @@ export function MilestoneTracking({ userRole = "committee" }: MilestoneTrackingP
                             rows={3}
                           />
 
+                          <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 space-y-3">
+                            <div>
+                              <p className="text-sm font-semibold text-amber-900">Committee report JSON</p>
+                              <p className="text-xs text-amber-800">Add the inspection details that the AI should compare against the tender and contract clauses.</p>
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                              <div>
+                                <label className="block text-xs text-amber-900 mb-1">Work done</label>
+                                <textarea
+                                  value={milestoneUpdate.committeeReport.workDone}
+                                  onChange={(e) =>
+                                    setMilestoneUpdate((prev) => ({
+                                      ...prev,
+                                      committeeReport: { ...prev.committeeReport, workDone: e.target.value },
+                                    }))
+                                  }
+                                  className="w-full px-3 py-2 border border-amber-200 rounded-md bg-white"
+                                  rows={3}
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs text-amber-900 mb-1">Material quality</label>
+                                <textarea
+                                  value={milestoneUpdate.committeeReport.materialQuality}
+                                  onChange={(e) =>
+                                    setMilestoneUpdate((prev) => ({
+                                      ...prev,
+                                      committeeReport: { ...prev.committeeReport, materialQuality: e.target.value },
+                                    }))
+                                  }
+                                  className="w-full px-3 py-2 border border-amber-200 rounded-md bg-white"
+                                  rows={3}
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs text-amber-900 mb-1">Delay reason</label>
+                                <input
+                                  type="text"
+                                  value={milestoneUpdate.committeeReport.delayReason}
+                                  onChange={(e) =>
+                                    setMilestoneUpdate((prev) => ({
+                                      ...prev,
+                                      committeeReport: { ...prev.committeeReport, delayReason: e.target.value },
+                                    }))
+                                  }
+                                  className="w-full px-3 py-2 border border-amber-200 rounded-md bg-white"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs text-amber-900 mb-1">Clause reference</label>
+                                <input
+                                  type="text"
+                                  value={milestoneUpdate.committeeReport.clauseReference}
+                                  onChange={(e) =>
+                                    setMilestoneUpdate((prev) => ({
+                                      ...prev,
+                                      committeeReport: { ...prev.committeeReport, clauseReference: e.target.value },
+                                    }))
+                                  }
+                                  className="w-full px-3 py-2 border border-amber-200 rounded-md bg-white"
+                                />
+                              </div>
+                            </div>
+                            <div>
+                              <label className="block text-xs text-amber-900 mb-1">Recommendation</label>
+                              <textarea
+                                value={milestoneUpdate.committeeReport.recommendation}
+                                onChange={(e) =>
+                                  setMilestoneUpdate((prev) => ({
+                                    ...prev,
+                                    committeeReport: { ...prev.committeeReport, recommendation: e.target.value },
+                                  }))
+                                }
+                                className="w-full px-3 py-2 border border-amber-200 rounded-md bg-white"
+                                rows={3}
+                              />
+                            </div>
+                          </div>
+
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
                               <label className="block text-sm text-gray-700 mb-2">Milestone Documents</label>
@@ -893,6 +1049,80 @@ export function MilestoneTracking({ userRole = "committee" }: MilestoneTrackingP
                   </div>
                 )}
               </div>
+
+              {selectedAiReport && (
+                <div className="bg-white rounded-lg border border-gray-100 p-6">
+                  <div className="flex items-center justify-between gap-3 mb-4">
+                    <h3 className="text-lg text-[#0B3C5D]">Latest AI Milestone Review</h3>
+                    <span className={`text-xs px-2 py-1 rounded-full ${
+                      selectedAiReport.severity === "high"
+                        ? "bg-red-100 text-red-700"
+                        : selectedAiReport.severity === "medium"
+                        ? "bg-amber-100 text-amber-700"
+                        : "bg-green-100 text-green-700"
+                    }`}>
+                      {selectedAiReport.severity || "low"}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm mb-4">
+                    <div className="bg-gray-50 rounded-md p-3">
+                      <p className="text-gray-500">Penalty estimate</p>
+                      <p className="text-[#0B3C5D] mt-1 font-medium">
+                        {selectedAiReport.penaltyEstimate !== undefined && selectedAiReport.penaltyEstimate !== null
+                          ? `₹${Number(selectedAiReport.penaltyEstimate).toLocaleString()}`
+                          : "Not calculated"}
+                      </p>
+                    </div>
+                    <div className="bg-gray-50 rounded-md p-3">
+                      <p className="text-gray-500">Delay days</p>
+                      <p className="text-[#0B3C5D] mt-1 font-medium">
+                        {selectedAiReport.timeline?.delayedDays ?? 0}
+                      </p>
+                    </div>
+                    <div className="bg-gray-50 rounded-md p-3">
+                      <p className="text-gray-500">AI status</p>
+                      <p className="text-[#0B3C5D] mt-1 font-medium">
+                        {selectedAiReport.timeline?.status || "Reviewed"}
+                      </p>
+                    </div>
+                  </div>
+                  {selectedAiReport.summary && <p className="text-sm text-gray-700 mb-3">{selectedAiReport.summary}</p>}
+                  {!!selectedAiReport.alerts?.length && (
+                    <div className="mb-4">
+                      <p className="text-xs uppercase tracking-wide text-gray-500 mb-2">Alerts</p>
+                      <ul className="space-y-1">
+                        {selectedAiReport.alerts.map((alert, index) => (
+                          <li key={index} className="text-sm text-red-700 bg-red-50 border border-red-100 rounded-md px-3 py-2">
+                            {alert}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {!!selectedAiReport.aiAssessment?.clauseReferences?.length && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                      <div className="bg-gray-50 rounded-md p-3">
+                        <p className="text-gray-500 mb-2">Clause references</p>
+                        <div className="flex flex-wrap gap-2">
+                          {selectedAiReport.aiAssessment.clauseReferences.map((item, index) => (
+                            <span key={index} className="px-2 py-1 rounded-full bg-white border border-gray-200 text-gray-700 text-xs">
+                              {item}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="bg-gray-50 rounded-md p-3">
+                        <p className="text-gray-500 mb-2">Quality notes</p>
+                        <div className="space-y-1">
+                          {(selectedAiReport.aiAssessment.qualityNotes || []).map((item, index) => (
+                            <p key={index} className="text-gray-700 text-xs">{item}</p>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </>
           )}
         </div>
@@ -1044,6 +1274,35 @@ function MilestoneActivityLog({ history }: { history?: HistoryEntry[] }) {
 
             {entry.remarks && (
               <p className="text-xs text-gray-600 italic border-t border-gray-100 pt-2 mt-1">"{entry.remarks}"</p>
+            )}
+
+            {entry.committeeReport && (
+              <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+                {entry.committeeReport.workDone && (
+                  <div className="bg-white border border-gray-200 rounded-md p-2">
+                    <p className="text-gray-400">Work done</p>
+                    <p className="text-gray-700 mt-1">{entry.committeeReport.workDone}</p>
+                  </div>
+                )}
+                {entry.committeeReport.materialQuality && (
+                  <div className="bg-white border border-gray-200 rounded-md p-2">
+                    <p className="text-gray-400">Material quality</p>
+                    <p className="text-gray-700 mt-1">{entry.committeeReport.materialQuality}</p>
+                  </div>
+                )}
+                {entry.committeeReport.delayReason && (
+                  <div className="bg-white border border-gray-200 rounded-md p-2">
+                    <p className="text-gray-400">Delay reason</p>
+                    <p className="text-gray-700 mt-1">{entry.committeeReport.delayReason}</p>
+                  </div>
+                )}
+                {entry.committeeReport.recommendation && (
+                  <div className="bg-white border border-gray-200 rounded-md p-2 md:col-span-2">
+                    <p className="text-gray-400">Recommendation</p>
+                    <p className="text-gray-700 mt-1">{entry.committeeReport.recommendation}</p>
+                  </div>
+                )}
+              </div>
             )}
           </div>
         );

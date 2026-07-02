@@ -24,6 +24,15 @@ const committeeEvaluationSchema = new mongoose.Schema({
     technicalScore: { type: Number, required: true },
     financialScore: { type: Number, required: true },
     eligibilityChecked: { type: Boolean, default: true },
+    criteriaScores: {
+        type: [{
+            criterion: { type: String, required: true },
+            maxMarks: { type: Number, default: 0 },
+            awardedMarks: { type: Number, default: 0 },
+            documentLabel: { type: String, default: '' },
+        }],
+        default: [],
+    },
     comments: { type: String, default: '' },
     evaluatedDate: { type: Date, default: Date.now },
 }, { _id: false });
@@ -83,6 +92,29 @@ const tenderSchema = new mongoose.Schema({
     },
     requiredDocuments: { type: [requiredDocumentSchema], default: [] },
     status: { type: String, enum: ['Draft', 'Published', 'Closed', 'Awarded', 'Completed'], default: 'Published' },
+    aiEvaluationState: {
+        status: {
+            type: String,
+            enum: ['idle', 'running', 'paused', 'completed', 'failed'],
+            default: 'idle',
+        },
+        action: {
+            type: String,
+            enum: ['start', 'resume', 'pause', 'auto'],
+            default: 'start',
+        },
+        startedAt: { type: Date },
+        updatedAt: { type: Date },
+        pausedAt: { type: Date },
+        completedAt: { type: Date },
+        currentBidId: { type: mongoose.Schema.Types.ObjectId },
+        currentVendorName: { type: String, default: '' },
+        nextBidIndex: { type: Number, default: 0 },
+        totalBids: { type: Number, default: 0 },
+        completedBids: { type: Number, default: 0 },
+        lastError: { type: String, default: '' },
+        force: { type: Boolean, default: false },
+    },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     documents: [{ type: String }],
     bids: [bidSchema], // Embed bid array directly in Tender as requested
@@ -116,7 +148,7 @@ const aiBidSummarySchema = new mongoose.Schema({
     bidId: { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
     vendorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     evaluationMethod: { type: String, enum: ['L1', 'QCBS'], required: true },
-    status: { type: String, enum: ['pending', 'success', 'failed'], default: 'pending' },
+    status: { type: String, enum: ['pending', 'running', 'success', 'failed'], default: 'pending' },
     model: { type: String },
     promptVersion: { type: String, default: 'v1' },
     generatedAt: { type: Date, default: Date.now },
@@ -153,6 +185,8 @@ const aiMilestoneReportSchema = new mongoose.Schema({
     milestoneId: { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
     tenderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Tender', required: true, index: true },
     reportedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    committeeReport: { type: mongoose.Schema.Types.Mixed },
+    aiAssessment: { type: mongoose.Schema.Types.Mixed },
     status: { type: String, enum: ['success', 'failed'], default: 'success' },
     model: { type: String },
     promptVersion: { type: String, default: 'v1' },
@@ -187,6 +221,23 @@ const aiNotificationSchema = new mongoose.Schema({
     read: { type: Boolean, default: false },
 }, { timestamps: true });
 
+const aiChatMessageSchema = new mongoose.Schema({
+    role: { type: String, enum: ['user', 'assistant'], required: true },
+    content: { type: String, required: true },
+    createdAt: { type: Date, default: Date.now },
+    meta: { type: mongoose.Schema.Types.Mixed },
+}, { _id: false });
+
+const aiChatSessionSchema = new mongoose.Schema({
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+    role: { type: String, enum: ['CPO', 'PO', 'Committee', 'Vendor'], required: true },
+    title: { type: String, default: 'New chat' },
+    messages: { type: [aiChatMessageSchema], default: [] },
+    lastMessageAt: { type: Date, default: Date.now },
+}, { timestamps: true });
+
+aiChatSessionSchema.index({ userId: 1, lastMessageAt: -1 });
+
 const milestoneChecklistItemSchema = new mongoose.Schema({
     label: { type: String, required: true },
     checked: { type: Boolean, default: false },
@@ -199,6 +250,7 @@ const milestoneHistoryEntrySchema = new mongoose.Schema({
     progress: { type: Number },
     remarks: { type: String, default: '' },
     checklistSnapshot: { type: [milestoneChecklistItemSchema], default: [] },
+    committeeReport: { type: mongoose.Schema.Types.Mixed },
 }, { _id: false });
 
 const contractMilestoneSchema = new mongoose.Schema({
@@ -273,3 +325,4 @@ export const MilestoneAsset = mongoose.model('MilestoneAsset', milestoneAssetSch
 export const AIBidSummary = mongoose.model('AIBidSummary', aiBidSummarySchema);
 export const AIMilestoneReport = mongoose.model('AIMilestoneReport', aiMilestoneReportSchema);
 export const AINotification = mongoose.model('AINotification', aiNotificationSchema);
+export const AIChatSession = mongoose.model('AIChatSession', aiChatSessionSchema);

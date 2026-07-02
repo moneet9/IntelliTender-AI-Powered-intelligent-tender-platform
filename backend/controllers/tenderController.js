@@ -343,6 +343,7 @@ const mapBidWithVendorDetails = (bid) => {
             technicalScore: evaluation.technicalScore,
             financialScore: evaluation.financialScore,
             eligibilityChecked: evaluation.eligibilityChecked,
+            criteriaScores: Array.isArray(evaluation.criteriaScores) ? evaluation.criteriaScores : [],
             comments: evaluation.comments,
             evaluatedDate: evaluation.evaluatedDate,
         })),
@@ -721,11 +722,22 @@ export const evaluateBid = async (req, res) => {
         const financialScoreValue = eligibilityChecked
             ? (evaluationMethod === 'L1' ? Number(bid.proposedAmount || 0) : Number(req.body.financialScore || 0))
             : 0;
+        const criteriaScores = Array.isArray(req.body.criteriaScores)
+            ? req.body.criteriaScores
+                .map((item) => ({
+                    criterion: String(item?.criterion || item?.documentLabel || '').trim(),
+                    maxMarks: Number(item?.maxMarks || 0),
+                    awardedMarks: Number(item?.awardedMarks || 0),
+                    documentLabel: String(item?.documentLabel || item?.criterion || '').trim(),
+                }))
+                .filter((item) => item.criterion)
+            : [];
 
         if (existingEvaluation) {
             existingEvaluation.technicalScore = technicalScoreValue;
             existingEvaluation.financialScore = financialScoreValue;
             existingEvaluation.eligibilityChecked = eligibilityChecked;
+            existingEvaluation.criteriaScores = criteriaScores;
             existingEvaluation.comments = req.body.comments || '';
             existingEvaluation.evaluatedDate = new Date();
         } else {
@@ -734,6 +746,7 @@ export const evaluateBid = async (req, res) => {
                 technicalScore: technicalScoreValue,
                 financialScore: financialScoreValue,
                 eligibilityChecked,
+                criteriaScores,
                 comments: req.body.comments || '',
                 evaluatedDate: new Date(),
             });
