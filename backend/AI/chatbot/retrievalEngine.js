@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import { Contract, Tender, User, AIMilestoneReport } from '../../models/model.js';
 import { classifyIntent } from './intentRouter.js';
 import { callLocalEmbedding, LOCAL_AI_EMBED_MODEL } from '../localModelClient.js';
+import { searchDocumentChunks } from '../documents/documentEmbeddingService.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
@@ -317,6 +318,14 @@ function buildContextDigest(context) {
         ].join('\n'));
     }
 
+    const documentMatches = Array.isArray(context?.documents?.matches) ? context.documents.matches : [];
+    if (documentMatches.length) {
+        sections.push([
+            'Top document matches:',
+            ...documentMatches.slice(0, 5).map((match) => `- ${match.sourceName} | score: ${match.score} | ${String(match.excerpt || '').slice(0, 220)}`),
+        ].join('\n'));
+    }
+
     if (!sections.length) {
         return 'No local context records were found.';
     }
@@ -418,6 +427,21 @@ function buildContractSnippet(contract, role) {
         latestReport && latestReport.delayedDays ? `Delay days: ${latestReport.delayedDays}` : '',
         latestReport ? `Latest AI milestone note: ${latestReport.summary || latestReport.alerts?.[0] || ''}` : '',
     ].join(' | ');
+}
+
+function focusTenderIdsByQuery(tenders, query) {
+    const queryText = String(query || '').toLowerCase();
+    const tokens = queryText.match(/[a-z0-9]+/g) || [];
+    const numericTokens = tokens.filter((token) => /^\d+$/.test(token));
+
+    const matched = tenders.filter((tender) => {
+        const haystack = `${tender.title || ''} ${tender.description || ''} ${tender.category || ''}`.toLowerCase();
+        if (numericTokens.some((token) => haystack.includes(token))) return true;
+        if (queryText.includes(String(tender._id || '').toLowerCase())) return true;
+        return tokens.some((token) => token.length >= 4 && haystack.includes(token));
+    });
+
+    return matched.length ? matched : tenders;
 }
 
 async function fetchRoleScopedTenders(role, userId, filters = {}) {
@@ -654,6 +678,40 @@ async function buildKnowledgeBranch(query) {
     };
 }
 
+async function buildDocumentBranch(role, userId, query) {
+    const [tenders, contracts] = await Promise.all([
+        fetchRoleScopedTenders(role, userId, {}),
+        fetchRoleScopedContracts(role, userId, {}),
+    ]);
+
+    const focusedTenders = focusTenderIdsByQuery(tenders, query);
+    const tenderIds = focusedTenders.map((tender) => String(tender._id)).filter(Boolean);
+    const contractIds = contracts.map((contract) => String(contract._id)).filter(Boolean);
+    const wantsPenaltyContext = /\b(penalt|penalty|delay|delayed|late|late delivery|non[-\s]?compliance|standard not met|forgery|fake|invalid)\b/i.test(String(query || ''));
+
+    const matches = await searchDocumentChunks({
+        query,
+        role,
+        userId,
+        tenderIds,
+        contractIds,
+        vendorId: userId,
+        sourceKinds: wantsPenaltyContext ? ['tender-document'] : undefined,
+        limit: 6,
+    });
+
+    return {
+        branch: 'documents',
+        summary: {
+            tenderIds: tenderIds.length,
+            contractIds: contractIds.length,
+            matches: matches.length,
+            embeddingModel: LOCAL_AI_EMBED_MODEL,
+        },
+        matches,
+    };
+}
+
 async function buildToolsBranch(role, userId, query) {
     const queryText = String(query || '').toLowerCase();
     const wantsAnalytics = /analytics|summary|dashboard|report|metrics|trend|risk|overdue|delay|flags?/i.test(queryText);
@@ -715,7 +773,7 @@ async function buildToolsBranch(role, userId, query) {
     };
 }
 
-function mergeContext({ role, userId, query, localFacts, intent, structured, semantic, knowledge, tools }) {
+function mergeContext({ role, userId, query, localFacts, intent, structured, semantic, knowledge, documents, tools }) {
     return {
         role,
         userId: String(userId),
@@ -726,12 +784,14 @@ function mergeContext({ role, userId, query, localFacts, intent, structured, sem
         structured,
         semantic,
         knowledge,
+        documents,
         tools,
         summary: {
             localFacts: Array.isArray(localFacts) ? localFacts.length : 0,
             structuredMatches: structured?.summary?.matchedTenders || 0,
             semanticMatches: semantic?.summary?.matched || 0,
             knowledgeMatches: knowledge?.matches?.length || 0,
+            documentMatches: documents?.matches?.length || 0,
             toolActions: tools?.actions?.length || 0,
         },
     };
@@ -745,6 +805,7 @@ export async function buildHybridAssistantContext({ role, userId, query, localFa
         structured: null,
         semantic: null,
         knowledge: null,
+        documents: null,
         tools: null,
     };
 
@@ -774,6 +835,14 @@ export async function buildHybridAssistantContext({ role, userId, query, localFa
         );
     }
 
+    if (branchSet.has('documents')) {
+        branchTasks.push(
+            buildDocumentBranch(role, userId, query).then((result) => {
+                branches.documents = result;
+            })
+        );
+    }
+
     if (branchSet.has('tools')) {
         branchTasks.push(
             buildToolsBranch(role, userId, query).then((result) => {
@@ -793,6 +862,7 @@ export async function buildHybridAssistantContext({ role, userId, query, localFa
         structured: branches.structured,
         semantic: branches.semantic,
         knowledge: branches.knowledge,
+        documents: branches.documents,
         tools: branches.tools,
     });
 }

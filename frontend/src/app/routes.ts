@@ -10,6 +10,7 @@ import { TenderCreation } from "./components/pages/Po_pages/TenderCreation";
 import { AIEvaluation } from "./components/pages/Po_pages/AIEvaluation";
 import { AIEvaluationQueue } from "./components/pages/Po_pages/AIEvaluationQueue";
 import { PoAlerts } from "./components/pages/Po_pages/PoAlerts";
+import { AISettings } from "./components/pages/Po_pages/AISettings";
 import { BidderProfile } from "./components/pages/Vendor_pages/BidderProfile";
 import { POMilestones } from "./components/pages/Po_pages/POMilestones";
 import { CommitteeMilestones } from "./components/pages/Commitee_member_pages/CommitteeMilestones";
@@ -79,6 +80,10 @@ export const router = createBrowserRouter([
   {
     path: "/po/ai-alerts",
     Component: PoAlerts,
+  },
+  {
+    path: "/po/ai-settings",
+    Component: AISettings,
   },
   {
     path: "/po/bidders",

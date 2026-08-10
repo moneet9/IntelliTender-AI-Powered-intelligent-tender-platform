@@ -1,4 +1,5 @@
 import { Tender, Contract, User, BidDocument } from '../models/model.js';
+import { queueBidDocumentEmbeddings, queueTenderDocumentEmbeddings } from '../AI/documents/documentEmbeddingService.js';
 
 const decodeStoredDocument = (value, fallbackName) => {
     if (!value || typeof value !== 'string') {
@@ -396,6 +397,9 @@ export const createTender = async (req, res) => {
             draftMilestones: Array.isArray(milestones) && milestones.length > 0 ? milestones : [],
             createdBy: req.user.id
         });
+        queueTenderDocumentEmbeddings(tender).catch((error) => {
+            console.error('Tender document embedding queue failed:', error.message || error);
+        });
         res.status(201).json(tender);
     } catch (e) { res.status(500).json({ error: e.message }); }
 };
@@ -509,8 +513,13 @@ export const getTenderById = async (req, res) => {
 };
 
 export const editTender = async (req, res) => {
-     try {
+    try {
         const tender = await Tender.findByIdAndUpdate(req.params.id, req.body, { new: true });
+        if (tender) {
+            queueTenderDocumentEmbeddings(tender).catch((error) => {
+                console.error('Tender document embedding refresh failed:', error.message || error);
+            });
+        }
         res.json(tender);
     } catch (e) { res.status(500).json({ error: e.message }); }
 };
@@ -578,6 +587,7 @@ export const submitBid = async (req, res) => {
         if (!vendor) return res.status(404).json({ message: 'Vendor not found' });
 
         const bidDocuments = [];
+        const embeddingQueueDocuments = [];
         let commercialDocumentId = null;
         let commercialDocumentReference = '';
 
@@ -615,6 +625,13 @@ export const submitBid = async (req, res) => {
                 documentId: storedBidDocument._id,
                 document: documentReference,
             });
+            embeddingQueueDocuments.push({
+                documentId: storedBidDocument._id,
+                label: docMeta.label,
+                name: decoded.name || label,
+                document: decoded.content,
+                mimeType: decoded.mimeType,
+            });
 
             if (docMeta.category === 'Commercial' && !commercialDocumentReference) {
                 commercialDocumentId = storedBidDocument._id;
@@ -647,6 +664,24 @@ export const submitBid = async (req, res) => {
             );
             throw saveError;
         }
+
+        queueBidDocumentEmbeddings({
+            tenderId: tender._id,
+            bidId: tender.bids[tender.bids.length - 1]?._id,
+            vendorId: req.user.id,
+            documents: embeddingQueueDocuments,
+            proposalDocument: commercialDocumentId
+                ? {
+                    documentId: commercialDocumentId,
+                    label: 'Commercial Bid Document',
+                    name: embeddingQueueDocuments.find((item) => String(item.documentId) === String(commercialDocumentId))?.name || 'Commercial Bid Document',
+                    document: embeddingQueueDocuments.find((item) => String(item.documentId) === String(commercialDocumentId))?.document || '',
+                    mimeType: embeddingQueueDocuments.find((item) => String(item.documentId) === String(commercialDocumentId))?.mimeType,
+                }
+                : null,
+        }).catch((error) => {
+            console.error('Bid document embedding queue failed:', error.message || error);
+        });
 
         res.status(201).json({ message: 'Bid submitted' });
     } catch (e) { res.status(500).json({ error: e.message }); }

@@ -7,7 +7,7 @@ const normalizedBaseUrl = trimTrailingSlash(rawBaseUrl).endsWith('/v1')
     : `${trimTrailingSlash(rawBaseUrl)}/v1`;
 
 const LOCAL_MODEL = process.env.LM_STUDIO_MODEL || process.env.OLLAMA_MODEL || 'qwen3.5:9b';
-const LOCAL_EMBED_MODEL = process.env.LM_STUDIO_EMBED_MODEL || process.env.OLLAMA_EMBED_MODEL || 'nomic-embed-text';
+const LOCAL_EMBED_MODEL = process.env.LM_STUDIO_EMBED_MODEL || process.env.OLLAMA_EMBED_MODEL || 'bge-m3';
 const LOCAL_API_KEY = process.env.LM_STUDIO_API_KEY || process.env.LOCAL_AI_API_KEY || process.env.OLLAMA_AUTH_TOKEN || '';
 const modelListCache = {
     chat: null,
@@ -73,7 +73,7 @@ const normalizeResponseFormat = (responseFormat) => {
     return null;
 };
 
-const isEmbeddingModel = (modelId) => /embed/i.test(String(modelId || '')) || /nomic/i.test(String(modelId || ''));
+const isEmbeddingModel = (modelId) => /embed/i.test(String(modelId || '')) || /nomic/i.test(String(modelId || '')) || /bge/i.test(String(modelId || ''));
 
 const fetchAvailableModels = async () => {
     const now = Date.now();

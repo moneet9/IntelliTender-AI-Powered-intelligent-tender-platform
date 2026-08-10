@@ -20,6 +20,11 @@ const toolKeywords = [
     'overdue', 'delay', 'delayed', 'action', 'actions', 'export', 'flag', 'flags', 'risk', 'performance',
 ];
 
+const documentKeywords = [
+    'document', 'documents', 'attachment', 'attachments', 'file', 'files', 'pdf', 'ocr', 'scan',
+    'scanned', 'upload', 'uploaded', 'content', 'clause', 'clauses', 'report', 'reports', 'evidence',
+];
+
 function countKeywordHits(message, keywords) {
     const lowerMessage = String(message || '').toLowerCase();
     return keywords.reduce((count, keyword) => count + (lowerMessage.includes(keyword) ? 1 : 0), 0);
@@ -33,6 +38,7 @@ export function classifyIntent(message) {
         semantic: countKeywordHits(normalizedMessage, semanticKeywords),
         knowledge: countKeywordHits(normalizedMessage, knowledgeKeywords),
         tools: countKeywordHits(normalizedMessage, toolKeywords),
+        documents: countKeywordHits(normalizedMessage, documentKeywords),
     };
 
     const ordered = Object.entries(scores)
@@ -66,6 +72,10 @@ export function classifyIntent(message) {
 
     if (scores.tools > 0 || /count|how many|summary|analytics|dashboard|report|trend|risk|overdue/i.test(normalizedMessage)) {
         branches.add('tools');
+    }
+
+    if (scores.documents > 0 || /\b(pdf|ocr|attachment|attachments|document|documents|file|files|report|reports|scan|scanned|upload|uploaded)\b/i.test(normalizedMessage)) {
+        branches.add('documents');
     }
 
     if (branches.size === 1 && (strongest === 'semantic' || strongest === 'knowledge')) {

@@ -1,5 +1,6 @@
 import { BidDocument } from '../../models/model.js';
 import { callLocalChat, LOCAL_AI_MODEL } from '../localModelClient.js';
+import { getIndexedDocumentGroups } from '../documents/documentEmbeddingService.js';
 
 const MAX_TEXT_CHARS = 12000;
 
@@ -144,6 +145,22 @@ const collectTenderDocuments = async (tender) => {
     return results;
 };
 
+const collectIndexedTenderDocuments = async (tender) => {
+    if (!tender?._id) return [];
+
+    const groups = await getIndexedDocumentGroups({
+        tenderIds: [tender._id],
+        sourceKinds: ['tender-document'],
+        limit: 100,
+    });
+
+    return groups.map((group, index) => ({
+        name: group.sourceName || `Tender Document ${index + 1}`,
+        mimeType: null,
+        text: truncateText(group.text || ''),
+    })).filter((item) => item.text);
+};
+
 const collectBidDocuments = async (bid) => {
     const outputs = [];
     const bidDocs = Array.isArray(bid?.bidDocuments) ? bid.bidDocuments : [];
@@ -185,6 +202,24 @@ const collectBidDocuments = async (bid) => {
     return outputs;
 };
 
+const collectIndexedBidDocuments = async (tender, bid) => {
+    if (!tender?._id || !bid?._id) return [];
+
+    const groups = await getIndexedDocumentGroups({
+        tenderIds: [tender._id],
+        bidIds: [bid._id],
+        vendorId: bid.vendorId || null,
+        sourceKinds: ['bid-document'],
+        limit: 100,
+    });
+
+    return groups.map((group, index) => ({
+        label: group.sourceName || `Bid document ${index + 1}`,
+        mimeType: null,
+        text: truncateText(group.text || ''),
+    })).filter((item) => item.text);
+};
+
 const buildPrompt = ({ tender, bid, tenderDocs, bidDocs }) => {
     const tenderMeta = {
         title: tender?.title,
@@ -216,8 +251,10 @@ const callLocalModel = async (prompt) => {
 };
 
 export const runAiScoring = async ({ tender, bid }) => {
-    const tenderDocs = await collectTenderDocuments(tender);
-    const bidDocs = await collectBidDocuments(bid);
+    const indexedTenderDocs = await collectIndexedTenderDocuments(tender);
+    const indexedBidDocs = await collectIndexedBidDocuments(tender, bid);
+    const tenderDocs = indexedTenderDocs.length ? indexedTenderDocs : await collectTenderDocuments(tender);
+    const bidDocs = indexedBidDocs.length ? indexedBidDocs : await collectBidDocuments(bid);
     const prompt = buildPrompt({ tender, bid, tenderDocs, bidDocs });
 
     const responseText = await callLocalModel(prompt);

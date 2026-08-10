@@ -1,5 +1,6 @@
 import { Contract, Tender, MilestoneAsset } from '../models/model.js';
 import { evaluateMilestoneWithAi } from '../AI/evaluation/aiMilestoneController.js';
+import { queueCommitteeReportEmbedding, queueMilestoneAssetEmbedding } from '../AI/documents/documentEmbeddingService.js';
 
 const MILESTONE_STATUSES = ['Not Started', 'In Progress', 'Completed', 'Delayed'];
 
@@ -188,6 +189,10 @@ const resolveAssetIds = async ({
             name: decoded.name || fallbackName,
             content: decoded.content,
             mimeType: decoded.mimeType,
+        });
+
+        queueMilestoneAssetEmbedding(storedAsset).catch((error) => {
+            console.error('Milestone asset embedding queue failed:', error.message || error);
         });
 
         resolved.push(String(storedAsset._id));
@@ -583,6 +588,24 @@ export const updateMilestone = async (req, res) => {
 
         await contract.save();
 
+        if (committeeReport) {
+            queueCommitteeReportEmbedding({
+                contractId: contract._id,
+                milestoneId: milestone._id,
+                sourceName: `${milestone.title || 'Milestone'} committee report`,
+                rawContent: typeof committeeReport === 'string'
+                    ? committeeReport
+                    : JSON.stringify(committeeReport),
+                sourceMeta: {
+                    status: milestone.status,
+                    progress: milestone.progress,
+                    remarks: milestone.remarks || '',
+                },
+            }).catch((error) => {
+                console.error('Committee report embedding queue failed:', error.message || error);
+            });
+        }
+
         try {
             await evaluateMilestoneWithAi({
                 contract,
@@ -669,6 +692,25 @@ export const submitProgressReport = async (req, res) => {
         await contract.save();
 
         const createdReport = contract.progressReports[contract.progressReports.length - 1];
+
+        queueCommitteeReportEmbedding({
+            contractId: contract._id,
+            milestoneId: milestoneId || undefined,
+            reportId: createdReport?._id || undefined,
+            uploadedBy: req.user?.id,
+            sourceName: createdReport?.milestoneTitle || resolvedMilestoneTitle || 'Progress report',
+            rawContent: [
+                createdReport?.milestoneTitle ? `Milestone: ${createdReport.milestoneTitle}` : '',
+                createdReport?.reportType ? `Report type: ${createdReport.reportType}` : '',
+                createdReport?.description ? `Description: ${createdReport.description}` : '',
+                createdReport?.observations ? `Observations: ${createdReport.observations}` : '',
+            ].filter(Boolean).join('\n'),
+            sourceMeta: {
+                reportType: createdReport?.reportType || 'General',
+            },
+        }).catch((error) => {
+            console.error('Progress report embedding queue failed:', error.message || error);
+        });
 
         try {
             const milestone = milestoneId ? contract.milestones.id(milestoneId) : null;

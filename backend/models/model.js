@@ -238,6 +238,78 @@ const aiChatSessionSchema = new mongoose.Schema({
 
 aiChatSessionSchema.index({ userId: 1, lastMessageAt: -1 });
 
+const documentEmbeddingJobSchema = new mongoose.Schema({
+    sourceKind: {
+        type: String,
+        enum: ['tender-document', 'bid-document', 'committee-report'],
+        required: true,
+        index: true,
+    },
+    sourceKey: { type: String, required: true, unique: true, index: true },
+    tenderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Tender', index: true },
+    contractId: { type: mongoose.Schema.Types.ObjectId, ref: 'Contract', index: true },
+    milestoneId: { type: mongoose.Schema.Types.ObjectId, index: true },
+    bidId: { type: mongoose.Schema.Types.ObjectId, index: true },
+    reportId: { type: mongoose.Schema.Types.ObjectId, index: true },
+    uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
+    vendorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
+    sourceIndex: { type: Number, default: 0 },
+    sourceName: { type: String, required: true },
+    mimeType: { type: String },
+    rawContent: { type: String, required: true },
+    contentHash: { type: String, index: true },
+    status: {
+        type: String,
+        enum: ['pending', 'running', 'completed', 'failed'],
+        default: 'pending',
+        index: true,
+    },
+    attempts: { type: Number, default: 0 },
+    chunkCount: { type: Number, default: 0 },
+    embeddingModel: { type: String, default: '' },
+    lastError: { type: String, default: '' },
+    queuedAt: { type: Date, default: Date.now },
+    startedAt: { type: Date },
+    processedAt: { type: Date },
+    sourceMeta: { type: mongoose.Schema.Types.Mixed, default: {} },
+}, { timestamps: true });
+
+documentEmbeddingJobSchema.index({ status: 1, queuedAt: 1 });
+
+const documentChunkSchema = new mongoose.Schema({
+    sourceKind: {
+        type: String,
+        enum: ['tender-document', 'bid-document', 'committee-report'],
+        required: true,
+        index: true,
+    },
+    sourceKey: { type: String, required: true, index: true },
+    tenderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Tender', index: true },
+    contractId: { type: mongoose.Schema.Types.ObjectId, ref: 'Contract', index: true },
+    milestoneId: { type: mongoose.Schema.Types.ObjectId, index: true },
+    bidId: { type: mongoose.Schema.Types.ObjectId, index: true },
+    reportId: { type: mongoose.Schema.Types.ObjectId, index: true },
+    uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
+    vendorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
+    sourceIndex: { type: Number, default: 0 },
+    chunkIndex: { type: Number, required: true },
+    chunkText: { type: String, required: true },
+    chunkHash: { type: String, required: true, index: true },
+    contentHash: { type: String, index: true },
+    mimeType: { type: String },
+    ocrUsed: { type: Boolean, default: false },
+    tokenCount: { type: Number, default: 0 },
+    embedding: { type: [Number], default: [] },
+    embeddingModel: { type: String, required: true },
+    sourceName: { type: String, required: true },
+    sourceMeta: { type: mongoose.Schema.Types.Mixed, default: {} },
+}, { timestamps: true });
+
+documentChunkSchema.index({ sourceKey: 1, chunkIndex: 1 }, { unique: true });
+documentChunkSchema.index({ sourceKind: 1, tenderId: 1, createdAt: -1 });
+documentChunkSchema.index({ sourceKind: 1, contractId: 1, createdAt: -1 });
+documentChunkSchema.index({ sourceKind: 1, vendorId: 1, createdAt: -1 });
+
 const milestoneChecklistItemSchema = new mongoose.Schema({
     label: { type: String, required: true },
     checked: { type: Boolean, default: false },
@@ -326,3 +398,5 @@ export const AIBidSummary = mongoose.model('AIBidSummary', aiBidSummarySchema);
 export const AIMilestoneReport = mongoose.model('AIMilestoneReport', aiMilestoneReportSchema);
 export const AINotification = mongoose.model('AINotification', aiNotificationSchema);
 export const AIChatSession = mongoose.model('AIChatSession', aiChatSessionSchema);
+export const DocumentEmbeddingJob = mongoose.model('DocumentEmbeddingJob', documentEmbeddingJobSchema);
+export const DocumentChunk = mongoose.model('DocumentChunk', documentChunkSchema);

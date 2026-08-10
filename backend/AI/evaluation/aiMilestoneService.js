@@ -1,5 +1,6 @@
 import { MilestoneAsset } from '../../models/model.js';
 import { callLocalChat, LOCAL_AI_MODEL } from '../localModelClient.js';
+import { getIndexedDocumentGroups } from '../documents/documentEmbeddingService.js';
 
 const MAX_TEXT_CHARS = 12000;
 let tesseractWorkerPromise = null;
@@ -140,6 +141,37 @@ const collectAssetTexts = async (assetIds) => {
     return outputs;
 };
 
+const collectIndexedTenderDocuments = async (tender) => {
+    if (!tender?._id) return [];
+
+    const groups = await getIndexedDocumentGroups({
+        tenderIds: [tender._id],
+        sourceKinds: ['tender-document'],
+        limit: 100,
+    });
+
+    return groups.map((group, index) => ({
+        name: group.sourceName || `Tender Document ${index + 1}`,
+        mimeType: null,
+        text: truncateText(group.text || ''),
+    })).filter((item) => item.text);
+};
+
+const collectIndexedAttachments = async ({ contractId, milestoneId }) => {
+    const groups = await getIndexedDocumentGroups({
+        contractIds: contractId ? [contractId] : [],
+        milestoneIds: milestoneId ? [milestoneId] : [],
+        sourceKinds: ['committee-report'],
+        limit: 100,
+    });
+
+    return groups.map((group, index) => ({
+        name: group.sourceName || `Attachment ${index + 1}`,
+        mimeType: null,
+        text: truncateText(group.text || ''),
+    })).filter((item) => item.text);
+};
+
 const collectTenderDocuments = async (tender) => {
     const docs = Array.isArray(tender?.documents) ? tender.documents : [];
     const results = [];
@@ -208,8 +240,13 @@ export const runMilestoneAiReview = async ({ tender, contract, milestone, update
         ...(Array.isArray(report?.attachments) ? report.attachments : []),
     ];
 
-    const attachments = await collectAssetTexts(attachmentIds);
-    const tenderDocs = await collectTenderDocuments(tender);
+    const indexedAttachments = await collectIndexedAttachments({
+        contractId: contract?._id,
+        milestoneId: milestone?._id,
+    });
+    const attachments = indexedAttachments.length ? indexedAttachments : await collectAssetTexts(attachmentIds);
+    const indexedTenderDocs = await collectIndexedTenderDocuments(tender);
+    const tenderDocs = indexedTenderDocs.length ? indexedTenderDocs : await collectTenderDocuments(tender);
     const prompt = buildPrompt({ tender, contract, milestone, update, report, tenderDocs, attachments });
 
     const responseText = await callLocalModel(prompt);
