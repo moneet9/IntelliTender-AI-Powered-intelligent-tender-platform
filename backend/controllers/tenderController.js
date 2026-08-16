@@ -1,5 +1,6 @@
 import { Tender, Contract, User, BidDocument } from '../models/model.js';
 import { queueBidDocumentEmbeddings, queueTenderDocumentEmbeddings } from '../AI/documents/documentEmbeddingService.js';
+import { scheduleTenderAiScoring } from '../AI/evaluation/aiScoringController.js';
 
 const decodeStoredDocument = (value, fallbackName) => {
     if (!value || typeof value !== 'string') {
@@ -682,6 +683,8 @@ export const submitBid = async (req, res) => {
         }).catch((error) => {
             console.error('Bid document embedding queue failed:', error.message || error);
         });
+
+        scheduleTenderAiScoring(tender._id);
 
         res.status(201).json({ message: 'Bid submitted' });
     } catch (e) { res.status(500).json({ error: e.message }); }

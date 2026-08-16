@@ -1,14 +1,19 @@
 import { seedDocumentEmbeddingJobs, processPendingDocumentEmbeddingJobs } from './documentEmbeddingService.js';
 import { runAutoAiScoring } from '../evaluation/aiScoringController.js';
 
-const EMBEDDING_WORKER_INTERVAL_MS = Number(process.env.DOCUMENT_EMBED_WORKER_INTERVAL_MS || 300000);
+const EMBEDDING_WORKER_INTERVAL_MS = Number(process.env.DOCUMENT_EMBED_WORKER_INTERVAL_MS || 120000);
 const WORKER_READY_DELAY_MS = Number(process.env.DOCUMENT_EMBED_WORKER_START_DELAY_MS || 3000);
 
 let workerStarted = false;
 let workerTimer = null;
+let workerRunning = false;
 
 async function runCycle() {
+    if (workerRunning) return;
+    workerRunning = true;
+
     try {
+        await seedDocumentEmbeddingJobs();
         const result = await processPendingDocumentEmbeddingJobs();
         if (result.online) {
             await runAutoAiScoring().catch((error) => {
@@ -17,6 +22,8 @@ async function runCycle() {
         }
     } catch (error) {
         console.error('Document embedding worker failed:', error.message || error);
+    } finally {
+        workerRunning = false;
     }
 }
 
@@ -25,8 +32,7 @@ export function startDocumentEmbeddingWorker() {
     workerStarted = true;
 
     setTimeout(() => {
-        seedDocumentEmbeddingJobs()
-            .then(() => runCycle())
+        runCycle()
             .catch((error) => {
                 console.error('Document embedding seed failed:', error.message || error);
             });
@@ -34,7 +40,7 @@ export function startDocumentEmbeddingWorker() {
 
     if (EMBEDDING_WORKER_INTERVAL_MS > 0) {
         workerTimer = setInterval(() => {
-            runCycle();
+            void runCycle();
         }, EMBEDDING_WORKER_INTERVAL_MS);
     }
 }

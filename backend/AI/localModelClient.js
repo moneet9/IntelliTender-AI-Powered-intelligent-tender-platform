@@ -157,7 +157,14 @@ export const callLocalChat = async ({
         const response = await sendChatRequest(modelId);
         if (response.ok) {
             const data = await response.json();
-            return data?.choices?.[0]?.message?.content || data?.message?.content || data?.response || data?.output_text || '';
+            const message = data?.choices?.[0]?.message || data?.message || {};
+            return (
+                message?.content ||
+                message?.reasoning_content ||
+                data?.response ||
+                data?.output_text ||
+                ''
+            );
         }
 
         const errorBody = await safeJsonParse(response);

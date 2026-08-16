@@ -1,27 +1,21 @@
 import crypto from 'crypto';
 import { DocumentChunk, DocumentEmbeddingJob, Tender, BidDocument, MilestoneAsset, Contract } from '../../models/model.js';
 import { callLocalEmbedding, LOCAL_AI_EMBED_MODEL, LOCAL_AI_BASE_URL } from '../localModelClient.js';
+import { decodeStoredDocument, extractTextFromContent } from './documentTextExtractor.js';
 
 const MAX_TEXT_CHARS = 50000;
 const DEFAULT_CHUNK_SIZE = Number(process.env.DOCUMENT_EMBED_CHUNK_SIZE || 1200);
 const DEFAULT_CHUNK_OVERLAP = Number(process.env.DOCUMENT_EMBED_CHUNK_OVERLAP || 180);
 const DEFAULT_BATCH_SIZE = Number(process.env.DOCUMENT_EMBED_BATCH_SIZE || 20);
+const STALE_RUNNING_JOB_MS = Number(process.env.DOCUMENT_EMBED_STALE_RUNNING_JOB_MS || 15 * 60 * 1000);
+const LOCAL_AI_HEALTH_CACHE_TTL_MS = Number(process.env.LOCAL_AI_HEALTH_CACHE_TTL_MS || 5 * 60 * 1000);
 const DOCUMENT_SCOPE_TO_KIND = {
     tender: 'tender-document',
     bid: 'bid-document',
     committee: 'committee-report',
 };
 
-let tesseractWorkerPromise = null;
-
-const safeJsonParse = (value) => {
-    if (typeof value !== 'string') return null;
-    try {
-        return JSON.parse(value);
-    } catch {
-        return null;
-    }
-};
+let localAiHealthCache = { checkedAt: 0, online: false };
 
 const sha1 = (value) => crypto.createHash('sha1').update(String(value || '')).digest('hex');
 
@@ -52,117 +46,6 @@ const buildSearchableDocumentText = (chunk) => {
     ].filter(Boolean).join(' '));
 };
 
-const decodeStoredDocument = (value, fallbackName = 'Document') => {
-    if (!value || typeof value !== 'string') {
-        return { name: fallbackName, content: '', mimeType: undefined };
-    }
-
-    const parsed = safeJsonParse(value);
-    if (parsed && typeof parsed === 'object' && typeof parsed.content === 'string') {
-        return {
-            name: typeof parsed.name === 'string' && parsed.name.trim() ? parsed.name : fallbackName,
-            content: parsed.content,
-            mimeType: typeof parsed.mimeType === 'string' ? parsed.mimeType : undefined,
-        };
-    }
-
-    if (value.startsWith('data:')) {
-        const mimeType = value.slice(5, value.indexOf(';')) || undefined;
-        return { name: fallbackName, content: value, mimeType };
-    }
-
-    if (value.startsWith('http://') || value.startsWith('https://')) {
-        const tail = value.split('/').pop() || fallbackName;
-        return { name: tail, content: value, mimeType: undefined };
-    }
-
-    return { name: fallbackName, content: value, mimeType: undefined };
-};
-
-const decodeDataUrl = (value) => {
-    if (!value.startsWith('data:')) return null;
-    const commaIndex = value.indexOf(',');
-    if (commaIndex < 0) return null;
-    const metadata = value.slice(5, commaIndex);
-    const payload = value.slice(commaIndex + 1);
-    const mimeType = metadata.split(';')[0] || 'application/octet-stream';
-    const isBase64 = metadata.includes(';base64');
-
-    const buffer = isBase64
-        ? Buffer.from(payload, 'base64')
-        : Buffer.from(decodeURIComponent(payload), 'utf8');
-
-    return { buffer, mimeType };
-};
-
-const fetchBinary = async (url) => {
-    const response = await fetch(url);
-    if (!response.ok) {
-        throw new Error(`Failed to fetch document: ${response.status}`);
-    }
-    const contentType = response.headers.get('content-type') || '';
-    const buffer = Buffer.from(await response.arrayBuffer());
-    return { buffer, mimeType: contentType };
-};
-
-const getTesseractWorker = async () => {
-    if (!tesseractWorkerPromise) {
-        tesseractWorkerPromise = (async () => {
-            const { createWorker } = await import('tesseract.js');
-            const worker = await createWorker();
-            await worker.loadLanguage('eng');
-            await worker.initialize('eng');
-            return worker;
-        })();
-    }
-
-    return tesseractWorkerPromise;
-};
-
-const extractTextFromBuffer = async (buffer, mimeType) => {
-    if (!buffer || !buffer.length) return '';
-    const normalizedMime = String(mimeType || '').toLowerCase();
-
-    if (normalizedMime.includes('pdf')) {
-        const pdfParse = (await import('pdf-parse')).default;
-        const parsed = await pdfParse(buffer);
-        return parsed?.text || '';
-    }
-
-    if (normalizedMime.startsWith('image/')) {
-        try {
-            const worker = await getTesseractWorker();
-            const result = await worker.recognize(buffer);
-            return result?.data?.text || '';
-        } catch {
-            return '';
-        }
-    }
-
-    return buffer.toString('utf8');
-};
-
-const extractTextFromContent = async (rawContent, mimeType) => {
-    if (!rawContent) return '';
-
-    const decoded = decodeStoredDocument(rawContent, 'Document');
-    const content = decoded.content;
-    const resolvedMimeType = mimeType || decoded.mimeType;
-
-    if (content.startsWith('data:')) {
-        const dataUrl = decodeDataUrl(content);
-        if (!dataUrl) return '';
-        return extractTextFromBuffer(dataUrl.buffer, resolvedMimeType || dataUrl.mimeType);
-    }
-
-    if (content.startsWith('http://') || content.startsWith('https://')) {
-        const fetched = await fetchBinary(content);
-        return extractTextFromBuffer(fetched.buffer, resolvedMimeType || fetched.mimeType);
-    }
-
-    return String(content || '');
-};
-
 const splitTextIntoChunks = (text, chunkSize = DEFAULT_CHUNK_SIZE, overlap = DEFAULT_CHUNK_OVERLAP) => {
     const normalized = normalizeText(text);
     if (!normalized) return [];
@@ -187,6 +70,8 @@ const splitTextIntoChunks = (text, chunkSize = DEFAULT_CHUNK_SIZE, overlap = DEF
 
     return chunks;
 };
+
+const countDocumentChunks = (sourceKey, chunkIndexMap) => (chunkIndexMap?.get(sourceKey)?.size || 0);
 
 const embeddingInputForModel = (modelId, text, kind = 'document') => {
     const model = String(modelId || '').toLowerCase();
@@ -243,6 +128,11 @@ const buildJobShape = (payload) => {
 };
 
 export async function isLocalAiOnline() {
+    const now = Date.now();
+    if (localAiHealthCache.online && now - localAiHealthCache.checkedAt < LOCAL_AI_HEALTH_CACHE_TTL_MS) {
+        return true;
+    }
+
     try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 3000);
@@ -251,8 +141,10 @@ export async function isLocalAiOnline() {
             signal: controller.signal,
         });
         clearTimeout(timeout);
+        localAiHealthCache = { checkedAt: now, online: response.ok };
         return response.ok;
     } catch {
+        localAiHealthCache = { checkedAt: now, online: false };
         return false;
     }
 }
@@ -427,50 +319,77 @@ async function saveChunksForJob(job, chunks) {
     const embeddingModel = LOCAL_AI_EMBED_MODEL;
     const sourceText = normalizeText(job.rawContent);
     const contentHash = sha1(sourceText);
-    const savedChunks = [];
+    const sourceKey = job.sourceKey;
+    const existingChunks = await DocumentChunk.find({ sourceKey }).select('chunkIndex contentHash').lean();
+    const existingChunkIndexes = new Set(existingChunks.map((chunk) => Number(chunk.chunkIndex)));
+    const existingContentHash = existingChunks.find((chunk) => chunk.contentHash)?.contentHash || null;
+
+    if (existingChunks.length > 0 && existingContentHash !== contentHash) {
+        await removeExistingChunks(sourceKey);
+        existingChunkIndexes.clear();
+    }
+
+    let completedChunkCount = existingChunkIndexes.size;
 
     for (let index = 0; index < chunks.length; index += 1) {
+        if (existingChunkIndexes.has(index)) {
+            continue;
+        }
+
         const chunkText = chunks[index];
         const embedding = await callLocalEmbedding({
             input: embeddingInputForModel(embeddingModel, chunkText, 'document'),
             model: embeddingModel,
         });
 
-        savedChunks.push({
-            sourceKind: job.sourceKind,
-            sourceKey: job.sourceKey,
-            tenderId: job.tenderId || undefined,
-            contractId: job.contractId || undefined,
-            milestoneId: job.milestoneId || undefined,
-            bidId: job.bidId || undefined,
-            reportId: job.reportId || undefined,
-            uploadedBy: job.uploadedBy || undefined,
-            vendorId: job.vendorId || undefined,
-            sourceIndex: job.sourceIndex || 0,
-            chunkIndex: index,
-            chunkText,
-            chunkHash: sha1(`${job.sourceKey}:${index}:${chunkText}`),
-            contentHash,
-            mimeType: job.mimeType || undefined,
-            ocrUsed: Boolean(job.sourceMeta?.ocrUsed),
-            tokenCount: chunkText.split(/\s+/).filter(Boolean).length,
-            embedding,
-            embeddingModel,
-            sourceName: job.sourceName || 'Document',
-            sourceMeta: job.sourceMeta || {},
+        await DocumentChunk.findOneAndUpdate(
+            { sourceKey, chunkIndex: index },
+            {
+                sourceKind: job.sourceKind,
+                sourceKey,
+                tenderId: job.tenderId || undefined,
+                contractId: job.contractId || undefined,
+                milestoneId: job.milestoneId || undefined,
+                bidId: job.bidId || undefined,
+                reportId: job.reportId || undefined,
+                uploadedBy: job.uploadedBy || undefined,
+                vendorId: job.vendorId || undefined,
+                sourceIndex: job.sourceIndex || 0,
+                chunkIndex: index,
+                chunkText,
+                chunkHash: sha1(`${sourceKey}:${index}:${chunkText}`),
+                contentHash,
+                mimeType: job.mimeType || undefined,
+                ocrUsed: Boolean(job.sourceMeta?.ocrUsed),
+                tokenCount: chunkText.split(/\s+/).filter(Boolean).length,
+                embedding,
+                embeddingModel,
+                sourceName: job.sourceName || 'Document',
+                sourceMeta: job.sourceMeta || {},
+            },
+            { upsert: true, new: true, setDefaultsOnInsert: true }
+        );
+
+        completedChunkCount += 1;
+        await DocumentEmbeddingJob.findByIdAndUpdate(job._id, {
+            $set: {
+                status: 'running',
+                chunkCount: completedChunkCount,
+                embeddingModel,
+                lastError: '',
+                startedAt: job.startedAt || new Date(),
+                processedAt: null,
+            },
         });
     }
 
-    await DocumentChunk.insertMany(savedChunks, { ordered: false });
-    return savedChunks.length;
+    return completedChunkCount;
 }
 
 async function processJob(job) {
     const rawText = await extractTextFromContent(job.rawContent, job.mimeType);
     const text = truncateText(rawText);
     const chunks = splitTextIntoChunks(text);
-
-    await removeExistingChunks(job.sourceKey);
 
     if (!chunks.length) {
         await DocumentEmbeddingJob.findByIdAndUpdate(job._id, {
@@ -610,19 +529,30 @@ export async function seedDocumentEmbeddingJobs({ scope = 'all' } = {}) {
 }
 
 export async function processPendingDocumentEmbeddingJobs({ batchSize = DEFAULT_BATCH_SIZE, sourceKinds = null } = {}) {
-    if (!(await isLocalAiOnline())) {
-        return { online: false, processed: 0, completed: 0, failed: 0 };
-    }
-
+    const staleRunningBefore = new Date(Date.now() - STALE_RUNNING_JOB_MS);
     const normalizedKinds = Array.isArray(sourceKinds)
         ? sourceKinds.filter(Boolean).map((kind) => String(kind))
         : null;
 
-    const jobs = await DocumentEmbeddingJob.find({
-        status: { $in: ['pending', 'failed'] },
+    const pendingFilter = {
         attempts: { $lt: 5 },
+        $or: [
+            { status: { $in: ['pending', 'failed'] } },
+            { status: 'running', updatedAt: { $lte: staleRunningBefore } },
+        ],
         ...(normalizedKinds?.length ? { sourceKind: { $in: normalizedKinds } } : {}),
-    })
+    };
+
+    const pendingCount = await DocumentEmbeddingJob.countDocuments(pendingFilter);
+    if (!pendingCount) {
+        return { online: true, processed: 0, completed: 0, failed: 0 };
+    }
+
+    if (!(await isLocalAiOnline())) {
+        return { online: false, processed: 0, completed: 0, failed: 0 };
+    }
+
+    const jobs = await DocumentEmbeddingJob.find(pendingFilter)
         .sort({ queuedAt: 1, updatedAt: 1 })
         .limit(batchSize)
         .lean();
@@ -664,12 +594,132 @@ export async function processPendingDocumentEmbeddingJobs({ batchSize = DEFAULT_
     return { online: true, processed, completed, failed };
 }
 
+export async function getTenderDocumentEmbeddingProgress({ createdBy = null, tenderIds = [] } = {}) {
+    const tenderFilter = {};
+    if (createdBy) {
+        tenderFilter.createdBy = createdBy;
+    }
+    if (Array.isArray(tenderIds) && tenderIds.length) {
+        tenderFilter._id = { $in: tenderIds };
+    }
+
+    const tenders = await Tender.find(tenderFilter)
+        .select('title bids createdBy')
+        .populate('createdBy', 'name')
+        .lean();
+
+    if (!tenders.length) {
+        return [];
+    }
+
+    const tenderIdList = tenders.map((tender) => tender._id);
+    const jobs = await DocumentEmbeddingJob.find({ tenderId: { $in: tenderIdList } })
+        .select('tenderId sourceKey sourceKind sourceName status queuedAt startedAt updatedAt processedAt lastError chunkCount')
+        .sort({ queuedAt: 1, updatedAt: 1 })
+        .lean();
+
+    const chunks = await DocumentChunk.find({ tenderId: { $in: tenderIdList } })
+        .select('sourceKey chunkIndex')
+        .lean();
+
+    const chunksBySourceKey = new Map();
+    for (const chunk of chunks) {
+        const sourceKey = String(chunk.sourceKey || '');
+        if (!sourceKey) continue;
+        if (!chunksBySourceKey.has(sourceKey)) {
+            chunksBySourceKey.set(sourceKey, new Set());
+        }
+        chunksBySourceKey.get(sourceKey).add(Number(chunk.chunkIndex));
+    }
+
+    const jobsByTenderId = new Map();
+    for (const job of jobs) {
+        const tenderId = String(job.tenderId || '');
+        if (!tenderId) continue;
+        if (!jobsByTenderId.has(tenderId)) {
+            jobsByTenderId.set(tenderId, []);
+        }
+        jobsByTenderId.get(tenderId).push(job);
+    }
+
+    return tenders.map((tender) => {
+        const tenderJobs = jobsByTenderId.get(String(tender._id)) || [];
+        const totalJobs = tenderJobs.length;
+        const completedJobs = tenderJobs.filter((job) => job.status === 'completed').length;
+        const runningJobs = tenderJobs.filter((job) => job.status === 'running').length;
+        const pendingJobs = tenderJobs.filter((job) => job.status === 'pending').length;
+        const failedJobs = tenderJobs.filter((job) => job.status === 'failed').length;
+        const staleRunningJobs = tenderJobs.filter(
+            (job) => job.status === 'running' && job.updatedAt && new Date(job.updatedAt).getTime() <= Date.now() - STALE_RUNNING_JOB_MS
+        ).length;
+        const activeJob = tenderJobs.find((job) => job.status === 'running')
+            || tenderJobs.find((job) => job.status === 'pending')
+            || tenderJobs.find((job) => job.status === 'failed')
+            || null;
+        const submissionCount = Array.isArray(tender.bids) ? tender.bids.length : 0;
+        const progressPercent = totalJobs > 0 ? Math.round((completedJobs / totalJobs) * 100) : 0;
+
+        return {
+            tenderId: tender._id,
+            tenderTitle: tender.title,
+            submissionCount,
+            totalJobs,
+            completedJobs,
+            runningJobs,
+            pendingJobs,
+            failedJobs,
+            staleRunningJobs,
+            progressPercent,
+            activeJob: activeJob ? {
+                sourceKey: activeJob.sourceKey,
+                sourceKind: activeJob.sourceKind,
+                sourceName: activeJob.sourceName,
+                status: activeJob.status,
+                updatedAt: activeJob.updatedAt || null,
+                processedAt: activeJob.processedAt || null,
+                lastError: activeJob.lastError || '',
+                chunkCount: Number(activeJob.chunkCount || 0),
+                savedChunks: countDocumentChunks(activeJob.sourceKey, chunksBySourceKey),
+            } : null,
+            documents: tenderJobs.map((job) => ({
+                sourceKey: job.sourceKey,
+                sourceKind: job.sourceKind,
+                sourceName: job.sourceName,
+                status: job.status,
+                updatedAt: job.updatedAt || null,
+                processedAt: job.processedAt || null,
+                lastError: job.lastError || '',
+                chunkCount: Number(job.chunkCount || 0),
+                savedChunks: countDocumentChunks(job.sourceKey, chunksBySourceKey),
+            })),
+        };
+    });
+}
+
 export async function rebuildAllDocumentEmbeddings() {
     await seedDocumentEmbeddingJobs();
     return processPendingDocumentEmbeddingJobs({ batchSize: DEFAULT_BATCH_SIZE * 2 });
 }
 
 export async function rebuildDocumentEmbeddingsByScope(scope) {
+    const normalizedScope = normalizeDocumentScope(scope);
+    const kind = kindForScope(normalizedScope);
+
+    if (!kind) {
+        return rebuildAllDocumentEmbeddings();
+    }
+
+    await DocumentChunk.deleteMany({ sourceKind: kind });
+    await DocumentEmbeddingJob.deleteMany({ sourceKind: kind });
+
+    await seedDocumentEmbeddingJobs({ scope: normalizedScope });
+    return processPendingDocumentEmbeddingJobs({
+        batchSize: DEFAULT_BATCH_SIZE * 2,
+        sourceKinds: [kind],
+    });
+}
+
+export async function reparseDocumentTextByScope(scope) {
     const normalizedScope = normalizeDocumentScope(scope);
     const kind = kindForScope(normalizedScope);
 

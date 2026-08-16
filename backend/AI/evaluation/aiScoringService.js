@@ -1,10 +1,105 @@
 import { BidDocument } from '../../models/model.js';
 import { callLocalChat, LOCAL_AI_MODEL } from '../localModelClient.js';
 import { getIndexedDocumentGroups } from '../documents/documentEmbeddingService.js';
+import { decodeStoredDocument, extractTextFromContent } from '../documents/documentTextExtractor.js';
 
-const MAX_TEXT_CHARS = 12000;
+const MAX_TEXT_CHARS = 4000;
+const MAX_DOCS_PER_SIDE = 4;
+const MAX_TOTAL_CONTEXT_CHARS = 14000;
+const AI_SCORING_MODEL = process.env.AI_SCORING_MODEL || 'qwen/qwen3-4b-2507';
+const AI_SCORING_MAX_TOKENS = Number(process.env.AI_SCORING_MAX_TOKENS || 1200);
 
-let tesseractWorkerPromise = null;
+const safeJsonParse = (value) => {
+    if (!value || typeof value !== 'string') return null;
+    const tryParse = (input) => {
+        try {
+            return JSON.parse(input);
+        } catch {
+            return null;
+        }
+    };
+
+    const direct = tryParse(value);
+    if (direct) return direct;
+
+    const fenced = value.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fenced?.[1]) {
+        const fencedParsed = tryParse(fenced[1].trim());
+        if (fencedParsed) return fencedParsed;
+    }
+
+    const start = value.indexOf('{');
+    const end = value.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+        const sliced = value.slice(start, end + 1);
+        const slicedParsed = tryParse(sliced);
+        if (slicedParsed) return slicedParsed;
+    }
+
+    return null;
+};
+
+const buildFallbackSummary = () => ({
+    eligibility: { passed: false, reasons: [] },
+    criteriaScores: [],
+    commercialAnalysis: {
+        statedValue: null,
+        adjustedValue: null,
+        rationale: '',
+        risks: ['AI response could not be parsed cleanly'],
+    },
+    genuityChecks: {
+        warnings: ['AI response could not be parsed cleanly'],
+        confidence: 0,
+    },
+    aiScores: {
+        technicalScore: 0,
+        financialScore: 0,
+        overallScore: 0,
+    },
+    summary: 'AI response was not valid JSON, so a fallback summary was generated.',
+    rationale: ['AI response was not valid JSON.'],
+});
+
+const buildFallbackCriteriaScores = ({ tender, summary, tenderDocs, bidDocs }) => {
+    const criteria = Array.isArray(tender?.qcbsConfig?.technicalCriteria) && tender.qcbsConfig.technicalCriteria.length
+        ? tender.qcbsConfig.technicalCriteria.map((criterion) => ({
+            label: String(criterion?.name || '').trim(),
+            maxMarks: Number(criterion?.maxMarks || 0),
+        }))
+        : Array.isArray(tender?.requiredDocuments)
+            ? tender.requiredDocuments
+                .filter((document) => String(document?.category || '').toLowerCase() === 'technical')
+                .map((document) => ({
+                    label: String(document?.label || '').trim(),
+                    maxMarks: 0,
+                }))
+            : [];
+
+    const eligibilityReasons = Array.isArray(summary?.eligibility?.reasons)
+        ? summary.eligibility.reasons.map((item) => String(item).trim()).filter(Boolean)
+        : [];
+
+    const documentNames = [
+        ...tenderDocs.map((item) => String(item?.name || item?.label || '').trim()).filter(Boolean),
+        ...bidDocs.map((item) => String(item?.name || item?.label || '').trim()).filter(Boolean),
+    ];
+
+    const contextEvidence = [
+        eligibilityReasons.length ? `Eligibility review: ${eligibilityReasons[0]}` : 'Eligibility review found no valid technical evidence.',
+        documentNames.length ? `Documents inspected: ${documentNames.slice(0, 3).join(', ')}` : 'No document names were available for inspection.',
+    ];
+
+    return criteria
+        .filter((criterion) => criterion.label)
+        .map((criterion) => ({
+            criterion: criterion.label,
+            maxMarks: criterion.maxMarks,
+            awardedMarks: 0,
+            ruleType: 'textual',
+            evidence: contextEvidence,
+        }));
+};
 
 const truncateText = (value) => {
     const text = String(value || '').trim();
@@ -12,120 +107,46 @@ const truncateText = (value) => {
     return `${text.slice(0, MAX_TEXT_CHARS)}\n[TRUNCATED]`;
 };
 
-const safeJsonParse = (value) => {
-    if (!value || typeof value !== 'string') return null;
-    try {
-        return JSON.parse(value);
-    } catch {
-        return null;
-    }
-};
+const budgetDocumentContext = (documents, sideLabel) => {
+    const result = [];
+    let totalChars = 0;
 
-const decodeStoredDocument = (value, fallbackName = 'Document') => {
-    if (!value || typeof value !== 'string') {
-        return { name: fallbackName, content: '', mimeType: undefined };
-    }
-
-    const parsed = safeJsonParse(value);
-    if (parsed && typeof parsed === 'object' && typeof parsed.content === 'string') {
-        return {
-            name: typeof parsed.name === 'string' && parsed.name.trim() ? parsed.name : fallbackName,
-            content: parsed.content,
-            mimeType: typeof parsed.mimeType === 'string' ? parsed.mimeType : undefined,
-        };
-    }
-
-    if (value.startsWith('data:')) {
-        const mimeType = value.slice(5, value.indexOf(';')) || undefined;
-        return { name: fallbackName, content: value, mimeType };
-    }
-
-    if (value.startsWith('http://') || value.startsWith('https://')) {
-        const tail = value.split('/').pop() || fallbackName;
-        return { name: tail, content: value, mimeType: undefined };
-    }
-
-    return { name: fallbackName, content: value, mimeType: undefined };
-};
-
-const decodeDataUrl = (value) => {
-    if (!value.startsWith('data:')) return null;
-    const commaIndex = value.indexOf(',');
-    if (commaIndex < 0) return null;
-    const metadata = value.slice(5, commaIndex);
-    const payload = value.slice(commaIndex + 1);
-    const mimeType = metadata.split(';')[0] || 'application/octet-stream';
-    const isBase64 = metadata.includes(';base64');
-
-    const buffer = isBase64
-        ? Buffer.from(payload, 'base64')
-        : Buffer.from(decodeURIComponent(payload), 'utf8');
-
-    return { buffer, mimeType };
-};
-
-const fetchBinary = async (url) => {
-    const response = await fetch(url);
-    if (!response.ok) {
-        throw new Error(`Failed to fetch document: ${response.status}`);
-    }
-    const contentType = response.headers.get('content-type') || '';
-    const buffer = Buffer.from(await response.arrayBuffer());
-    return { buffer, mimeType: contentType };
-};
-
-const getTesseractWorker = async () => {
-    if (!tesseractWorkerPromise) {
-        tesseractWorkerPromise = (async () => {
-            const { createWorker } = await import('tesseract.js');
-            const worker = await createWorker();
-            await worker.loadLanguage('eng');
-            await worker.initialize('eng');
-            return worker;
-        })();
-    }
-    return tesseractWorkerPromise;
-};
-
-const extractTextFromBuffer = async (buffer, mimeType) => {
-    if (!buffer || !buffer.length) return '';
-    const normalizedMime = String(mimeType || '').toLowerCase();
-
-    if (normalizedMime.includes('pdf')) {
-        const pdfParse = (await import('pdf-parse')).default;
-        const parsed = await pdfParse(buffer);
-        return parsed?.text || '';
-    }
-
-    if (normalizedMime.startsWith('image/')) {
-        try {
-            const worker = await getTesseractWorker();
-            const result = await worker.recognize(buffer);
-            return result?.data?.text || '';
-        } catch {
-            return '';
+    for (const document of documents) {
+        if (result.length >= MAX_DOCS_PER_SIDE || totalChars >= MAX_TOTAL_CONTEXT_CHARS) {
+            break;
         }
+
+        const text = String(document?.text || '').trim();
+        if (!text) {
+            continue;
+        }
+
+        const remaining = MAX_TOTAL_CONTEXT_CHARS - totalChars;
+        if (remaining <= 0) {
+            break;
+        }
+
+        const budgetedText = text.length > remaining
+            ? `${text.slice(0, Math.max(0, remaining - 14))}\n[TRUNCATED]`
+            : text;
+
+        result.push({
+            ...document,
+            text: budgetedText,
+        });
+
+        totalChars += budgetedText.length;
     }
 
-    return buffer.toString('utf8');
-};
-
-const extractTextFromDocument = async (doc) => {
-    if (!doc || !doc.content) return '';
-    const content = doc.content;
-
-    if (content.startsWith('data:')) {
-        const decoded = decodeDataUrl(content);
-        if (!decoded) return '';
-        return extractTextFromBuffer(decoded.buffer, doc.mimeType || decoded.mimeType);
+    if (documents.length > result.length) {
+        result.push({
+            label: `${sideLabel} context note`,
+            mimeType: null,
+            text: `Additional ${sideLabel.toLowerCase()} documents were omitted to keep the AI prompt small and avoid local model memory pressure.`,
+        });
     }
 
-    if (content.startsWith('http://') || content.startsWith('https://')) {
-        const fetched = await fetchBinary(content);
-        return extractTextFromBuffer(fetched.buffer, doc.mimeType || fetched.mimeType);
-    }
-
-    return String(content || '');
+    return result;
 };
 
 const collectTenderDocuments = async (tender) => {
@@ -134,7 +155,7 @@ const collectTenderDocuments = async (tender) => {
 
     for (let index = 0; index < docs.length; index += 1) {
         const decoded = decodeStoredDocument(docs[index], `Tender Document ${index + 1}`);
-        const text = await extractTextFromDocument(decoded);
+        const text = await extractTextFromContent(decoded.content, decoded.mimeType, decoded.name);
         results.push({
             name: decoded.name,
             mimeType: decoded.mimeType,
@@ -170,7 +191,7 @@ const collectBidDocuments = async (bid) => {
             const stored = await BidDocument.findById(entry.documentId).lean();
             if (stored) {
                 const decoded = decodeStoredDocument(stored.content, stored.name || entry.label || 'Bid document');
-                const text = await extractTextFromDocument(decoded);
+                const text = await extractTextFromContent(decoded.content, decoded.mimeType, decoded.name);
                 outputs.push({
                     label: entry.label || stored.name || 'Bid document',
                     mimeType: decoded.mimeType || stored.mimeType,
@@ -181,7 +202,7 @@ const collectBidDocuments = async (bid) => {
         }
 
         const decoded = decodeStoredDocument(entry?.document, entry?.label || 'Bid document');
-        const text = await extractTextFromDocument(decoded);
+        const text = await extractTextFromContent(decoded.content, decoded.mimeType, decoded.name);
         outputs.push({
             label: entry?.label || decoded.name || 'Bid document',
             mimeType: decoded.mimeType,
@@ -191,7 +212,7 @@ const collectBidDocuments = async (bid) => {
 
     if (bid?.proposalDocument) {
         const decoded = decodeStoredDocument(bid.proposalDocument, 'Proposal document');
-        const text = await extractTextFromDocument(decoded);
+        const text = await extractTextFromContent(decoded.content, decoded.mimeType, decoded.name);
         outputs.push({
             label: 'Proposal document',
             mimeType: decoded.mimeType,
@@ -235,41 +256,97 @@ const buildPrompt = ({ tender, bid, tenderDocs, bidDocs }) => {
         proposedAmount: bid?.proposedAmount,
     };
 
-    return `You are an AI evaluation engine for procurement tenders.\n\nRules:\n- First decide eligibility by comparing the tender document, required documents, and submitted bid documents. If the bid is ineligible, explain why and set technical and financial scores to zero.\n- If eligible, evaluate the uploaded documents line by line against each required technical criterion and award marks with evidence.\n- Score each criterion using maxMarks. Binary criteria are full marks or zero.\n- Ratio criteria: award proportional marks (e.g., 2/3 * 20).\n- Validate certificate issuing authority when specified (logo/letterhead/issuer).\n- Flag suspected document tampering or manipulation.\n- Provide 2-3 lines of reasoning for awarded marks.\n- For commercial values, apply the tender evaluation method. Use QCBS weights when QCBS is selected and use the lowest-price commercial logic for L1-style evaluation.\n- Keep the answer structured so the PO can review committee marks, AI marks, and the final award decision.\n\nReturn STRICT JSON with this shape:\n{\n  "eligibility": {"passed": boolean, "reasons": [string]},\n  "criteriaScores": [{"criterion": string, "maxMarks": number, "awardedMarks": number, "ruleType": "binary|ratio|numeric|textual", "evidence": [string]}],\n  "commercialAnalysis": {"statedValue": number, "adjustedValue": number, "rationale": string, "risks": [string]},\n  "genuityChecks": {"warnings": [string], "confidence": number},\n  "aiScores": {"technicalScore": number, "financialScore": number, "overallScore": number},\n  "summary": string,\n  "rationale": [string]\n}\n\nTender metadata:\n${JSON.stringify(tenderMeta)}\n\nTender documents (text extracts):\n${JSON.stringify(tenderDocs)}\n\nBid metadata:\n${JSON.stringify(bidMeta)}\n\nBid documents (text extracts):\n${JSON.stringify(bidDocs)}\n`;
+    return `You are an AI evaluation engine for procurement tenders.
+
+Rules:
+- First decide eligibility by comparing the tender document, required documents, and submitted bid documents. If the bid is ineligible, explain why and set technical and financial scores to zero.
+- If eligible, evaluate the uploaded documents against each required technical criterion and award marks with evidence.
+- Score each criterion using maxMarks. Binary criteria are full marks or zero.
+- Ratio criteria: award proportional marks (e.g., 2/3 * 20).
+- Validate certificate issuing authority when specified (logo/letterhead/issuer).
+- Flag suspected document tampering or manipulation.
+- Keep evidence and rationale short: one brief sentence per criterion, no long quotes, no filler.
+- For commercial values, apply the tender evaluation method. Use QCBS weights when QCBS is selected and use the lowest-price commercial logic for L1-style evaluation.
+- Keep the answer structured so the PO can review committee marks, AI marks, and the final award decision.
+
+Return STRICT JSON with this shape:
+{
+  "eligibility": {"passed": boolean, "reasons": [string]},
+  "criteriaScores": [{"criterion": string, "maxMarks": number, "awardedMarks": number, "ruleType": "binary|ratio|numeric|textual", "evidence": [string]}],
+  "commercialAnalysis": {"statedValue": number, "adjustedValue": number, "rationale": string, "risks": [string]},
+  "genuityChecks": {"warnings": [string], "confidence": number},
+  "aiScores": {"technicalScore": number, "financialScore": number, "overallScore": number},
+  "summary": string,
+  "rationale": [string]
+}
+
+Tender metadata:
+${JSON.stringify(tenderMeta)}
+
+Tender documents (text extracts):
+${JSON.stringify(tenderDocs)}
+
+Bid metadata:
+${JSON.stringify(bidMeta)}
+
+Bid documents (text extracts):
+${JSON.stringify(bidDocs)}
+`;
 };
 
 const callLocalModel = async (prompt) => {
     return callLocalChat({
-        model: LOCAL_AI_MODEL,
+        model: AI_SCORING_MODEL || LOCAL_AI_MODEL,
         temperature: 0.2,
         messages: [
             { role: 'system', content: 'Return only valid JSON. No markdown.' },
             { role: 'user', content: prompt },
         ],
         responseFormat: { type: 'json_object' },
+        maxTokens: AI_SCORING_MAX_TOKENS,
     });
 };
+
+const buildStrictJsonRetryPrompt = (prompt) => `${prompt}\n\nIMPORTANT RETRY: Your previous answer was not valid JSON. Return exactly one complete JSON object matching the requested shape. Do not include reasoning, comments, markdown, or any text before or after the JSON object.`;
 
 export const runAiScoring = async ({ tender, bid }) => {
     const indexedTenderDocs = await collectIndexedTenderDocuments(tender);
     const indexedBidDocs = await collectIndexedBidDocuments(tender, bid);
-    const tenderDocs = indexedTenderDocs.length ? indexedTenderDocs : await collectTenderDocuments(tender);
-    const bidDocs = indexedBidDocs.length ? indexedBidDocs : await collectBidDocuments(bid);
+    const tenderDocs = budgetDocumentContext(
+        indexedTenderDocs.length ? indexedTenderDocs : await collectTenderDocuments(tender),
+        'Tender'
+    );
+    const bidDocs = budgetDocumentContext(
+        indexedBidDocs.length ? indexedBidDocs : await collectBidDocuments(bid),
+        'Bid'
+    );
     const prompt = buildPrompt({ tender, bid, tenderDocs, bidDocs });
 
-    const responseText = await callLocalModel(prompt);
-    const parsed = safeJsonParse(responseText);
+    let responseText = await callLocalModel(prompt);
+    let parsed = safeJsonParse(responseText);
 
-    if (!parsed || typeof parsed !== 'object') {
-        throw new Error('Failed to parse AI response as JSON');
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        responseText = await callLocalModel(buildStrictJsonRetryPrompt(prompt));
+        parsed = safeJsonParse(responseText);
+    }
+    const normalized = parsed && typeof parsed === 'object' ? parsed : buildFallbackSummary();
+    if (!Array.isArray(normalized.criteriaScores) || !normalized.criteriaScores.length) {
+        normalized.criteriaScores = buildFallbackCriteriaScores({ tender, summary: normalized, tenderDocs, bidDocs });
+    }
+    if (normalized.eligibility?.passed === false && Array.isArray(normalized.criteriaScores)) {
+        normalized.criteriaScores = normalized.criteriaScores.map((criterion) => ({
+            ...criterion,
+            awardedMarks: 0,
+        }));
     }
 
     return {
-        parsed,
+        parsed: normalized,
         raw: responseText,
         tenderDocs,
         bidDocs,
         promptVersion: 'v1',
-        model: LOCAL_AI_MODEL,
+        model: AI_SCORING_MODEL || LOCAL_AI_MODEL,
+        parseWarning: parsed && typeof parsed === 'object' ? null : 'AI response could not be parsed cleanly',
     };
 };

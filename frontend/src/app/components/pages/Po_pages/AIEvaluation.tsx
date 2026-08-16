@@ -72,7 +72,7 @@ type AiSummary = {
   _id: string;
   tenderId: string;
   bidId: string;
-  status: "pending" | "success" | "failed";
+  status: "pending" | "running" | "success" | "failed";
   summary?: string;
   rationale?: string[];
   eligibility?: {
@@ -94,20 +94,39 @@ type AiSummary = {
     financialScore?: number;
     overallScore?: number;
   };
+  error?: string;
+};
+
+type AiEvaluationState = {
+  status: "idle" | "running" | "paused" | "completed" | "failed";
+  action: "start" | "resume" | "pause" | "auto";
+  startedAt?: string | null;
+  updatedAt?: string | null;
+  pausedAt?: string | null;
+  completedAt?: string | null;
+  currentBidId?: string | null;
+  currentVendorName?: string;
+  nextBidIndex?: number;
+  totalBids?: number;
+  completedBids?: number;
+  lastError?: string;
+  force?: boolean;
 };
 
 type BidDocumentEntry = NonNullable<BidRecord["bidDocuments"]>[number];
 
 export function AIEvaluation() {
   const authUser = getAuthUser();
-  const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:5000";
+  const apiBaseUrl = (import.meta as ImportMeta & { env?: { VITE_API_BASE_URL?: string } }).env?.VITE_API_BASE_URL || "http://localhost:5000";
   const [tenders, setTenders] = useState<TenderRecord[]>([]);
   const [selectedTenderId, setSelectedTenderId] = useState("");
   const [bids, setBids] = useState<BidRecord[]>([]);
   const [aiSummaries, setAiSummaries] = useState<AiSummary[]>([]);
+  const [aiEvaluationState, setAiEvaluationState] = useState<AiEvaluationState | null>(null);
   const [loadingTenders, setLoadingTenders] = useState(false);
   const [loadingBids, setLoadingBids] = useState(false);
   const [loadingAi, setLoadingAi] = useState(false);
+  const [reEvaluatingBidId, setReEvaluatingBidId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
@@ -173,6 +192,20 @@ export function AIEvaluation() {
     }
   }, []);
 
+  const loadAiEvaluationState = useCallback(async (tenderId: string) => {
+    if (!tenderId) {
+      setAiEvaluationState(null);
+      return;
+    }
+
+    try {
+      const data = await apiRequest<AiEvaluationState>(`/api/ai/evaluations/tenders/${tenderId}/state`);
+      setAiEvaluationState(data || null);
+    } catch {
+      setAiEvaluationState(null);
+    }
+  }, []);
+
   const selectWinner = async (bidId: string) => {
     if (!selectedTenderId) return;
 
@@ -189,6 +222,35 @@ export function AIEvaluation() {
     }
   };
 
+  const reEvaluateBid = async (bidId: string) => {
+    if (!selectedTenderId) return;
+
+    setError("");
+    setSuccess("");
+    setReEvaluatingBidId(bidId);
+
+    try {
+      const result = await apiRequest<{ summary?: AiSummary }>(`/api/ai/evaluations/tenders/${selectedTenderId}/run?manual=true&force=true&bidId=${bidId}`, {
+        method: "POST",
+        body: { action: "start", bidId },
+      });
+      if (result?.summary) {
+        const summary = result.summary;
+        setAiSummaries((previous) => [
+          ...previous.filter((item) => item.bidId !== summary.bidId),
+          summary,
+        ]);
+      }
+      setSuccess(result?.summary?.status === "failed" ? "AI re-evaluation failed. See the AI notes for the reason." : "AI score and reasoning updated.");
+      await loadAiSummaries(selectedTenderId);
+      await loadAiEvaluationState(selectedTenderId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to re-evaluate bid");
+    } finally {
+      setReEvaluatingBidId(null);
+    }
+  };
+
   useEffect(() => {
     void loadTenders();
   }, [loadTenders]);
@@ -200,6 +262,21 @@ export function AIEvaluation() {
   useEffect(() => {
     void loadAiSummaries(selectedTenderId);
   }, [loadAiSummaries, selectedTenderId]);
+
+  useEffect(() => {
+    void loadAiEvaluationState(selectedTenderId);
+  }, [loadAiEvaluationState, selectedTenderId]);
+
+  useEffect(() => {
+    if (!selectedTenderId) return undefined;
+
+    const timer = window.setInterval(() => {
+      void loadAiSummaries(selectedTenderId);
+      void loadAiEvaluationState(selectedTenderId);
+    }, 10000);
+
+    return () => window.clearInterval(timer);
+  }, [loadAiEvaluationState, loadAiSummaries, selectedTenderId]);
 
   const selectedTender = useMemo(
     () => tenders.find((tender) => tender._id === selectedTenderId) || null,
@@ -472,6 +549,52 @@ export function AIEvaluation() {
 
   const isFinalized = selectedTender?.status === "Awarded" || selectedTender?.status === "Completed";
 
+  const getBidAiStage = (bid: BidRecord, summary?: AiSummary) => {
+    if (summary?.status === "success") {
+      if (summary?.eligibility?.passed === false) {
+        return { label: "AI completed · ineligible", tone: "failed" as const };
+      }
+      return { label: "AI completed", tone: "success" as const };
+    }
+    if (summary?.status === "failed") {
+      return { label: "AI failed", tone: "failed" as const };
+    }
+    if (summary?.status === "running") {
+      return { label: "AI scoring now", tone: "running" as const };
+    }
+
+    if (aiEvaluationState?.status === "running") {
+      if (aiEvaluationState.currentBidId && aiEvaluationState.currentBidId === bid._id) {
+        return { label: "AI scoring now", tone: "running" as const };
+      }
+
+      const currentIndex = bids.findIndex((item) => item._id === bid._id);
+      const nextIndex = Number(aiEvaluationState.nextBidIndex || 0);
+      if (currentIndex >= 0 && currentIndex > nextIndex) {
+        return { label: "AI queued", tone: "queued" as const };
+      }
+      return { label: "AI waiting", tone: "queued" as const };
+    }
+
+    if (aiEvaluationState?.status === "paused") {
+      return { label: "AI paused", tone: "paused" as const };
+    }
+
+    if (aiEvaluationState?.status === "completed") {
+      return { label: "AI not processed", tone: "queued" as const };
+    }
+
+    return { label: "AI not started", tone: "queued" as const };
+  };
+
+  const getBidAiStageClass = (tone: "success" | "failed" | "running" | "queued" | "paused") => {
+    if (tone === "success") return "bg-emerald-50 text-emerald-700";
+    if (tone === "failed") return "bg-red-50 text-red-700";
+    if (tone === "running") return "bg-blue-50 text-blue-700";
+    if (tone === "paused") return "bg-amber-50 text-amber-700";
+    return "bg-gray-100 text-gray-600";
+  };
+
   return (
     <div className="flex h-screen bg-[#F4F6F9]">
       <Sidebar role="po" />
@@ -578,7 +701,7 @@ export function AIEvaluation() {
 
                 {selectedTender.description && <p className="text-sm text-gray-700">{selectedTender.description}</p>}
                 <p className="text-sm text-gray-500 mt-3">
-                  This page only shows the final or in-progress results. To trigger scoring manually, use the AI Queue page.
+                  This page shows live evaluation progress. AI scoring runs automatically after submission and updates as the queue moves.
                 </p>
               </div>
 
@@ -652,6 +775,14 @@ export function AIEvaluation() {
                                       Winner
                                     </span>
                                   )}
+                                  {(() => {
+                                    const stage = getBidAiStage(bid, summary);
+                                    return (
+                                      <span className={`rounded-full px-2.5 py-1 text-xs ${getBidAiStageClass(stage.tone)}`}>
+                                        {stage.label}
+                                      </span>
+                                    );
+                                  })()}
                                 </div>
                                 <p className="text-sm text-gray-500">
                                   {bid.vendorDetails?.email || "No email"} - INR {Number(bid.proposedAmount || 0).toLocaleString()}
@@ -709,19 +840,36 @@ export function AIEvaluation() {
                                     : "Approve the bid that best fits the committee and AI review for this tender."}
                                 </p>
                               </div>
-                              <button
-                                type="button"
-                                onClick={() => void selectWinner(bid._id)}
-                                disabled={isFinalized || (selectedTender?.evaluationMethod === "L1" && lowestQualifiedBidId !== bid._id)}
-                                className={`inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm text-white transition-colors ${
-                                  isFinalized || (selectedTender?.evaluationMethod === "L1" && lowestQualifiedBidId !== bid._id)
-                                    ? "cursor-not-allowed bg-gray-400"
-                                    : "bg-[#2E8B57] hover:bg-[#267347]"
-                                }`}
-                              >
-                                <CheckCircle className="h-4 w-4" />
-                                {bid.status === "Selected" ? "Winner selected" : selectedTender?.evaluationMethod === "L1" ? "Approve lowest qualified bid" : "Approve and award"}
-                              </button>
+                              <div className="flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => void reEvaluateBid(bid._id)}
+                                  disabled={Boolean(reEvaluatingBidId) && reEvaluatingBidId !== bid._id}
+                                  className={`inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm text-white transition-colors ${
+                                    reEvaluatingBidId === bid._id
+                                      ? "cursor-wait bg-[#1D4E89] opacity-80"
+                                      : Boolean(reEvaluatingBidId)
+                                        ? "cursor-not-allowed bg-gray-400"
+                                        : "bg-[#1D4E89] hover:bg-[#16386a]"
+                                  }`}
+                                >
+                                  <FileText className="h-4 w-4" />
+                                  {reEvaluatingBidId === bid._id ? "Re-evaluating..." : "Re-evaluate bid"}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void selectWinner(bid._id)}
+                                  disabled={isFinalized || (selectedTender?.evaluationMethod === "L1" && lowestQualifiedBidId !== bid._id)}
+                                  className={`inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm text-white transition-colors ${
+                                    isFinalized || (selectedTender?.evaluationMethod === "L1" && lowestQualifiedBidId !== bid._id)
+                                      ? "cursor-not-allowed bg-gray-400"
+                                      : "bg-[#2E8B57] hover:bg-[#267347]"
+                                  }`}
+                                >
+                                  <CheckCircle className="h-4 w-4" />
+                                  {bid.status === "Selected" ? "Winner selected" : selectedTender?.evaluationMethod === "L1" ? "Approve lowest qualified bid" : "Approve and award"}
+                                </button>
+                              </div>
                             </div>
 
                             <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
@@ -730,6 +878,19 @@ export function AIEvaluation() {
                                 <p className="mt-2 text-sm text-gray-700">
                                   {summary?.summary || summary?.rationale?.join(" ") || "AI summary pending."}
                                 </p>
+                                {summary?.eligibility?.passed === false ? (
+                                  <div className="mt-3 rounded-xl border border-red-100 bg-red-50/70 px-3 py-2">
+                                    <p className="text-[11px] font-medium uppercase tracking-wide text-red-700">Ineligible as per AI</p>
+                                    <p className="mt-1 text-xs text-red-700">
+                                      The AI marked this bid ineligible, so the score rows below are shown as zero with the eligibility reason attached.
+                                    </p>
+                                  </div>
+                                ) : null}
+                                {summary?.status === "failed" && summary?.error ? (
+                                  <p className="mt-2 text-xs text-red-600">
+                                    Failure reason: {summary.error}
+                                  </p>
+                                ) : null}
                                 {summary?.eligibility?.reasons?.length ? (
                                   <div className="mt-3 space-y-1">
                                     {summary.eligibility.reasons.slice(0, 3).map((reason, index) => (
@@ -796,6 +957,7 @@ export function AIEvaluation() {
                                       const aiScore = typeof row.aiScore === "number" ? row.aiScore : null;
                                       const gap = committeeAverage !== null && aiScore !== null ? aiScore - committeeAverage : null;
                                       const documentName = row.document ? getStoredDocumentName(row.document.document, row.document.label) : "";
+                                        const documentUrl = row.document ? getBidDocumentUrl(row.document) : null;
 
                                       return (
                                         <tr key={`${bid._id}-${row.key}`} className="align-top hover:bg-gray-50">
@@ -844,7 +1006,7 @@ export function AIEvaluation() {
                                               {aiScore !== null ? formatScore(aiScore) : "-"}
                                             </p>
                                             <p className="text-xs text-gray-500">
-                                              {summary?.status === "success" ? "AI completed" : "AI pending"}
+                                              {getBidAiStage(bid, summary).label}
                                             </p>
                                           </td>
                                           <td className="px-4 py-4 whitespace-nowrap">
@@ -879,13 +1041,27 @@ export function AIEvaluation() {
                                                     </span>
                                                   )}
                                                 </div>
+                                              ) : summary?.eligibility?.passed === false && summary?.eligibility?.reasons?.length ? (
+                                                <div className="flex flex-wrap gap-2">
+                                                  <span className="rounded-full bg-red-50 px-2.5 py-1 text-[11px] text-red-700">
+                                                    Ineligible as per AI
+                                                  </span>
+                                                  {summary.eligibility.reasons.slice(0, 3).map((reason, index) => (
+                                                    <span
+                                                      key={`${row.key}-eligibility-${index}`}
+                                                      className="rounded-full bg-red-50 px-2.5 py-1 text-[11px] text-red-700"
+                                                    >
+                                                      {reason}
+                                                    </span>
+                                                  ))}
+                                                </div>
                                               ) : (
                                                 <p className="text-xs text-gray-400">No AI evidence returned.</p>
                                               )}
 
-                                              {row.document && getBidDocumentUrl(row.document) && (
+                                              {documentUrl && (
                                                 <a
-                                                  href={getBidDocumentUrl(row.document)}
+                                                  href={documentUrl}
                                                   target="_blank"
                                                   rel="noreferrer"
                                                   className="inline-flex items-center gap-1 text-xs text-[#1D4E89] hover:underline"
@@ -917,7 +1093,7 @@ export function AIEvaluation() {
                                   {bid.bidDocuments?.length ? (
                                     bid.bidDocuments.map((doc) => {
                                       const name = getStoredDocumentName(doc.document, doc.label);
-                                      const url = getBidDocumentUrl(doc);
+                                      const url = getBidDocumentUrl(doc) || undefined;
 
                                       return (
                                         <div

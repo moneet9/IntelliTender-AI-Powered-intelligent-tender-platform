@@ -80,6 +80,38 @@ export const evaluateMilestoneWithAi = async ({ contract, milestone, update, rep
     return saved;
 };
 
+const persistFailedMilestoneReview = async ({ contract, milestone, update, report, error }) => {
+    if (!contract?._id || !milestone?._id) return null;
+
+    const tender = await Tender.findById(contract.tenderId).lean();
+    if (!tender) return null;
+
+    const message = error instanceof Error ? error.message : 'AI milestone review failed';
+    return AIMilestoneReport.findOneAndUpdate(
+        { contractId: contract._id, milestoneId: milestone._id },
+        {
+            contractId: contract._id,
+            milestoneId: milestone._id,
+            tenderId: tender._id,
+            reportedBy: update?.verifiedBy || update?.updatedBy || report?.reportedBy,
+            committeeReport: update?.committeeReport || report?.committeeReport || null,
+            status: 'failed',
+            generatedAt: new Date(),
+            error: message,
+        },
+        { upsert: true, new: true }
+    );
+};
+
+export const scheduleMilestoneAiReview = ({ contract, milestone, update, report }) => {
+    void evaluateMilestoneWithAi({ contract, milestone, update, report }).catch((error) => {
+        void persistFailedMilestoneReview({ contract, milestone, update, report, error }).catch((persistError) => {
+            console.error('Failed to persist milestone AI failure:', persistError.message || persistError);
+        });
+        console.error('Milestone AI review failed:', error.message || error);
+    });
+};
+
 export const getMilestoneReports = async (req, res) => {
     try {
         const contractId = req.params.contractId;

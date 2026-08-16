@@ -1,125 +1,16 @@
 import { MilestoneAsset } from '../../models/model.js';
 import { callLocalChat, LOCAL_AI_MODEL } from '../localModelClient.js';
 import { getIndexedDocumentGroups } from '../documents/documentEmbeddingService.js';
+import { decodeStoredDocument, extractTextFromContent } from '../documents/documentTextExtractor.js';
 
 const MAX_TEXT_CHARS = 12000;
-let tesseractWorkerPromise = null;
+const AI_MILESTONE_MODEL = process.env.AI_MILESTONE_MODEL || 'qwen/qwen3-4b-2507';
+const AI_MILESTONE_MAX_TOKENS = Number(process.env.AI_MILESTONE_MAX_TOKENS || 2200);
 
 const truncateText = (value) => {
     const text = String(value || '').trim();
     if (text.length <= MAX_TEXT_CHARS) return text;
     return `${text.slice(0, MAX_TEXT_CHARS)}\n[TRUNCATED]`;
-};
-
-const decodeStoredDocument = (value, fallbackName = 'Document') => {
-    if (!value || typeof value !== 'string') {
-        return { name: fallbackName, content: '', mimeType: undefined };
-    }
-
-    try {
-        const parsed = JSON.parse(value);
-        if (parsed && typeof parsed === 'object' && typeof parsed.content === 'string') {
-            return {
-                name: typeof parsed.name === 'string' && parsed.name.trim() ? parsed.name : fallbackName,
-                content: parsed.content,
-                mimeType: typeof parsed.mimeType === 'string' ? parsed.mimeType : undefined,
-            };
-        }
-    } catch {
-        // Fallback to legacy string formats.
-    }
-
-    if (value.startsWith('data:')) {
-        const mimeType = value.slice(5, value.indexOf(';')) || undefined;
-        return { name: fallbackName, content: value, mimeType };
-    }
-
-    if (value.startsWith('http://') || value.startsWith('https://')) {
-        const tail = value.split('/').pop() || fallbackName;
-        return { name: tail, content: value, mimeType: undefined };
-    }
-
-    return { name: fallbackName, content: value, mimeType: undefined };
-};
-
-const decodeDataUrl = (value) => {
-    if (!value.startsWith('data:')) return null;
-    const commaIndex = value.indexOf(',');
-    if (commaIndex < 0) return null;
-    const metadata = value.slice(5, commaIndex);
-    const payload = value.slice(commaIndex + 1);
-    const mimeType = metadata.split(';')[0] || 'application/octet-stream';
-    const isBase64 = metadata.includes(';base64');
-
-    const buffer = isBase64
-        ? Buffer.from(payload, 'base64')
-        : Buffer.from(decodeURIComponent(payload), 'utf8');
-
-    return { buffer, mimeType };
-};
-
-const fetchBinary = async (url) => {
-    const response = await fetch(url);
-    if (!response.ok) {
-        throw new Error(`Failed to fetch document: ${response.status}`);
-    }
-    const contentType = response.headers.get('content-type') || '';
-    const buffer = Buffer.from(await response.arrayBuffer());
-    return { buffer, mimeType: contentType };
-};
-
-const getTesseractWorker = async () => {
-    if (!tesseractWorkerPromise) {
-        tesseractWorkerPromise = (async () => {
-            const { createWorker } = await import('tesseract.js');
-            const worker = await createWorker();
-            await worker.loadLanguage('eng');
-            await worker.initialize('eng');
-            return worker;
-        })();
-    }
-    return tesseractWorkerPromise;
-};
-
-const extractTextFromBuffer = async (buffer, mimeType) => {
-    if (!buffer || !buffer.length) return '';
-    const normalizedMime = String(mimeType || '').toLowerCase();
-
-    if (normalizedMime.includes('pdf')) {
-        const pdfParse = (await import('pdf-parse')).default;
-        const parsed = await pdfParse(buffer);
-        return parsed?.text || '';
-    }
-
-    if (normalizedMime.startsWith('image/')) {
-        try {
-            const worker = await getTesseractWorker();
-            const result = await worker.recognize(buffer);
-            return result?.data?.text || '';
-        } catch {
-            return '';
-        }
-    }
-
-    return buffer.toString('utf8');
-};
-
-const extractTextFromDocument = async (doc) => {
-    if (!doc || !doc.content) return '';
-    const content = doc.content;
-
-    if (content.startsWith('data:')) {
-        const decoded = decodeDataUrl(content);
-        if (!decoded) return '';
-        return extractTextFromBuffer(decoded.buffer, doc.mimeType || decoded.mimeType);
-    }
-
-    if (content.startsWith('http://') || content.startsWith('https://')) {
-        const fetched = await fetchBinary(content);
-        return extractTextFromBuffer(fetched.buffer, doc.mimeType || fetched.mimeType);
-    }
-
-    return String(content || '');
 };
 
 const collectAssetTexts = async (assetIds) => {
@@ -130,7 +21,7 @@ const collectAssetTexts = async (assetIds) => {
         const asset = await MilestoneAsset.findById(assetId).lean();
         if (!asset) continue;
         const decoded = decodeStoredDocument(asset.content, asset.name || 'Attachment');
-        const text = await extractTextFromDocument(decoded);
+        const text = await extractTextFromContent(decoded.content, decoded.mimeType || asset.mimeType, decoded.name);
         outputs.push({
             name: decoded.name,
             mimeType: decoded.mimeType || asset.mimeType,
@@ -178,7 +69,7 @@ const collectTenderDocuments = async (tender) => {
 
     for (let index = 0; index < docs.length; index += 1) {
         const decoded = decodeStoredDocument(docs[index], `Tender Document ${index + 1}`);
-        const text = await extractTextFromDocument(decoded);
+        const text = await extractTextFromContent(decoded.content, decoded.mimeType, decoded.name);
         results.push({
             name: decoded.name,
             mimeType: decoded.mimeType,
@@ -223,13 +114,14 @@ const buildPrompt = ({ tender, contract, milestone, update, report, tenderDocs, 
 
 const callLocalModel = async (prompt) => {
     return callLocalChat({
-        model: LOCAL_AI_MODEL,
+        model: AI_MILESTONE_MODEL || LOCAL_AI_MODEL,
         temperature: 0.2,
         messages: [
             { role: 'system', content: 'Return only valid JSON. No markdown.' },
             { role: 'user', content: prompt },
         ],
         responseFormat: { type: 'json_object' },
+        maxTokens: AI_MILESTONE_MAX_TOKENS,
     });
 };
 
@@ -260,7 +152,7 @@ export const runMilestoneAiReview = async ({ tender, contract, milestone, update
     return {
         parsed,
         raw: responseText,
-        model: LOCAL_AI_MODEL,
+        model: AI_MILESTONE_MODEL || LOCAL_AI_MODEL,
         promptVersion: 'v1',
     };
 };

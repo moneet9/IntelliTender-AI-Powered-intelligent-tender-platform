@@ -583,19 +583,24 @@ export function BidderDashboard() {
                           <label className="block border-2 border-dashed border-gray-300 rounded-lg p-4 text-center hover:border-[#1D4E89] transition-colors cursor-pointer">
                             <Upload className="w-6 h-6 text-gray-400 mx-auto mb-2" />
                             <p className="text-sm text-gray-600 mb-1">
-                              {documentNames[doc.label] ? "Replace uploaded PDF" : "Upload PDF"}
+                              {documentNames[doc.label] ? "Replace uploaded file" : "Upload file"}
                             </p>
-                            <p className="text-xs text-gray-500">PDF only, up to 10MB</p>
+                            <p className="text-xs text-gray-500">PDF, JPG, or PNG only, up to 10MB</p>
                             <input
                               type="file"
                               className="hidden"
-                              accept=".pdf,application/pdf"
+                              accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
                               onChange={async (event) => {
                                 const file = event.target.files?.[0];
                                 if (!file) return;
 
-                                if (!file.name.toLowerCase().endsWith(".pdf")) {
-                                  setError("Only PDF documents are allowed");
+                                const allowedTypes = ["application/pdf", "image/jpeg", "image/png"];
+                                const allowedExtensions = [".pdf", ".jpg", ".jpeg", ".png"];
+                                const fileName = file.name.toLowerCase();
+                                const hasAllowedExtension = allowedExtensions.some((extension) => fileName.endsWith(extension));
+
+                                if (!allowedTypes.includes(file.type) && !hasAllowedExtension) {
+                                  setError("Only PDF, JPG, or PNG files are allowed");
                                   return;
                                 }
 
