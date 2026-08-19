@@ -1,7 +1,8 @@
+import { useState } from "react";
 import { Sidebar } from "../../layout/Sidebar";
 import { Header } from "../../layout/Header";
 import { AIAssistant } from "../../AIAssistant";
-import { getAuthUser } from "../../../api";
+import { apiRequest, getAuthUser } from "../../../api";
 import { getStoredDocumentName, getStoredDocumentUrl } from "../../../document-utils";
 import {
   formatCurrency,
@@ -11,7 +12,9 @@ import { useVendorData } from "./vendorData";
 
 export function VendorBids() {
   const authUser = getAuthUser();
-  const { loading, error, myBids } = useVendorData(authUser?._id);
+  const { loading, error, myBids, reload } = useVendorData(authUser?._id);
+  const [withdrawingBidId, setWithdrawingBidId] = useState("");
+  const [actionError, setActionError] = useState("");
 
   const total = myBids.length;
   const pending = myBids.filter((bid) => bid.status === "Pending").length;
@@ -29,7 +32,7 @@ export function VendorBids() {
             <p className="text-sm text-gray-600">Monitor submission status, evaluation comments, and scoring updates.</p>
           </div>
 
-          {error && <p className="text-sm text-red-600 mb-4">{error}</p>}
+          {(error || actionError) && <p className="text-sm text-red-600 mb-4">{error || actionError}</p>}
 
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
             <div className="bg-white rounded-lg border border-gray-100 p-4">
@@ -101,6 +104,31 @@ export function VendorBids() {
                       <div className="mt-4 p-3 rounded-md bg-blue-50 border border-blue-100">
                         <p className="text-sm text-[#0B3C5D]">Committee Comment</p>
                         <p className="text-sm text-gray-700 mt-1">{bid.comments}</p>
+                      </div>
+                    )}
+
+                    {bid.status !== "Selected" && (
+                      <div className="mt-4 flex justify-end">
+                        <button
+                          type="button"
+                          disabled={withdrawingBidId === bid.bidId}
+                          onClick={async () => {
+                            if (!window.confirm("Withdraw this submission? The bid, uploaded documents, AI results, chunks, and embeddings will be permanently deleted.")) return;
+                            setWithdrawingBidId(bid.bidId);
+                            setActionError("");
+                            try {
+                              await apiRequest(`/api/tenders/${bid.tenderId}/bids/${bid.bidId}`, { method: "DELETE" });
+                              await reload();
+                            } catch (err) {
+                              setActionError(err instanceof Error ? err.message : "Failed to withdraw submission");
+                            } finally {
+                              setWithdrawingBidId("");
+                            }
+                          }}
+                          className="rounded-md border border-red-200 px-3 py-2 text-sm text-red-700 hover:bg-red-50 disabled:opacity-50"
+                        >
+                          {withdrawingBidId === bid.bidId ? "Deleting submission..." : "Withdraw submission"}
+                        </button>
                       </div>
                     )}
                   </div>

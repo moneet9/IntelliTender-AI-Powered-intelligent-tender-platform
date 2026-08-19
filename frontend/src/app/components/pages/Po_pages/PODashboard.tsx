@@ -1,12 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
-import { Calendar, CheckCircle, Clock3, FileText, ShieldAlert, Sparkles, Users, Zap } from "lucide-react";
+import { Calendar, CheckCircle, Clock3, FileText, ShieldAlert, Sparkles, Users } from "lucide-react";
 import { Sidebar } from "../../layout/Sidebar";
 import { Header } from "../../layout/Header";
 import { AIAssistant } from "../../AIAssistant";
-import { apiRequest } from "../../../api";
+import { apiRequest, getAuthUser } from "../../../api";
 
 type TenderStatus = "Draft" | "Published" | "Closed" | "Awarded" | "Completed";
 type ContractStatus = "Awarded" | "Signed" | "Completed" | "Cancelled";
+
+const formatDuration = (milliseconds?: number) => {
+  const value = Number(milliseconds || 0);
+  if (!Number.isFinite(value) || value <= 0) return "-";
+  const seconds = value / 1000;
+  if (seconds < 60) return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)} s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = Math.round(seconds % 60);
+  return `${minutes}m ${remainingSeconds}s`;
+};
 
 type TenderRecord = {
   _id: string;
@@ -40,6 +50,7 @@ type ResearchLog = {
 };
 
 export function PODashboard() {
+  const authUser = getAuthUser();
   const [tenders, setTenders] = useState<TenderRecord[]>([]);
   const [contracts, setContracts] = useState<ContractRecord[]>([]);
   const [researchMetrics, setResearchMetrics] = useState<{
@@ -49,18 +60,9 @@ export function PODashboard() {
       committeeEvaluationAvgMs: number;
       chatQueryAvgMs: number;
       bidsProcessedPerHour: number;
-      scoreConsistency: number;
+      aiCommitteeConsistency?: number | null;
       errorCount: number;
       riskyItemsDetected: number;
-    };
-    qwenResearch?: {
-      sampleCount: number;
-      averageResponseMs: number;
-      averageTokens: number;
-      tokensPerSecond: number;
-      averageGpuPowerWatts: number | null;
-      estimatedEnergyJoules: number | null;
-      energyPer1000Tokens: number | null;
     };
     logs?: ResearchLog[];
   }>({});
@@ -129,14 +131,12 @@ export function PODashboard() {
   const researchCards = useMemo(() => {
     const metrics = researchMetrics.metrics;
     return [
-      { label: "AI Bid Time", value: metrics?.aiEvaluationAvgMs ? `${metrics.aiEvaluationAvgMs} ms` : "-", icon: Sparkles, color: "bg-[#1D4E89]" },
-      { label: "Committee Time", value: metrics?.committeeEvaluationAvgMs ? `${metrics.committeeEvaluationAvgMs} ms` : "-", icon: Clock3, color: "bg-[#2E8B57]" },
-      { label: "Chat Time", value: metrics?.chatQueryAvgMs ? `${metrics.chatQueryAvgMs} ms` : "-", icon: FileText, color: "bg-[#F4A300]" },
+      { label: "AI Bid Time", value: formatDuration(metrics?.aiEvaluationAvgMs), icon: Sparkles, color: "bg-[#1D4E89]" },
+      { label: "Committee Time", value: formatDuration(metrics?.committeeEvaluationAvgMs), icon: Clock3, color: "bg-[#2E8B57]" },
+      { label: "Chat Time", value: formatDuration(metrics?.chatQueryAvgMs), icon: FileText, color: "bg-[#F4A300]" },
       { label: "Bids / Hour", value: metrics?.bidsProcessedPerHour ? String(metrics.bidsProcessedPerHour) : "-", icon: Users, color: "bg-[#0B3C5D]" },
-      { label: "Score Consistency", value: metrics?.scoreConsistency ? `${metrics.scoreConsistency}%` : "-", icon: CheckCircle, color: "bg-[#2E8B57]" },
+      { label: "AI vs Committee", value: metrics?.aiCommitteeConsistency != null ? `${metrics.aiCommitteeConsistency}%` : "-", icon: CheckCircle, color: "bg-[#2E8B57]" },
       { label: "Risk Flags", value: metrics?.riskyItemsDetected ? String(metrics.riskyItemsDetected) : "-", icon: ShieldAlert, color: "bg-[#B22222]" },
-      { label: "Qwen Energy / 1k Tokens", value: researchMetrics.qwenResearch?.energyPer1000Tokens !== null && researchMetrics.qwenResearch?.energyPer1000Tokens !== undefined ? `${researchMetrics.qwenResearch.energyPer1000Tokens} J` : "-", icon: Zap, color: "bg-[#8B5CF6]" },
-      { label: "Qwen GPU Power", value: researchMetrics.qwenResearch?.averageGpuPowerWatts !== null && researchMetrics.qwenResearch?.averageGpuPowerWatts !== undefined ? `${researchMetrics.qwenResearch.averageGpuPowerWatts} W` : "-", icon: Zap, color: "bg-[#D97706]" },
     ];
   }, [researchMetrics.metrics]);
 
@@ -144,7 +144,7 @@ export function PODashboard() {
     <div className="flex h-screen bg-[#F4F6F9]">
       <Sidebar role="po" />
       <div className="flex-1 flex flex-col overflow-hidden">
-        <Header role="po" />
+        <Header role="po" userName={authUser?.name || ""} />
         <div className="flex-1 overflow-auto p-6">
           <div className="mb-6">
             <h1 className="text-2xl text-[#0B3C5D] mb-1">Procurement Dashboard</h1>

@@ -1,6 +1,5 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { recordResearchMetric } from '../utils/researchMetrics.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -13,20 +12,73 @@ const normalizedBaseUrl = trimTrailingSlash(rawBaseUrl).endsWith('/v1')
     : `${trimTrailingSlash(rawBaseUrl)}/v1`;
 
 const LOCAL_MODEL = process.env.LM_STUDIO_MODEL || process.env.OLLAMA_MODEL || 'qwen3.5:9b';
+const LOCAL_CHAT_MODEL = process.env.LM_STUDIO_CHAT_MODEL || LOCAL_MODEL;
 const LOCAL_EMBED_MODEL = process.env.LM_STUDIO_EMBED_MODEL || process.env.OLLAMA_EMBED_MODEL || 'bge-m3';
 const LOCAL_API_KEY = process.env.LM_STUDIO_API_KEY || process.env.LOCAL_AI_API_KEY || process.env.OLLAMA_AUTH_TOKEN || '';
+const LM_STUDIO_NATIVE_API = String(process.env.LM_STUDIO_NATIVE_API || 'true').toLowerCase() !== 'false';
+const GPU_POWER_SAMPLE_TIMEOUT_MS = 1000;
+// Capture only two host samples per bid evaluation. Disable explicitly when
+// desired; NVIDIA users get power metrics by default.
+const GPU_POWER_TELEMETRY_ENABLED = String(process.env.RESEARCH_GPU_TELEMETRY || 'true').toLowerCase() !== 'false';
 const modelListCache = {
     chat: null,
     embedding: null,
     fetchedAt: 0,
 };
 const MODEL_CACHE_TTL_MS = 5 * 60 * 1000;
-const GPU_POWER_SAMPLE_TIMEOUT_MS = 1000;
-const GPU_POWER_TELEMETRY_ENABLED = process.env.RESEARCH_GPU_TELEMETRY === 'true';
 
 export const LOCAL_AI_BASE_URL = normalizedBaseUrl;
 export const LOCAL_AI_MODEL = LOCAL_MODEL;
+export const LOCAL_AI_CHAT_MODEL = LOCAL_CHAT_MODEL;
 export const LOCAL_AI_EMBED_MODEL = LOCAL_EMBED_MODEL;
+
+export async function checkLocalAiConnection({ timeoutMs = 5000 } = {}) {
+    const configuredUrl = buildUrl('/models');
+    const nativeUrl = buildNativeUrl('/models');
+    const urls = Array.from(new Set([configuredUrl, nativeUrl]));
+
+    for (const url of urls) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            const response = await fetch(url, { method: 'GET', headers: buildHeaders(), signal: controller.signal });
+            if (response.ok) {
+                const data = await response.json().catch(() => ({}));
+                return {
+                    online: true,
+                    endpoint: url,
+                    modelCount: Array.isArray(data?.data) ? data.data.length : 0,
+                };
+            }
+        } catch {
+            // Try the next compatible LM Studio API route.
+        } finally {
+            clearTimeout(timeout);
+        }
+    }
+
+    return { online: false, endpoint: configuredUrl, modelCount: 0 };
+}
+
+const buildNativeUrl = (path) => {
+    const origin = normalizedBaseUrl.replace(/\/v1$/i, '');
+    return `${origin}/api/v1${path}`;
+};
+
+export const readLocalGpuPowerWatts = async () => {
+    if (!GPU_POWER_TELEMETRY_ENABLED) return null;
+    try {
+        const { stdout } = await execFileAsync(
+            'nvidia-smi',
+            ['--query-gpu=power.draw', '--format=csv,noheader,nounits'],
+            { timeout: GPU_POWER_SAMPLE_TIMEOUT_MS, windowsHide: true },
+        );
+        const watts = Number.parseFloat(String(stdout).trim().split(/\s+/)[0]);
+        return Number.isFinite(watts) ? watts : null;
+    } catch {
+        return null;
+    }
+};
 
 const buildHeaders = () => {
     const headers = {
@@ -42,71 +94,6 @@ const buildHeaders = () => {
 
 const buildUrl = (path) => `${LOCAL_AI_BASE_URL}${path}`;
 
-const readGpuPowerWatts = async () => {
-    if (!GPU_POWER_TELEMETRY_ENABLED) return null;
-
-    try {
-        const { stdout } = await execFileAsync(
-            'nvidia-smi',
-            ['--query-gpu=power.draw', '--format=csv,noheader,nounits'],
-            { timeout: GPU_POWER_SAMPLE_TIMEOUT_MS, windowsHide: true },
-        );
-        const watts = Number.parseFloat(String(stdout).trim().split(/\s+/)[0]);
-        return Number.isFinite(watts) ? watts : null;
-    } catch {
-        return null;
-    }
-};
-
-const recordInferenceMetric = async ({
-    operation,
-    model,
-    startedAt,
-    usage = {},
-    powerBeforeWatts = null,
-    powerAfterWatts = null,
-    status = 'success',
-}) => {
-    const durationMs = Date.now() - startedAt;
-    const totalTokens = Number(usage.total_tokens || 0);
-    const averagePowerWatts = Number.isFinite(powerBeforeWatts) && Number.isFinite(powerAfterWatts)
-        ? (powerBeforeWatts + powerAfterWatts) / 2
-        : null;
-    const energyJoules = averagePowerWatts === null ? null : averagePowerWatts * (durationMs / 1000);
-    const tokensPerSecond = totalTokens > 0 && durationMs > 0
-        ? totalTokens / (durationMs / 1000)
-        : null;
-
-    void recordResearchMetric({
-        eventType: 'local-ai-inference',
-        durationMs,
-        status,
-        metricName: operation,
-        value: totalTokens,
-        note: 'LM Studio inference telemetry',
-        metadata: {
-            model,
-            promptTokens: Number(usage.prompt_tokens || 0),
-            completionTokens: Number(usage.completion_tokens || 0),
-            totalTokens,
-            tokensPerSecond,
-            gpuPowerBeforeWatts: powerBeforeWatts,
-            gpuPowerAfterWatts: powerAfterWatts,
-            averageGpuPowerWatts: averagePowerWatts,
-            estimatedEnergyJoules: energyJoules,
-            estimatedEnergyWh: energyJoules === null ? null : energyJoules / 3600,
-            telemetrySource: averagePowerWatts === null ? 'tokens-and-duration-only' : 'nvidia-smi',
-        },
-    });
-};
-
-const estimateTokenCount = (value) => {
-    const text = Array.isArray(value)
-        ? value.map((item) => item?.content || '').join(' ')
-        : String(value || '');
-    return Math.ceil(text.trim().length / 4);
-};
-
 const safeJsonParse = async (response) => {
     const text = await response.text();
     try {
@@ -114,6 +101,16 @@ const safeJsonParse = async (response) => {
     } catch {
         return { raw: text };
     }
+};
+
+// LM Studio can return zero usage for some native v1 model/runtime pairs.
+// This is a transparent character-based estimate, never presented as a
+// server-reported count.
+const estimateTokenCount = (value) => {
+    const text = Array.isArray(value)
+        ? value.map((item) => item?.content || '').join(' ')
+        : String(value || '');
+    return Math.max(0, Math.ceil(text.trim().length / 4));
 };
 
 const normalizeResponseFormat = (responseFormat) => {
@@ -203,9 +200,10 @@ export const callLocalChat = async ({
     responseFormat = null,
     signal,
     maxTokens = null,
+    onTelemetry = null,
+    useNativeApi = false,
 }) => {
-    const startedAt = Date.now();
-    const powerBeforeWatts = await readGpuPowerWatts();
+    const requestStartedAt = Date.now();
     const requestBody = {
         model,
         messages,
@@ -215,7 +213,36 @@ export const callLocalChat = async ({
         ...(maxTokens ? { max_tokens: maxTokens } : {}),
     };
 
-    const sendChatRequest = async (modelId) => fetch(buildUrl('/chat/completions'), {
+    const sendChatRequest = async (modelId) => {
+        if (useNativeApi && LM_STUDIO_NATIVE_API) {
+            const systemMessage = messages.find((item) => item?.role === 'system')?.content;
+            const inputMessages = messages
+                .filter((item) => item?.role !== 'system')
+                .map((item) => ({ type: 'message', content: String(item?.content || '') }));
+            return fetch(buildNativeUrl('/chat'), {
+                method: 'POST',
+                signal,
+                headers: buildHeaders(),
+                body: JSON.stringify({
+                    model: modelId,
+                    input: inputMessages.length === 1 ? inputMessages[0].content : inputMessages,
+                    ...(systemMessage ? { system_prompt: String(systemMessage) } : {}),
+                    temperature,
+                    stream: false,
+                    ...(maxTokens ? { max_output_tokens: maxTokens } : {}),
+                }),
+            });
+        }
+
+        return fetch(buildUrl('/chat/completions'), {
+            method: 'POST',
+            signal,
+            headers: buildHeaders(),
+            body: JSON.stringify({ ...requestBody, model: modelId }),
+        });
+    };
+
+    const sendCompatibilityRequest = (modelId) => fetch(buildUrl('/chat/completions'), {
         method: 'POST',
         signal,
         headers: buildHeaders(),
@@ -229,24 +256,111 @@ export const callLocalChat = async ({
 
     let lastError = null;
     for (const modelId of tryModels) {
-        const response = await sendChatRequest(modelId);
+        let response;
+        let responseSource = useNativeApi && LM_STUDIO_NATIVE_API ? 'lm-studio-native-v1' : 'openai-compatible-v1';
+        try {
+            response = await sendChatRequest(modelId);
+        } catch (error) {
+            lastError = error;
+            if (!(useNativeApi && LM_STUDIO_NATIVE_API)) {
+                throw new Error(`Local AI request failed: ${error instanceof Error ? error.message : 'fetch failed'}`);
+            }
+            try {
+                response = await sendCompatibilityRequest(modelId);
+                responseSource = 'openai-compatible-v1-fallback';
+            } catch (fallbackError) {
+                throw new Error(`Local AI request failed on native and compatibility v1 APIs: ${fallbackError instanceof Error ? fallbackError.message : 'fetch failed'}`);
+            }
+        }
+        if (!response.ok && useNativeApi && LM_STUDIO_NATIVE_API && [400, 404, 405].includes(response.status)) {
+            const fallbackResponse = await sendCompatibilityRequest(modelId);
+            responseSource = 'openai-compatible-v1-fallback';
+            if (fallbackResponse.ok || fallbackResponse.status !== 404) {
+                if (fallbackResponse.ok) {
+                    const data = await fallbackResponse.json();
+                    const message = data?.choices?.[0]?.message || data?.message || {};
+                    const messageContent = Array.isArray(message?.content)
+                        ? message.content.map((item) => item?.text || '').join('')
+                        : message?.content || message?.reasoning_content || data?.response || data?.output_text || '';
+                    if (typeof onTelemetry === 'function') {
+                        onTelemetry({ model: modelId, usage: data?.usage || {}, stats: { ...(data?.stats || {}), generation_time: data?.stats?.generation_time || (Date.now() - requestStartedAt) / 1000 }, source: responseSource });
+                    }
+                    return messageContent;
+                }
+            }
+        }
         if (response.ok) {
             const data = await response.json();
-            const message = data?.choices?.[0]?.message || data?.message || {};
-            void recordInferenceMetric({
-                operation: 'chat-completion',
-                model: modelId,
-                startedAt,
-                usage: {
-                    prompt_tokens: data?.usage?.prompt_tokens ?? estimateTokenCount(messages),
-                    completion_tokens: data?.usage?.completion_tokens ?? estimateTokenCount(message?.content),
-                    total_tokens: data?.usage?.total_tokens ?? estimateTokenCount(messages) + estimateTokenCount(message?.content),
-                },
-                powerBeforeWatts,
-                powerAfterWatts: await readGpuPowerWatts(),
-            });
+            const nativeMessage = Array.isArray(data?.output)
+                ? data.output.find((item) => item?.type === 'message')
+                : null;
+            const message = data?.choices?.[0]?.message || data?.message || nativeMessage || {};
+            const messageContent = Array.isArray(message?.content)
+                ? message.content.map((item) => item?.text || '').join('')
+                : message?.content || message?.reasoning_content || '';
+            if (!String(messageContent || '').trim() && useNativeApi && LM_STUDIO_NATIVE_API) {
+                // Some LM Studio/model combinations finish native v1 with an
+                // empty output and zero stats. Retry the compatible v1 route
+                // before allowing the evaluator to continue with blank JSON.
+                const fallbackResponse = await sendCompatibilityRequest(modelId);
+                if (fallbackResponse.ok) {
+                    const fallbackData = await fallbackResponse.json();
+                    const fallbackMessage = fallbackData?.choices?.[0]?.message || fallbackData?.message || {};
+                    const fallbackContent = Array.isArray(fallbackMessage?.content)
+                        ? fallbackMessage.content.map((item) => item?.text || '').join('')
+                        : fallbackMessage?.content || fallbackMessage?.reasoning_content || fallbackData?.response || fallbackData?.output_text || '';
+                    if (String(fallbackContent || '').trim()) {
+                        if (typeof onTelemetry === 'function') {
+                            onTelemetry({
+                                model: modelId,
+                                usage: fallbackData?.usage || {},
+                                stats: { ...(fallbackData?.stats || {}), generation_time: fallbackData?.stats?.generation_time || (Date.now() - requestStartedAt) / 1000 },
+                                source: 'openai-compatible-v1-empty-native-fallback',
+                            });
+                        }
+                        return fallbackContent;
+                    }
+                }
+                throw new Error(`LM Studio returned an empty response for model ${modelId}`);
+            }
+            if (typeof onTelemetry === 'function') {
+                const nativeStats = data?.stats || {};
+                const serverInputTokens = Number(nativeStats.input_tokens ?? data?.usage?.prompt_tokens ?? 0);
+                const serverOutputTokens = Number(nativeStats.total_output_tokens ?? data?.usage?.completion_tokens ?? 0);
+                const serverTotalTokens = Number(data?.usage?.total_tokens || 0) || serverInputTokens + serverOutputTokens;
+                const hasServerTokens = serverTotalTokens > 0;
+                const estimatedInputTokens = estimateTokenCount(messages);
+                const estimatedOutputTokens = estimateTokenCount(messageContent);
+                const generationSeconds = Number(nativeStats.generation_time_seconds || 0)
+                    || Math.max(0, (Date.now() - requestStartedAt) / 1000 - Number(nativeStats.time_to_first_token_seconds || 0));
+                const inputTokens = hasServerTokens ? serverInputTokens : estimatedInputTokens;
+                const outputTokens = hasServerTokens ? serverOutputTokens : estimatedOutputTokens;
+                onTelemetry({
+                    model: modelId,
+                    usage: hasServerTokens ? (data?.usage || {
+                        prompt_tokens: inputTokens,
+                        completion_tokens: outputTokens,
+                        total_tokens: inputTokens + outputTokens,
+                    }) : {
+                        prompt_tokens: inputTokens,
+                        completion_tokens: outputTokens,
+                        total_tokens: inputTokens + outputTokens,
+                    },
+                    stats: {
+                        ...nativeStats,
+                        input_tokens: inputTokens,
+                        total_output_tokens: outputTokens,
+                        time_to_first_token: nativeStats.time_to_first_token_seconds,
+                        generation_time: generationSeconds,
+                        tokens_per_second: Number(nativeStats.tokens_per_second || 0) || (outputTokens > 0 && generationSeconds > 0 ? outputTokens / generationSeconds : 0),
+                    },
+                    source: hasServerTokens
+                        ? responseSource
+                        : 'estimated-from-text-lm-studio-zero-usage',
+                });
+            }
             return (
-                message?.content ||
+                messageContent ||
                 message?.reasoning_content ||
                 data?.response ||
                 data?.output_text ||
@@ -269,8 +383,6 @@ export const callLocalEmbedding = async ({
     input,
     model = LOCAL_AI_EMBED_MODEL,
 }) => {
-    const startedAt = Date.now();
-    const powerBeforeWatts = await readGpuPowerWatts();
     const resolvedModel = await resolveEmbeddingModel(model);
     const response = await fetch(buildUrl('/embeddings'), {
         method: 'POST',
@@ -290,19 +402,6 @@ export const callLocalEmbedding = async ({
     const embedding = Array.isArray(data?.data)
         ? data.data?.[0]?.embedding
         : data?.embedding;
-
-    void recordInferenceMetric({
-        operation: 'embedding',
-        model: resolvedModel,
-        startedAt,
-        usage: {
-            prompt_tokens: data?.usage?.prompt_tokens ?? estimateTokenCount(input),
-            completion_tokens: data?.usage?.completion_tokens ?? 0,
-            total_tokens: data?.usage?.total_tokens ?? estimateTokenCount(input),
-        },
-        powerBeforeWatts,
-        powerAfterWatts: await readGpuPowerWatts(),
-    });
 
     return Array.isArray(embedding) ? embedding : [];
 };

@@ -15,6 +15,7 @@ import {
   getCpoAnalytics,
   getPoAnalytics,
   getCpoResearchAnalytics,
+  purgeLegacyInferenceMetrics,
 } from '../controllers/adminController.js';
 
 const router = express.Router();
@@ -36,5 +37,6 @@ router.delete('/vendors/:id', auth(['PO', 'CPO']), deleteVendor);
 router.get('/analytics/cpo', auth('CPO'), getCpoAnalytics);
 router.get('/analytics/po', auth('PO'), getPoAnalytics);
 router.get('/analytics/research', auth(['PO', 'CPO']), getCpoResearchAnalytics);
+router.delete('/analytics/research/legacy-inference', auth('CPO'), purgeLegacyInferenceMetrics);
 
 export default router;

@@ -79,6 +79,7 @@ type AiSummary = {
     passed?: boolean;
     reasons?: string[];
   };
+  eligibilityOverride?: boolean;
   criteriaScores?: Array<{
     criterion: string;
     maxMarks?: number;
@@ -99,6 +100,27 @@ type AiSummary = {
   };
   aiRank?: number | null;
   error?: string;
+  inferenceTelemetry?: {
+    totalTokens?: number;
+    promptTokens?: number;
+    completionTokens?: number;
+    tokensPerSecond?: number;
+    averageGpuPowerWatts?: number | null;
+    estimatedEnergyJoules?: number | null;
+    usageAvailable?: boolean;
+    telemetrySource?: string;
+    tokenCountSource?: string;
+    generationTimeSeconds?: number;
+    evaluationDurationSeconds?: number;
+    timeToFirstTokenSeconds?: number;
+  };
+  evaluationTrace?: {
+    inspectedTenderDocuments?: Array<{ name?: string; readableCharacters?: number }>;
+    inspectedBidDocuments?: Array<{ label?: string; category?: string; readableCharacters?: number }>;
+    evaluationOrder?: string[];
+    source?: string;
+    scoreCalculation?: string;
+  };
 };
 
 type AiEvaluationState = {
@@ -118,6 +140,14 @@ type AiEvaluationState = {
 };
 
 type BidDocumentEntry = NonNullable<BidRecord["bidDocuments"]>[number];
+
+const formatElapsed = (seconds?: number) => {
+  const totalSeconds = Math.max(0, Math.round(Number(seconds || 0)));
+  if (!totalSeconds) return "-";
+  const minutes = Math.floor(totalSeconds / 60);
+  const remainder = totalSeconds % 60;
+  return minutes ? `${minutes}m ${String(remainder).padStart(2, "0")}s` : `${remainder}s`;
+};
 
 export function AIEvaluation() {
   const authUser = getAuthUser();
@@ -144,12 +174,11 @@ export function AIEvaluation() {
     setLoadingTenders(true);
     setError("");
     try {
-      const data = await apiRequest<TenderRecord[]>("/api/tenders?summary=true");
+      const data = await apiRequest<TenderRecord[]>("/api/tenders?summary=true&mine=true", { timeoutMs: 15000 });
       const allTenderRecords = Array.isArray(data) ? data : [];
       const createdByMe = allTenderRecords.filter((tender) => String(getTenderOwnerId(tender)) === String(authUser?._id || ""));
       const visibleCreatedByMe = createdByMe.filter((tender) => tender.status !== "Draft");
-      const visibleFallback = allTenderRecords.filter((tender) => tender.status !== "Draft");
-      const visible = visibleCreatedByMe.length ? visibleCreatedByMe : visibleFallback;
+      const visible = visibleCreatedByMe;
       setTenders(visible);
       setSelectedTenderId((previousId) => {
         if (previousId && visible.some((item) => item._id === previousId)) {
@@ -229,7 +258,7 @@ export function AIEvaluation() {
     }
   };
 
-  const reEvaluateBid = async (bidId: string) => {
+  const reEvaluateBid = async (bidId: string, bypassEligibility = false) => {
     if (!selectedTenderId) return;
 
     setError("");
@@ -237,9 +266,12 @@ export function AIEvaluation() {
     setReEvaluatingBidId(bidId);
 
     try {
-      const result = await apiRequest<{ summary?: AiSummary }>(`/api/ai/evaluations/tenders/${selectedTenderId}/run?manual=true&force=true&bidId=${bidId}`, {
+      const result = await apiRequest<{ summary?: AiSummary }>(`/api/ai/evaluations/tenders/${selectedTenderId}/run?manual=true&force=true&bidId=${bidId}${bypassEligibility ? "&bypassEligibility=true" : ""}`, {
         method: "POST",
-        body: { action: "start", bidId },
+        body: { action: "start", bidId, bypassEligibility },
+        // Local OCR/AI evaluation can legitimately take several minutes.
+        // The default 20-second UI timeout was disconnecting LM Studio mid-prompt.
+        timeoutMs: 10 * 60 * 1000,
       });
       if (result?.summary) {
         const summary = result.summary;
@@ -308,6 +340,7 @@ export function AIEvaluation() {
 
   const aiRanking = useMemo(() => {
     return bids
+      .filter((bid) => aiSummaryMap.get(bid._id)?.status === "success")
       .map((bid) => {
         const summary = aiSummaryMap.get(bid._id);
         const explicitRank = Number(summary?.aiRank || 0);
@@ -341,15 +374,42 @@ export function AIEvaluation() {
       const committeeFinancial = reviewCount
         ? evaluations.reduce((sum, item) => sum + Number(item.financialScore || 0), 0) / reviewCount
         : Number(bid.financialScore || 0);
+      const technicalMaximum = (selectedTender?.qcbsConfig?.technicalCriteria || [])
+        .reduce((sum, criterion) => sum + Number(criterion.maxMarks || 0), 0);
+      const committeeTechnicalScore = technicalMaximum > 0
+        ? Math.min(100, Math.max(0, (committeeTechnical / technicalMaximum) * 100))
+        : Math.min(100, Math.max(0, committeeTechnical));
+
+      const committeePrices = bids
+        .map((item) => {
+          const itemEvaluations = Array.isArray(item.committeeEvaluations) ? item.committeeEvaluations : [];
+          return itemEvaluations.length
+            ? itemEvaluations.reduce((sum, evaluation) => sum + Number(evaluation.financialScore || 0), 0) / itemEvaluations.length
+            : Number(item.financialScore || 0);
+        })
+        .filter((amount) => Number.isFinite(amount) && amount > 0);
+      const lowestCommitteePrice = committeePrices.length ? Math.min(...committeePrices) : 0;
+      const committeeFinancialScore = lowestCommitteePrice > 0 && committeeFinancial > 0
+        ? Math.min(100, (lowestCommitteePrice / committeeFinancial) * 100)
+        : 0;
+      const technicalWeight = Number(selectedTender?.qcbsConfig?.technicalWeight);
+      const commercialWeight = Number(selectedTender?.qcbsConfig?.commercialWeight);
+      const hasWeights = Number.isFinite(technicalWeight) && Number.isFinite(commercialWeight) && technicalWeight + commercialWeight > 0;
+      const committeeTotal = (committeeTechnicalScore * (hasWeights ? technicalWeight : 50)
+        + committeeFinancialScore * (hasWeights ? commercialWeight : 50))
+        / (hasWeights ? technicalWeight + commercialWeight : 100);
 
       return {
         bidId: bid._id,
         reviewCount,
         committeeTechnical: Number(committeeTechnical.toFixed(2)),
         committeeFinancial: Number(committeeFinancial.toFixed(2)),
+        committeeTechnicalScore: Number(committeeTechnicalScore.toFixed(2)),
+        committeeFinancialScore: Number(committeeFinancialScore.toFixed(2)),
+        committeeTotal: Number(committeeTotal.toFixed(2)),
       };
     });
-  }, [bids]);
+  }, [bids, selectedTender]);
 
   const selectedTenderStatus = selectedTender
     ? (selectedTender.status === "Awarded" || selectedTender.status === "Completed" ? "Finalized" : "In review")
@@ -831,22 +891,26 @@ export function AIEvaluation() {
                                 </div>
                               </div>
 
-                              <div className="grid min-w-[280px] grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
-                                <div className="rounded-xl bg-gray-50 p-3">
-                                  <p className="text-[11px] uppercase tracking-wide text-gray-500">Committee tech</p>
-                                  <p className="mt-1 text-lg text-[#0B3C5D]">{formatScore(committee?.committeeTechnical)}</p>
-                                </div>
+                              <div className="grid min-w-[280px] grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
                                 <div className="rounded-xl bg-emerald-50 p-3">
-                                  <p className="text-[11px] uppercase tracking-wide text-emerald-700">AI tech</p>
+                                  <p className="text-[11px] uppercase tracking-wide text-emerald-700">Committee tech</p>
+                                  <p className="mt-1 text-lg text-[#0B3C5D]">{formatScore(committee?.committeeTechnicalScore)}</p>
+                                </div>
+                                <div className="rounded-xl bg-blue-50 p-3">
+                                  <p className="text-[11px] uppercase tracking-wide text-blue-700">AI tech</p>
                                   <p className="mt-1 text-lg text-[#0B3C5D]">{formatScore(summary?.aiScores?.technicalScore)}</p>
                                 </div>
-                                <div className="rounded-xl bg-gray-50 p-3">
-                                  <p className="text-[11px] uppercase tracking-wide text-gray-500">Committee fin</p>
-                                  <p className="mt-1 text-lg text-[#0B3C5D]">{formatScore(committee?.committeeFinancial)}</p>
+                                <div className="rounded-xl bg-emerald-50 p-3">
+                                  <p className="text-[11px] uppercase tracking-wide text-emerald-700">Committee fin</p>
+                                  <p className="mt-1 text-lg text-[#0B3C5D]">{formatScore(committee?.committeeFinancialScore)}</p>
                                 </div>
                                 <div className="rounded-xl bg-blue-50 p-3">
                                   <p className="text-[11px] uppercase tracking-wide text-blue-700">AI fin</p>
                                   <p className="mt-1 text-lg text-[#0B3C5D]">{formatScore(summary?.aiScores?.financialScore)}</p>
+                                </div>
+                                <div className="rounded-xl bg-emerald-50 p-3">
+                                  <p className="text-[11px] uppercase tracking-wide text-emerald-700">Committee total</p>
+                                  <p className="mt-1 text-lg text-[#0B3C5D]">{formatScore(committee?.committeeTotal)}</p>
                                 </div>
                                 <div className="rounded-xl bg-blue-50 p-3">
                                   <p className="text-[11px] uppercase tracking-wide text-blue-700">AI total</p>
@@ -882,6 +946,16 @@ export function AIEvaluation() {
                                   <FileText className="h-4 w-4" />
                                   {reEvaluatingBidId === bid._id ? "Re-evaluating..." : "Re-evaluate bid"}
                                 </button>
+                                {summary && summary.status !== "pending" && !summary.eligibilityOverride && (summary.status === "failed" || summary.eligibility?.passed === false) ? (
+                                    <button
+                                    type="button"
+                                    onClick={() => void reEvaluateBid(bid._id, true)}
+                                    disabled={Boolean(reEvaluatingBidId)}
+                                    className="inline-flex items-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-800 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                  >
+                                    Score with PO override
+                                  </button>
+                                ) : null}
                                 <button
                                   type="button"
                                   onClick={() => void selectWinner(bid._id)}
@@ -898,7 +972,7 @@ export function AIEvaluation() {
                               </div>
                             </div>
 
-                            <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+                            <div className="grid grid-cols-1 gap-3">
                               <div className="rounded-2xl bg-slate-50 p-4">
                                 <p className="text-xs uppercase tracking-wide text-gray-500">AI notes</p>
                                 <p className="mt-2 text-sm text-gray-700">
@@ -907,11 +981,11 @@ export function AIEvaluation() {
                                 <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
                                   <div className="rounded-xl border border-white bg-white/80 px-3 py-2">
                                     <p className="text-[11px] uppercase tracking-wide text-gray-500">Eligibility</p>
-                                    <p className={`mt-1 text-sm font-medium ${summary?.eligibility?.passed === false ? "text-red-700" : "text-emerald-700"}`}>
-                                      {summary?.eligibility?.passed === false ? "Failed" : "Passed"}
+                                    <p className={`mt-1 text-sm font-medium ${!summary || summary.status === "failed" ? "text-gray-600" : summary.eligibility?.passed === false ? "text-red-700" : "text-emerald-700"}`}>
+                                      {!summary ? "Not evaluated" : summary.status === "failed" ? "Evaluation failed" : summary.eligibility?.passed === false ? "Failed" : "Passed"}
                                     </p>
                                     <p className="mt-1 text-xs text-gray-500">
-                                      {summary?.eligibility?.reasons?.[0] || "Eligibility check completed from the uploaded documents."}
+                                      {summary?.error || summary?.eligibility?.reasons?.[0] || (!summary ? "AI evaluation has not completed yet." : "Eligibility check completed from the uploaded documents.")}
                                     </p>
                                   </div>
                                   <div className="rounded-xl border border-white bg-white/80 px-3 py-2">
@@ -922,11 +996,13 @@ export function AIEvaluation() {
                                     </p>
                                   </div>
                                 </div>
-                                {summary?.eligibility?.passed === false ? (
+                                {summary?.status === "success" && summary.eligibility?.passed === false ? (
                                   <div className="mt-3 rounded-xl border border-red-100 bg-red-50/70 px-3 py-2">
-                                    <p className="text-[11px] font-medium uppercase tracking-wide text-red-700">Ineligible as per AI</p>
+                                    <p className="text-[11px] font-medium uppercase tracking-wide text-red-700">{summary.eligibilityOverride ? "Eligibility failed · override scoring" : "Ineligible as per AI"}</p>
                                     <p className="mt-1 text-xs text-red-700">
-                                      The AI marked this bid ineligible, so the score rows below are shown as zero with the eligibility reason attached.
+                                      {summary.eligibilityOverride
+                                        ? "Eligibility remains failed. The PO requested conditional technical and commercial scoring for review; this override does not make the bid legally eligible."
+                                        : "The AI marked this bid ineligible, so the score rows below are shown as zero with the eligibility reason attached."}
                                     </p>
                                   </div>
                                 ) : null}
@@ -943,6 +1019,64 @@ export function AIEvaluation() {
                                       </p>
                                     ))}
                                   </div>
+                                ) : null}
+                                {summary?.evaluationTrace ? (
+                                  <div className="mt-3 rounded-xl border border-blue-100 bg-blue-50/60 px-3 py-2">
+                                    <p className="text-[11px] font-medium uppercase tracking-wide text-blue-700">Evaluation evidence</p>
+                                    <p className="mt-1 text-xs text-blue-800">
+                                      Compared {summary.evaluationTrace.inspectedTenderDocuments?.length || 0} tender documents with {summary.evaluationTrace.inspectedBidDocuments?.length || 0} readable bid documents.
+                                    </p>
+                                    <p className="mt-1 text-[11px] text-blue-700">
+                                      Order: {(summary.evaluationTrace.evaluationOrder || ["eligibility", "technical", "commercial"]).join(" → ")}
+                                    </p>
+                                  </div>
+                                ) : null}
+                                {summary?.inferenceTelemetry ? (
+                                  <div className="mt-3 rounded-xl border border-violet-100 bg-violet-50/60 px-3 py-2">
+                                    <p className="text-[11px] font-medium uppercase tracking-wide text-violet-700">Bid AI usage</p>
+                                    <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-violet-800 sm:grid-cols-3">
+                                      <span className="rounded-lg bg-violet-100 px-2.5 py-2 font-semibold">Time: {formatElapsed(summary.inferenceTelemetry.evaluationDurationSeconds || summary.inferenceTelemetry.generationTimeSeconds)}</span>
+                                      <span className="rounded-full bg-white px-2.5 py-1">Tokens: {summary.inferenceTelemetry.usageAvailable ? (summary.inferenceTelemetry.totalTokens || 0).toLocaleString() : "unavailable"}</span>
+                                      {summary.inferenceTelemetry.tokensPerSecond ? <span className="rounded-full bg-white px-2.5 py-1">Speed: {summary.inferenceTelemetry.tokensPerSecond.toFixed(1)} tok/s</span> : null}
+                                      {summary.inferenceTelemetry.averageGpuPowerWatts !== null && summary.inferenceTelemetry.averageGpuPowerWatts !== undefined ? <span className="rounded-full bg-white px-2.5 py-1">GPU: {summary.inferenceTelemetry.averageGpuPowerWatts.toFixed(1)} W</span> : null}
+                                      {summary.inferenceTelemetry.estimatedEnergyJoules !== null && summary.inferenceTelemetry.estimatedEnergyJoules !== undefined ? <span className="rounded-full bg-white px-2.5 py-1">Energy: {summary.inferenceTelemetry.estimatedEnergyJoules.toFixed(1)} J</span> : null}
+                                      {summary.inferenceTelemetry.timeToFirstTokenSeconds ? <span className="rounded-full bg-white px-2.5 py-1">First output: {summary.inferenceTelemetry.timeToFirstTokenSeconds.toFixed(2)}s</span> : null}
+                                    </div>
+                                    <p className="mt-2 text-[11px] text-violet-700">Measured for this bid evaluation, not individual chunks. Source: {summary.inferenceTelemetry.tokenCountSource || "unavailable"}.</p>
+                                  </div>
+                                ) : null}
+                                {summary?.status === "success" ? (
+                                  <details className="mt-3 rounded-xl border border-slate-200 bg-white px-3 py-2">
+                                    <summary className="cursor-pointer text-[11px] font-medium uppercase tracking-wide text-slate-700">
+                                      AI decision trace
+                                    </summary>
+                                    <div className="mt-3 space-y-3 text-xs text-gray-600">
+                                      <div>
+                                        <p className="font-medium text-slate-800">1. Eligibility</p>
+                                        <p className="mt-1">{summary.eligibility?.passed ? "Passed; technical and commercial review was allowed." : summary.eligibilityOverride ? "Failed; PO override enabled conditional technical and commercial review." : "Failed; technical and commercial marks are zero."}</p>
+                                        {(summary.eligibility?.reasons || []).map((reason, index) => (
+                                          <p key={`${bid._id}-trace-eligibility-${index}`} className="mt-1 text-red-700">• {reason}</p>
+                                        ))}
+                                      </div>
+                                      <div>
+                                        <p className="font-medium text-slate-800">2. Technical comparison</p>
+                                        {!summary.eligibility?.passed && !summary.eligibilityOverride ? (
+                                          <p className="mt-1">Not scored because eligibility failed.</p>
+                                        ) : summary.criteriaScores?.length ? (
+                                          summary.criteriaScores.map((criterion, index) => (
+                                            <p key={`${bid._id}-trace-technical-${index}`} className="mt-1">
+                                              • {criterion.criterion}: {formatScore(criterion.awardedMarks)} / {formatScore(criterion.maxMarks)} — {criterion.documentLabel || "No matching document"}. {criterion.evidence?.[0] || "No evidence returned."}
+                                            </p>
+                                          ))
+                                        ) : <p className="mt-1">No technical criteria were returned.</p>}
+                                      </div>
+                                      <div>
+                                        <p className="font-medium text-slate-800">3. Commercial comparison</p>
+                                        <p className="mt-1">{!summary.eligibility?.passed && !summary.eligibilityOverride ? "Not evaluated because eligibility failed." : summary.commercialAnalysis?.rationale || "No commercial rationale returned."}</p>
+                                        {summary.evaluationTrace.scoreCalculation ? <p className="mt-1 text-blue-700">{summary.evaluationTrace.scoreCalculation}</p> : null}
+                                      </div>
+                                    </div>
+                                  </details>
                                 ) : null}
                               </div>
 
@@ -1081,34 +1215,13 @@ export function AIEvaluation() {
                                           <td className="px-4 py-4 whitespace-nowrap text-gray-600">
                                             {row.maxMarks || "-"}
                                           </td>
-                                          <td className="px-4 py-4 min-w-[220px]">
-                                            <div className="flex items-end gap-3">
-                                              <div>
-                                                <p className="text-lg text-[#0B3C5D]">
-                                                  {committeeAverage !== null ? formatScore(committeeAverage) : "-"}
-                                                </p>
-                                                <p className="text-xs text-gray-500">
-                                                  {row.committeeEntries.length} committee mark{row.committeeEntries.length === 1 ? "" : "s"}
-                                                </p>
-                                              </div>
-                                              <div className="flex flex-wrap gap-1">
-                                                {row.committeeEntries.slice(0, 3).map((entry, index) => (
-                                                  <span
-                                                    key={`${row.key}-committee-${index}`}
-                                                    className={`rounded-full px-2 py-0.5 text-[11px] ${
-                                                      entry.eligible ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"
-                                                    }`}
-                                                  >
-                                                    {entry.memberLabel}: {formatScore(entry.score)}
-                                                  </span>
-                                                ))}
-                                                {row.committeeEntries.length > 3 && (
-                                                  <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] text-gray-600">
-                                                    +{row.committeeEntries.length - 3} more
-                                                  </span>
-                                                )}
-                                              </div>
-                                            </div>
+                                          <td className="px-4 py-4 min-w-[180px]">
+                                            <p className="text-lg text-[#0B3C5D]">
+                                              {committeeAverage !== null ? formatScore(committeeAverage) : "-"}
+                                            </p>
+                                            <p className="text-xs text-gray-500">
+                                              {row.committeeEntries.length} committee mark{row.committeeEntries.length === 1 ? "" : "s"}
+                                            </p>
                                           </td>
                                           <td className="px-4 py-4 min-w-[180px]">
                                             <p className="text-lg text-[#0B3C5D]">

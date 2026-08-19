@@ -9,20 +9,25 @@ const execFile = promisify(execFileCallback);
 const require = createRequire(import.meta.url);
 const TESSERACT_LANG = 'eng';
 const PDF_RENDER_PREFIX = process.platform === 'win32' ? 'pdftoppm.cmd' : 'pdftoppm';
+const FORCE_PDF_OCR = String(process.env.DOCUMENT_FORCE_OCR || 'false').toLowerCase() === 'true';
+// Tesseract.js uses CPU/WASM in this stack. A small worker pool improves OCR
+// throughput safely; a native GPU OCR engine can be plugged in separately.
+const OCR_WORKER_COUNT = Math.max(1, Number(process.env.DOCUMENT_OCR_WORKERS || 2));
 
-let tesseractWorkerPromise = null;
+const tesseractWorkerPromises = [];
 let pdfParsePromise = null;
 
-const getTesseractWorker = async () => {
-    if (!tesseractWorkerPromise) {
-        tesseractWorkerPromise = (async () => {
+const getTesseractWorker = async (workerIndex = 0) => {
+    const normalizedIndex = workerIndex % OCR_WORKER_COUNT;
+    if (!tesseractWorkerPromises[normalizedIndex]) {
+        tesseractWorkerPromises[normalizedIndex] = (async () => {
             const { createWorker } = await import('tesseract.js');
             const worker = await createWorker(TESSERACT_LANG);
             return worker;
         })();
     }
 
-    return tesseractWorkerPromise;
+    return tesseractWorkerPromises[normalizedIndex];
 };
 
 const withSuppressedPdfWarnings = async (task) => {
@@ -164,11 +169,11 @@ const fetchBinary = async (url) => {
     return { buffer, mimeType: contentType };
 };
 
-const extractTextFromImageBuffer = async (buffer) => {
+const extractTextFromImageBuffer = async (buffer, workerIndex = 0) => {
     if (!buffer || !buffer.length) return '';
 
     try {
-        const worker = await getTesseractWorker();
+        const worker = await getTesseractWorker(workerIndex);
         const result = await worker.recognize(buffer);
         return result?.data?.text || '';
     } catch {
@@ -178,11 +183,15 @@ const extractTextFromImageBuffer = async (buffer) => {
 
 const extractTextFromPdfBuffer = async (buffer) => {
     let parseText = '';
+    let parsedPageCount = 0;
     try {
         const pdfParse = await getPdfParse();
         const parsed = await withSuppressedPdfWarnings(() => pdfParse(buffer));
         parseText = String(parsed?.text || '').trim();
-        if (parseText) return parseText;
+        parsedPageCount = Number(parsed?.numpages || 0);
+        const likelyScannedOrIncomplete = !parseText
+            || (parsedPageCount > 0 && parseText.length < parsedPageCount * 250);
+        if (parseText && !FORCE_PDF_OCR && !likelyScannedOrIncomplete) return parseText;
     } catch {
         // Fall back to OCR below.
     }
@@ -212,16 +221,14 @@ const extractTextFromPdfBuffer = async (buffer) => {
             return parseText;
         }
 
-        const pageTexts = [];
-        for (const imagePath of imagePaths) {
+        const pageTexts = await Promise.all(imagePaths.map(async (imagePath, pageIndex) => {
             const pageBuffer = await fs.readFile(imagePath);
-            const pageText = String(await extractTextFromImageBuffer(pageBuffer) || '').trim();
-            if (pageText) {
-                pageTexts.push(pageText);
-            }
-        }
+            return String(await extractTextFromImageBuffer(pageBuffer, pageIndex) || '').trim();
+        }));
 
         const ocrText = pageTexts.join('\n\n').trim();
+        // OCR is preferred when enabled because pdf-parse can return only the
+        // selectable/early text from mixed or partially scanned PDFs.
         return ocrText || parseText;
     } catch {
         return parseText;
@@ -241,10 +248,42 @@ export const extractTextFromBuffer = async (buffer, mimeType) => {
 
     if (normalizedMime.startsWith('image/')) {
         const ocrText = await extractTextFromImageBuffer(buffer);
-        if (ocrText) return ocrText;
+        // Never fall back to UTF-8 decoding for an image. That turns PNG/JPEG
+        // bytes into apparent text and creates corrupt chunks in MongoDB.
+        return ocrText.trim();
     }
 
     return buffer.toString('utf8');
+};
+
+const looksLikeBase64 = (value) => {
+    const normalized = String(value || '').replace(/\s+/g, '');
+    return normalized.length >= 32
+        && normalized.length % 4 === 0
+        && /^[A-Za-z0-9+/=]+$/.test(normalized);
+};
+
+const hasBinaryControlCharacters = (value) => {
+    const text = String(value || '');
+    if (!text) return false;
+    const controls = text.match(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g) || [];
+    return controls.length >= Math.max(2, Math.floor(text.length * 0.01));
+};
+
+const decodeInlineBinaryContent = (content, mimeType) => {
+    const normalizedMime = String(mimeType || '').toLowerCase();
+    if (!normalizedMime.includes('/') || normalizedMime.startsWith('text/')) return null;
+
+    if (looksLikeBase64(content)) {
+        return Buffer.from(String(content).replace(/\s+/g, ''), 'base64');
+    }
+
+    // Compatibility for legacy records that stored binary bytes in a string.
+    if (hasBinaryControlCharacters(content) || normalizedMime.startsWith('image/') || normalizedMime.includes('pdf')) {
+        return Buffer.from(String(content), 'latin1');
+    }
+
+    return null;
 };
 
 export const extractTextFromContent = async (rawContent, mimeType, fallbackName = 'Document') => {
@@ -263,6 +302,11 @@ export const extractTextFromContent = async (rawContent, mimeType, fallbackName 
     if (content.startsWith('http://') || content.startsWith('https://')) {
         const fetched = await fetchBinary(content);
         return extractTextFromBuffer(fetched.buffer, resolvedMimeType || fetched.mimeType);
+    }
+
+    const inlineBinary = decodeInlineBinaryContent(content, resolvedMimeType);
+    if (inlineBinary) {
+        return extractTextFromBuffer(inlineBinary, resolvedMimeType);
     }
 
     return String(content || '');

@@ -1,4 +1,4 @@
-import dotenv from 'dotenv';
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import { connectDB } from './config/db.js';
@@ -13,11 +13,6 @@ import aiScoringRoutes from './AI/evaluation/aiScoringRoutes.js';
 import aiMilestoneRoutes from './AI/evaluation/aiMilestoneRoutes.js';
 import { runAutoAiScoring } from './AI/evaluation/aiScoringController.js';
 import { startDocumentEmbeddingWorker } from './AI/documents/documentEmbeddingWorker.js';
-
-dotenv.config();
-
-// Connect Database
-connectDB();
 
 const app = express();
 
@@ -39,21 +34,26 @@ app.use('/api/ai', chatbotRoutes);
 app.use('/api/ai/evaluations', aiScoringRoutes);
 app.use('/api/ai/milestones', aiMilestoneRoutes);
 
-const PORT = process.env.PORT || 5000;
+const startServer = async () => {
+    await connectDB();
 
-app.listen(PORT, () => console.log(`Server started on port ${PORT}`));
-startDocumentEmbeddingWorker();
+    const PORT = process.env.PORT || 5000;
+    app.listen(PORT, () => console.log(`Server started on port ${PORT}`));
+    startDocumentEmbeddingWorker();
 
-const autoScoringEnabled = process.env.AI_AUTO_RUN_ENABLED === 'true';
-const autoRunInterval = Number(process.env.AI_AUTO_RUN_INTERVAL_MS || 120000);
-if (autoScoringEnabled && autoRunInterval > 0) {
-	void runAutoAiScoring().catch((error) => {
-		console.error('AI auto-scoring initial run failed:', error.message || error);
-	});
+    const autoScoringEnabled = process.env.AI_AUTO_RUN_ENABLED !== 'false';
+    const autoRunInterval = Number(process.env.AI_AUTO_RUN_INTERVAL_MS || 120000);
+    if (autoScoringEnabled && autoRunInterval > 0) {
+	    void runAutoAiScoring().catch((error) => {
+	        console.error('AI auto-scoring initial run failed:', error.message || error);
+	    });
 
-	setInterval(() => {
-		void runAutoAiScoring().catch((error) => {
-			console.error('AI auto-scoring failed:', error.message || error);
-		});
-	}, autoRunInterval);
-}
+	    setInterval(() => {
+	        void runAutoAiScoring().catch((error) => {
+	            console.error('AI auto-scoring failed:', error.message || error);
+	        });
+	    }, autoRunInterval);
+    }
+};
+
+void startServer();

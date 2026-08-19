@@ -3,7 +3,7 @@ const router = express.Router();
 import auth from '../middleware/auth.js';
 import {
     createTender, getTenders, getTenderById, getTenderDocument, getBidDocument, editTender, publishTender, closeTender,
-    submitBid, getBidsByTender, evaluateBid, getEvaluatedBids, selectWinner
+    submitBid, withdrawBid, getBidsByTender, evaluateBid, getEvaluatedBids, selectWinner
 } from '../controllers/tenderController.js';
 
 // Tender Management (CPO / PO)
@@ -18,6 +18,7 @@ router.put('/:id/close', auth(['CPO', 'PO']), closeTender);
 
 // Bid Submission (Vendor)
 router.post('/:id/bids', auth('Vendor'), submitBid);
+router.delete('/:id/bids/:bidId', auth('Vendor'), withdrawBid);
 router.get('/:id/bids', auth(['Committee', 'CPO', 'PO']), getBidsByTender);
 
 // Evaluation (Committee)

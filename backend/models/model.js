@@ -160,6 +160,7 @@ const aiBidSummarySchema = new mongoose.Schema({
         passed: { type: Boolean, default: false },
         reasons: { type: [String], default: [] },
     },
+    eligibilityOverride: { type: Boolean, default: false },
     criteriaScores: { type: [aiCriteriaScoreSchema], default: [] },
     commercialAnalysis: {
         statedValue: { type: Number },
@@ -179,6 +180,10 @@ const aiBidSummarySchema = new mongoose.Schema({
     aiRank: { type: Number },
     summary: { type: String },
     rationale: { type: [String], default: [] },
+    // Structured, human-readable audit trail for PO review and research.
+    evaluationTrace: { type: mongoose.Schema.Types.Mixed, default: {} },
+    // One aggregate inference record for this bid; never one record per chunk.
+    inferenceTelemetry: { type: mongoose.Schema.Types.Mixed, default: {} },
     rawResponse: { type: mongoose.Schema.Types.Mixed },
     error: { type: String },
 }, { timestamps: true });

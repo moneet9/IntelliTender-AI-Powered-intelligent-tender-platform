@@ -1,4 +1,13 @@
-import { Tender, Contract, User, BidDocument } from '../models/model.js';
+import {
+    Tender,
+    Contract,
+    User,
+    BidDocument,
+    AIBidSummary,
+    DocumentEmbeddingJob,
+    DocumentChunk,
+    ResearchMetricEvent,
+} from '../models/model.js';
 import { queueBidDocumentEmbeddings, queueTenderDocumentEmbeddings } from '../AI/documents/documentEmbeddingService.js';
 import { scheduleTenderAiScoring } from '../AI/evaluation/aiScoringController.js';
 import { recordResearchMetric } from '../utils/researchMetrics.js';
@@ -414,6 +423,10 @@ export const getTenders = async (req, res) => {
     try {
         let filter = {};
 
+        if (req.query.mine === 'true' && req.user?.id) {
+            filter.createdBy = req.user.id;
+        }
+
         // If user is Committee, only show tenders created by their assigned PO
         if (req.user?.role === 'Committee') {
             const user = await User.findById(req.user.id).select('managerPo');
@@ -424,7 +437,6 @@ export const getTenders = async (req, res) => {
         }
 
         if (req.query.summary === 'true') {
-            const isDocumentListConsumer = ['Vendor', 'Committee'].includes(req.user?.role);
             const summaryFields = [
                 'title',
                 'status',
@@ -437,7 +449,6 @@ export const getTenders = async (req, res) => {
                 'qcbsConfig',
                 'requiredDocuments',
                 'bids._id bids.vendorId',
-                ...(isDocumentListConsumer ? [] : ['documents']),
             ].join(' ');
             const tenders = await Tender.find(filter)
                 .select(summaryFields)
@@ -446,7 +457,7 @@ export const getTenders = async (req, res) => {
 
             return res.json(tenders.map((tender) => ({
                 ...tender,
-                documents: isDocumentListConsumer ? [] : (Array.isArray(tender.documents) ? tender.documents : []),
+                documents: [],
                 bids: Array.isArray(tender.bids)
                     ? tender.bids.map((bid) => ({ _id: bid._id, vendorId: bid.vendorId }))
                     : [],
@@ -748,9 +759,58 @@ export const submitBid = async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 };
 
+// A vendor may remove only their own unselected submission before award.
+export const withdrawBid = async (req, res) => {
+    try {
+        const tender = await Tender.findById(req.params.id);
+        if (!tender) return res.status(404).json({ message: 'Tender not found' });
+        if (!['Published', 'Closed'].includes(tender.status)) {
+            return res.status(400).json({ message: 'A submission cannot be withdrawn after the tender has been awarded' });
+        }
+        const bid = tender.bids.id(req.params.bidId);
+        if (!bid) return res.status(404).json({ message: 'Bid not found' });
+        if (String(bid.vendorId) !== String(req.user.id)) {
+            return res.status(403).json({ message: 'You can withdraw only your own submission' });
+        }
+        if (bid.status === 'Selected') {
+            return res.status(400).json({ message: 'A selected submission cannot be withdrawn' });
+        }
+
+        const documentIds = [
+            ...(Array.isArray(bid.bidDocuments) ? bid.bidDocuments.map((item) => item?.documentId) : []),
+            bid.proposalDocumentId,
+        ].filter(Boolean).map((id) => String(id));
+        const sourceKeys = documentIds.map((id) => `bid-document:${id}`);
+
+        // Remove the embedded bid first so it immediately disappears from PO/AI reads.
+        tender.bids.pull(bid._id);
+        await tender.save();
+
+        await Promise.all([
+            documentIds.length
+                ? BidDocument.deleteMany({ _id: { $in: documentIds }, tenderId: tender._id, vendorId: req.user.id })
+                : Promise.resolve(),
+            DocumentEmbeddingJob.deleteMany({
+                $or: [{ bidId: bid._id }, ...(sourceKeys.length ? [{ sourceKey: { $in: sourceKeys } }] : [])],
+            }),
+            DocumentChunk.deleteMany({
+                $or: [{ bidId: bid._id }, ...(sourceKeys.length ? [{ sourceKey: { $in: sourceKeys } }] : [])],
+            }),
+            AIBidSummary.deleteMany({ tenderId: tender._id, bidId: bid._id }),
+            ResearchMetricEvent.deleteMany({ tenderId: tender._id, bidId: bid._id }),
+        ]);
+
+        return res.json({ message: 'Submission and its uploaded documents were withdrawn and deleted' });
+    } catch (error) {
+        return res.status(500).json({ message: error.message || 'Failed to withdraw submission' });
+    }
+};
+
 export const getBidsByTender = async (req, res) => {
     try {
-        const tender = await Tender.findById(req.params.id).populate(
+        const tender = await Tender.findById(req.params.id)
+            .select('-documents')
+            .populate(
             'bids.vendorId',
             'name email phone department specialization accountStatus'
         );

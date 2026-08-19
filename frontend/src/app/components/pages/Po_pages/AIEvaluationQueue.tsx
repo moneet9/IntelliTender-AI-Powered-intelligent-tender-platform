@@ -129,7 +129,7 @@ export function AIEvaluationQueue() {
     setLoading(true);
     setError("");
     try {
-      const data = await apiRequest<TenderRecord[]>("/api/tenders?summary=true");
+      const data = await apiRequest<TenderRecord[]>("/api/tenders?summary=true&mine=true", { timeoutMs: 15000 });
       const allTenderRecords = Array.isArray(data) ? data : [];
       const ownedQueueItems = allTenderRecords.filter((tender) => isOwnTender(tender));
       const queueItems = ownedQueueItems.length ? ownedQueueItems : allTenderRecords;

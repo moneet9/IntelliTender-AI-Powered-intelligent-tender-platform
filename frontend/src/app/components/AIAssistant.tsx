@@ -10,6 +10,16 @@ type ChatMeta = {
   collection?: string | null;
   count?: number;
   records?: unknown[];
+  telemetry?: {
+    promptTokens?: number;
+    completionTokens?: number;
+    totalTokens?: number;
+    generationTimeSeconds?: number;
+    timeToFirstTokenSeconds?: number;
+    tokensPerSecond?: number;
+    source?: string;
+  } | null;
+  durationMs?: number;
 };
 
 type ChatMessage = {
@@ -46,6 +56,8 @@ type ChatResponse = {
   collection?: string | null;
   count?: number;
   records?: unknown[];
+  telemetry?: ChatMeta["telemetry"];
+  durationMs?: number;
 };
 
 interface AIAssistantProps {
@@ -345,16 +357,44 @@ export function AIAssistant({ role }: AIAssistantProps) {
     try {
       const response = await apiRequest<ChatResponse>("/api/ai/chat", {
         method: "POST",
+        timeoutMs: 180000,
         body: {
           message: messageText,
           chatId: currentChatId || undefined,
         },
       });
 
-      if (response.chat) {
+      const savedAssistantReply = response.chat?.messages?.some((entry) => (
+        entry?.role === "assistant" && typeof entry.content === "string" && entry.content.trim().length > 0
+      ));
+      if (response.chat && savedAssistantReply) {
         setChats((prev) => normalizeChatList([response.chat as ChatSession, ...prev.filter((chat) => chat._id !== response.chat?._id)]));
         setCurrentChatId(response.chat._id);
         setChatMessages(response.chat);
+      } else if (String(response.reply || "").trim()) {
+        // Keep the live model answer visible even if the persisted chat
+        // payload is stale or temporarily missing its new messages.
+        setMessages((prev) => prev.map((entry) => entry.id === pendingId
+          ? {
+              ...entry,
+              content: String(response.reply).trim(),
+              pending: false,
+              timestamp: getNowStamp(),
+              meta: {
+                model: response.model,
+                responseMode: response.responseMode,
+                collection: response.collection,
+                count: response.count,
+                records: response.records,
+                telemetry: response.telemetry,
+                durationMs: response.durationMs,
+              },
+            }
+          : entry));
+        if (response.chatId) {
+          setCurrentChatId(response.chatId);
+          await refreshChats(response.chatId);
+        }
       } else {
         setCurrentChatId(response.chatId);
         await refreshChats(response.chatId);
@@ -365,7 +405,7 @@ export function AIAssistant({ role }: AIAssistantProps) {
           entry.id === pendingId
             ? {
                 ...entry,
-                content: err instanceof Error ? `I could not reach the AI service: ${err.message}` : "I could not reach the AI service right now.",
+                content: err instanceof Error ? `I could not complete that request: ${err.message}` : "I could not complete that request right now.",
                 pending: false,
                 timestamp: getNowStamp(),
                 meta: { model: "fallback", responseMode: "fallback" },
@@ -557,6 +597,20 @@ export function AIAssistant({ role }: AIAssistantProps) {
                           : message.meta.responseMode}
                       {typeof message.meta.count === "number" ? ` | ${message.meta.count} result${message.meta.count === 1 ? "" : "s"}` : ""}
                     </p>
+                  )}
+                  {!message.pending && message.role === "assistant" && message.meta?.telemetry && (
+                    <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] text-slate-400">
+                      <span className="rounded-full bg-slate-100 px-2 py-0.5">
+                        Tokens: {message.meta.telemetry.totalTokens ?? ((message.meta.telemetry.promptTokens || 0) + (message.meta.telemetry.completionTokens || 0))}
+                      </span>
+                      {typeof message.meta.durationMs === "number" && message.meta.durationMs > 0 && (
+                        <span className="rounded-full bg-slate-100 px-2 py-0.5">Time: {(message.meta.durationMs / 1000).toFixed(2)}s</span>
+                      )}
+                      {message.meta.telemetry.tokensPerSecond ? (
+                        <span className="rounded-full bg-slate-100 px-2 py-0.5">Speed: {message.meta.telemetry.tokensPerSecond.toFixed(1)} tok/s</span>
+                      ) : null}
+                      {message.meta.telemetry.source && <span className="rounded-full bg-slate-100 px-2 py-0.5">{message.meta.telemetry.source}</span>}
+                    </div>
                   )}
                   {!message.pending && message.role === "assistant" && renderRecordCards(message)}
                   <p className={`mt-2 text-xs ${message.role === "user" ? "text-white/70" : "text-slate-400"}`}>

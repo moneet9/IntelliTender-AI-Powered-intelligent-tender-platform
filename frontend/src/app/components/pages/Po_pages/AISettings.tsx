@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { BrainCircuit, FileText, RefreshCw, Settings2, Sparkles, ShieldAlert, type LucideIcon } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { BrainCircuit, FileText, RefreshCw, Settings2, Sparkles, ShieldAlert, Filter, type LucideIcon } from "lucide-react";
 import { Link } from "react-router";
 import { Sidebar } from "../../layout/Sidebar";
 import { Header } from "../../layout/Header";
@@ -8,6 +8,8 @@ import { apiRequest, getAuthUser } from "../../../api";
 
 type AiStatus = {
   online?: boolean;
+  endpoint?: string;
+  modelCount?: number;
 };
 
 type RebuildResult = {
@@ -22,6 +24,24 @@ type RebuildResult = {
 };
 
 type DocumentScope = "tender" | "bid" | "committee";
+
+type ProcessingDocument = {
+  id: string;
+  sourceKey: string;
+  sourceKind: "tender-document" | "bid-document" | "committee-report";
+  sourceName: string;
+  tenderTitle?: string;
+  jobStatus: "pending" | "running" | "completed" | "failed";
+  chunkStatus: string;
+  embeddingStatus: string;
+  chunkCount: number;
+  savedChunks: number;
+  embeddedChunks: number;
+  pendingEmbeddings: number;
+  attempts: number;
+  lastError?: string;
+  updatedAt?: string;
+};
 
 type ScopeConfig = {
   scope: DocumentScope;
@@ -66,6 +86,10 @@ export function AISettings() {
   const [runningScope, setRunningScope] = useState<DocumentScope | "all" | "">("");
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [documents, setDocuments] = useState<ProcessingDocument[]>([]);
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [loadingDocuments, setLoadingDocuments] = useState(false);
+  const [runningDocumentAction, setRunningDocumentAction] = useState("");
 
   const loadStatus = async () => {
     setLoadingStatus(true);
@@ -82,7 +106,61 @@ export function AISettings() {
 
   useEffect(() => {
     void loadStatus();
+    const timer = window.setInterval(() => void loadStatus(), 10000);
+    return () => window.clearInterval(timer);
   }, []);
+
+  const loadDocuments = async () => {
+    setLoadingDocuments(true);
+    try {
+      const data = await apiRequest<ProcessingDocument[]>("/api/ai/documents/dashboard");
+      setDocuments(Array.isArray(data) ? data : []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load document processing status");
+    } finally {
+      setLoadingDocuments(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadDocuments();
+    const timer = window.setInterval(() => void loadDocuments(), 10000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const restartDocuments = async (stage: "chunk" | "embedding", sourceKey = "") => {
+    const actionKey = `${stage}:${sourceKey || "all"}`;
+    setRunningDocumentAction(actionKey);
+    setError("");
+    setSuccess("");
+    try {
+      const result = await apiRequest<{ restarted?: number }>("/api/ai/documents/restart", {
+        method: "POST",
+        body: { stage, sourceKey },
+      });
+      setSuccess(`${stage === "chunk" ? "Chunking" : "Embedding"} restart queued for ${result.restarted || 0} document${result.restarted === 1 ? "" : "s"}.`);
+      await loadDocuments();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to restart document processing");
+    } finally {
+      setRunningDocumentAction("");
+    }
+  };
+
+  const filteredDocuments = useMemo(() => {
+    if (statusFilter === "all") return documents;
+    return documents.filter((document) => document.chunkStatus === statusFilter || document.embeddingStatus === statusFilter || document.jobStatus === statusFilter);
+  }, [documents, statusFilter]);
+
+  const chunkDocuments = filteredDocuments;
+  const embeddingDocuments = filteredDocuments;
+
+  const statusClass = (status: string) => {
+    if (status === "completed") return "bg-emerald-100 text-emerald-700";
+    if (status === "running") return "bg-blue-100 text-blue-700";
+    if (status === "failed") return "bg-red-100 text-red-700";
+    return "bg-amber-100 text-amber-700";
+  };
 
   const rebuildScope = async (scope: DocumentScope) => {
     setRunningScope(scope);
@@ -133,12 +211,17 @@ export function AISettings() {
               <div className="flex items-center gap-2">
                 <BrainCircuit className={`h-5 w-5 ${aiStatus.online ? "text-emerald-600" : "text-amber-600"}`} />
                 <span className={`text-lg ${aiStatus.online ? "text-emerald-700" : "text-amber-700"}`}>
-                  {aiStatus.online ? "Online" : "Not reachable"}
+                  {loadingStatus ? "Checking…" : aiStatus.online ? "Online" : "Not reachable"}
                 </span>
               </div>
               <p className="mt-2 text-sm text-gray-600">
                 The document prep worker will only run when LM Studio responds on the local API.
               </p>
+              {aiStatus.online && (
+                <p className="mt-1 text-xs text-emerald-700">
+                  {aiStatus.modelCount || 0} model{aiStatus.modelCount === 1 ? "" : "s"} detected. Status refreshes automatically.
+                </p>
+              )}
               <button
                 type="button"
                 onClick={() => void loadStatus()}
@@ -166,6 +249,75 @@ export function AISettings() {
                   <p className="mt-2 text-sm text-gray-600">Milestone reports and committee notes remain a distinct source.</p>
                 </div>
               </div>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-gray-100 bg-white p-5 shadow-sm mb-6">
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+              <div>
+                <h2 className="text-lg text-[#0B3C5D]">Document processing dashboard</h2>
+                <p className="text-sm text-gray-600">Chunking and embedding are tracked separately for every document in your workspace.</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Filter className="h-4 w-4 text-gray-500" />
+                <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className="rounded-md border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
+                  <option value="all">All statuses</option>
+                  <option value="pending">Pending</option>
+                  <option value="running">Running</option>
+                  <option value="completed">Completed</option>
+                  <option value="failed">Failed</option>
+                </select>
+                <button type="button" onClick={() => void loadDocuments()} disabled={loadingDocuments} className="rounded-md border border-gray-200 px-3 py-2 text-sm text-[#0B3C5D] hover:bg-gray-50 disabled:opacity-60">
+                  <RefreshCw className={`h-4 w-4 ${loadingDocuments ? "animate-spin" : ""}`} />
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+              {[
+                { title: "Chunking", subtitle: "OCR/text extraction → MongoDB chunks", stage: "chunk" as const, items: chunkDocuments, field: "chunkStatus" as const },
+                { title: "Embeddings", subtitle: "MongoDB chunks → LM Studio vectors", stage: "embedding" as const, items: embeddingDocuments, field: "embeddingStatus" as const },
+              ].map((panel) => (
+                <div key={panel.title} className="rounded-xl border border-gray-200 bg-slate-50 p-4">
+                  <div className="flex items-start justify-between gap-3 mb-3">
+                    <div>
+                      <h3 className="font-medium text-[#0B3C5D]">{panel.title}</h3>
+                      <p className="text-xs text-gray-500 mt-1">{panel.subtitle}</p>
+                    </div>
+                    <button type="button" onClick={() => void restartDocuments(panel.stage)} disabled={Boolean(runningDocumentAction)} className="rounded-md bg-[#0B3C5D] px-3 py-2 text-xs text-white hover:bg-[#09415f] disabled:opacity-60">
+                      {runningDocumentAction === `${panel.stage}:all` ? "Queued..." : `Restart all ${panel.title.toLowerCase()}`}
+                    </button>
+                  </div>
+                  <div className="space-y-2 max-h-[480px] overflow-auto pr-1">
+                    {panel.items.length === 0 && <p className="rounded-md border border-dashed border-gray-300 bg-white p-4 text-sm text-gray-500">{loadingDocuments ? "Loading documents..." : "No documents found."}</p>}
+                    {panel.items.map((document) => {
+                      const status = document[panel.field];
+                      const actionKey = `${panel.stage}:${document.sourceKey}`;
+                      return (
+                        <div key={`${panel.title}-${document.sourceKey}`} className="rounded-lg border border-gray-200 bg-white p-3">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-medium text-[#0B3C5D]" title={document.sourceName}>{document.sourceName}</p>
+                              <p className="truncate text-[11px] text-gray-500" title={document.tenderTitle}>{document.tenderTitle || document.sourceKind}</p>
+                            </div>
+                            <span className={`shrink-0 rounded-full px-2 py-1 text-[11px] ${statusClass(status)}`}>{status}</span>
+                          </div>
+                          <div className="mt-2 flex flex-wrap gap-3 text-xs text-gray-600">
+                            <span>Chunks: {document.savedChunks}/{document.chunkCount || "-"}</span>
+                            <span>Vectors: {document.embeddedChunks}/{document.savedChunks || "-"}</span>
+                            {document.pendingEmbeddings > 0 && <span className="text-amber-700">{document.pendingEmbeddings} pending</span>}
+                          </div>
+                          {document.lastError && <p className="mt-2 text-xs text-red-600">{document.lastError}</p>}
+                          <button type="button" onClick={() => void restartDocuments(panel.stage, document.sourceKey)} disabled={Boolean(runningDocumentAction)} className="mt-2 inline-flex items-center gap-1 rounded-md border border-gray-200 px-2.5 py-1.5 text-xs text-[#0B3C5D] hover:bg-gray-50 disabled:opacity-60">
+                            <RefreshCw className={`h-3.5 w-3.5 ${runningDocumentAction === actionKey ? "animate-spin" : ""}`} />
+                            {runningDocumentAction === actionKey ? "Queued..." : `Restart ${panel.title.toLowerCase()}`}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
 

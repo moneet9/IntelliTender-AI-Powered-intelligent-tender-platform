@@ -1,11 +1,16 @@
 import crypto from 'crypto';
 import { DocumentChunk, DocumentEmbeddingJob, Tender, BidDocument, MilestoneAsset, Contract } from '../../models/model.js';
-import { callLocalEmbedding, LOCAL_AI_EMBED_MODEL, LOCAL_AI_BASE_URL } from '../localModelClient.js';
+import { callLocalEmbedding, checkLocalAiConnection, LOCAL_AI_EMBED_MODEL } from '../localModelClient.js';
 import { decodeStoredDocument, extractTextFromContent } from './documentTextExtractor.js';
+import { recordResearchMetric } from '../../utils/researchMetrics.js';
 
-const MAX_TEXT_CHARS = 50000;
-const DEFAULT_CHUNK_SIZE = Number(process.env.DOCUMENT_EMBED_CHUNK_SIZE || 1200);
-const DEFAULT_CHUNK_OVERLAP = Number(process.env.DOCUMENT_EMBED_CHUNK_OVERLAP || 180);
+// Bump when extraction semantics change so legacy binary-as-text chunks are
+// automatically rebuilt by the durable document seeder.
+const DOCUMENT_PIPELINE_VERSION = 'ocr-image-v3';
+const MAX_TEXT_CHARS = Number(process.env.DOCUMENT_MAX_TEXT_CHARS || 2000000);
+// Fewer, larger chunks reduce the number of slow LM Studio embedding calls.
+const DEFAULT_CHUNK_SIZE = Number(process.env.DOCUMENT_EMBED_CHUNK_SIZE || 2000);
+const DEFAULT_CHUNK_OVERLAP = Number(process.env.DOCUMENT_EMBED_CHUNK_OVERLAP || 200);
 const DEFAULT_BATCH_SIZE = Number(process.env.DOCUMENT_EMBED_BATCH_SIZE || 20);
 const STALE_RUNNING_JOB_MS = Number(process.env.DOCUMENT_EMBED_STALE_RUNNING_JOB_MS || 15 * 60 * 1000);
 const LOCAL_AI_HEALTH_CACHE_TTL_MS = Number(process.env.LOCAL_AI_HEALTH_CACHE_TTL_MS || 5 * 60 * 1000);
@@ -210,7 +215,9 @@ const buildJobShape = (payload) => {
         sourceName: payload.sourceName || 'Document',
         mimeType: payload.mimeType || undefined,
         rawContent,
-        contentHash: sha1(rawContent),
+        // Bump this when extraction changes so old partial jobs are rebuilt
+        // once instead of being incorrectly treated as complete.
+        contentHash: sha1(`${DOCUMENT_PIPELINE_VERSION}:${rawContent}`),
         sourceMeta: payload.sourceMeta || {},
         status: 'pending',
         attempts: 0,
@@ -225,20 +232,14 @@ const buildJobShape = (payload) => {
 
 export async function isLocalAiOnline() {
     const now = Date.now();
-    if (localAiHealthCache.online && now - localAiHealthCache.checkedAt < LOCAL_AI_HEALTH_CACHE_TTL_MS) {
-        return true;
+    if (now - localAiHealthCache.checkedAt < LOCAL_AI_HEALTH_CACHE_TTL_MS) {
+        return localAiHealthCache.online;
     }
 
     try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 3000);
-        const response = await fetch(`${LOCAL_AI_BASE_URL}/models`, {
-            method: 'GET',
-            signal: controller.signal,
-        });
-        clearTimeout(timeout);
-        localAiHealthCache = { checkedAt: now, online: response.ok };
-        return response.ok;
+        const result = await checkLocalAiConnection({ timeoutMs: 5000 });
+        localAiHealthCache = { checkedAt: now, online: result.online };
+        return result.online;
     } catch {
         localAiHealthCache = { checkedAt: now, online: false };
         return false;
@@ -251,8 +252,20 @@ export async function queueDocumentEmbeddingJob(payload, { replaceExisting = fal
         return null;
     }
 
+    const existing = await DocumentEmbeddingJob.findOne({ sourceKey: job.sourceKey })
+        .select('_id contentHash status chunkCount embeddingModel')
+        .lean();
+
+    // The periodic seeder sees the same source documents every cycle. Do not
+    // reset a completed job or re-embed unchanged text.
+    if (existing && existing.contentHash === job.contentHash && !replaceExisting) {
+        return existing;
+    }
+
     if (replaceExisting) {
-        await DocumentChunk.deleteMany({ sourceKey: job.sourceKey });
+        if (!existing || existing.contentHash !== job.contentHash) {
+            await DocumentChunk.deleteMany({ sourceKey: job.sourceKey });
+        }
     }
 
     const saved = await DocumentEmbeddingJob.findOneAndUpdate(
@@ -420,34 +433,31 @@ async function removeExistingChunks(sourceKey) {
     await DocumentChunk.deleteMany({ sourceKey });
 }
 
-async function saveChunksForJob(job, chunks) {
+async function saveChunksForJob(job, chunks, extractedText = '') {
     if (!chunks.length) return 0;
 
-    const embeddingModel = LOCAL_AI_EMBED_MODEL;
-    const sourceText = normalizeText(job.rawContent);
+    const sourceText = normalizeText(extractedText || job.rawContent);
     const contentHash = sha1(sourceText);
     const sourceKey = job.sourceKey;
-    const existingChunks = await DocumentChunk.find({ sourceKey }).select('chunkIndex contentHash').lean();
-    const existingChunkIndexes = new Set(existingChunks.map((chunk) => Number(chunk.chunkIndex)));
+    const existingChunks = await DocumentChunk.find({ sourceKey })
+        .select('chunkIndex contentHash chunkHash embedding embeddingModel')
+        .lean();
     const existingContentHash = existingChunks.find((chunk) => chunk.contentHash)?.contentHash || null;
 
     if (existingChunks.length > 0 && existingContentHash !== contentHash) {
         await removeExistingChunks(sourceKey);
-        existingChunkIndexes.clear();
     }
 
-    let completedChunkCount = existingChunkIndexes.size;
-
+    const existingByIndex = new Map(existingChunks.map((chunk) => [Number(chunk.chunkIndex), chunk]));
+    // Phase 1 only: persist every extracted chunk. LM Studio is deliberately
+    // not called here, so OCR/chunking completes even when it is offline.
     for (let index = 0; index < chunks.length; index += 1) {
-        if (existingChunkIndexes.has(index)) {
-            continue;
-        }
-
         const chunkText = chunks[index];
-        const embedding = await callLocalEmbedding({
-            input: embeddingInputForModel(embeddingModel, chunkText, 'document'),
-            model: embeddingModel,
-        });
+        const existing = existingByIndex.get(index);
+        const chunkHash = sha1(`${sourceKey}:${index}:${chunkText}`);
+        const sameChunk = existing?.contentHash === contentHash && existing?.chunkHash === chunkHash;
+        const hasEmbedding = sameChunk && Array.isArray(existing?.embedding) && existing.embedding.length > 0;
+        if (existing && sameChunk && hasEmbedding) continue;
 
         await DocumentChunk.findOneAndUpdate(
             { sourceKey, chunkIndex: index },
@@ -464,33 +474,35 @@ async function saveChunksForJob(job, chunks) {
                 sourceIndex: job.sourceIndex || 0,
                 chunkIndex: index,
                 chunkText,
-                chunkHash: sha1(`${sourceKey}:${index}:${chunkText}`),
+                chunkHash,
                 contentHash,
                 mimeType: job.mimeType || undefined,
                 ocrUsed: Boolean(job.sourceMeta?.ocrUsed),
                 tokenCount: chunkText.split(/\s+/).filter(Boolean).length,
-                embedding,
-                embeddingModel,
+                // Keep an existing vector while refreshing metadata; new chunks
+                // are valid text records before their vector is generated.
+                embedding: hasEmbedding ? existing.embedding : [],
+                embeddingModel: hasEmbedding ? existing.embeddingModel : 'pending',
                 sourceName: job.sourceName || 'Document',
                 sourceMeta: job.sourceMeta || {},
             },
             { upsert: true, new: true, setDefaultsOnInsert: true }
         );
-
-        completedChunkCount += 1;
-        await DocumentEmbeddingJob.findByIdAndUpdate(job._id, {
-            $set: {
-                status: 'running',
-                chunkCount: completedChunkCount,
-                embeddingModel,
-                lastError: '',
-                startedAt: job.startedAt || new Date(),
-                processedAt: null,
-            },
-        });
     }
 
-    return completedChunkCount;
+    // Remove stale tail chunks when chunk size/overlap changes or a document
+    // becomes shorter after re-OCR.
+    await DocumentChunk.deleteMany({ sourceKey, chunkIndex: { $gte: chunks.length } });
+
+    await DocumentEmbeddingJob.findByIdAndUpdate(job._id, {
+        $set: {
+            status: 'running',
+            chunkCount: chunks.length,
+            lastError: '',
+        },
+    });
+
+    return chunks.length;
 }
 
 async function processJob(job) {
@@ -499,6 +511,9 @@ async function processJob(job) {
     const chunks = splitTextIntoChunks(text);
 
     if (!chunks.length) {
+        if (String(job.mimeType || '').toLowerCase().startsWith('image/')) {
+            throw new Error('OCR produced no readable text for image document');
+        }
         await DocumentEmbeddingJob.findByIdAndUpdate(job._id, {
             $set: {
                 status: 'completed',
@@ -512,20 +527,8 @@ async function processJob(job) {
         return { chunkCount: 0 };
     }
 
-    const chunkCount = await saveChunksForJob(job, chunks);
-
-    await DocumentEmbeddingJob.findByIdAndUpdate(job._id, {
-        $set: {
-            status: 'completed',
-            chunkCount,
-            embeddingModel: LOCAL_AI_EMBED_MODEL,
-            processedAt: new Date(),
-            lastError: '',
-        },
-        $inc: { attempts: 1 },
-    });
-
-    return { chunkCount };
+    const chunkCount = await saveChunksForJob(job, chunks, text);
+    return { chunkCount, stage: 'chunked' };
 }
 
 export async function seedDocumentEmbeddingJobs({ scope = 'all' } = {}) {
@@ -635,29 +638,26 @@ export async function seedDocumentEmbeddingJobs({ scope = 'all' } = {}) {
     }
 }
 
-export async function processPendingDocumentEmbeddingJobs({ batchSize = DEFAULT_BATCH_SIZE, sourceKinds = null } = {}) {
+async function processPendingDocumentChunkingJobs({ batchSize = DEFAULT_BATCH_SIZE, sourceKinds = null } = {}) {
+    const startedAt = Date.now();
     const staleRunningBefore = new Date(Date.now() - STALE_RUNNING_JOB_MS);
     const normalizedKinds = Array.isArray(sourceKinds)
         ? sourceKinds.filter(Boolean).map((kind) => String(kind))
         : null;
 
     const pendingFilter = {
-        attempts: { $lt: 5 },
+        // Pending jobs are always eligible. Older versions could leave a job
+        // pending after consuming attempts, which made it appear stuck forever.
         $or: [
-            { status: { $in: ['pending', 'failed'] } },
+            { status: 'pending' },
+            { status: 'failed', attempts: { $lt: 5 } },
             { status: 'running', updatedAt: { $lte: staleRunningBefore } },
         ],
         ...(normalizedKinds?.length ? { sourceKind: { $in: normalizedKinds } } : {}),
     };
 
     const pendingCount = await DocumentEmbeddingJob.countDocuments(pendingFilter);
-    if (!pendingCount) {
-        return { online: true, processed: 0, completed: 0, failed: 0 };
-    }
-
-    if (!(await isLocalAiOnline())) {
-        return { online: false, processed: 0, completed: 0, failed: 0 };
-    }
+    if (!pendingCount) return { processed: 0, completed: 0, failed: 0, chunksCreated: 0 };
 
     const jobs = await DocumentEmbeddingJob.find(pendingFilter)
         .sort({ queuedAt: 1, updatedAt: 1 })
@@ -667,6 +667,7 @@ export async function processPendingDocumentEmbeddingJobs({ batchSize = DEFAULT_
     let processed = 0;
     let completed = 0;
     let failed = 0;
+    let chunksCreated = 0;
 
     for (const job of jobs) {
         processed += 1;
@@ -683,9 +684,7 @@ export async function processPendingDocumentEmbeddingJobs({ batchSize = DEFAULT_
         try {
             const result = await processJob(job);
             completed += 1;
-            if (result?.chunkCount) {
-                completed += 0;
-            }
+            chunksCreated += Number(result?.chunkCount || 0);
         } catch (error) {
             failed += 1;
             await DocumentEmbeddingJob.findByIdAndUpdate(job._id, {
@@ -698,7 +697,110 @@ export async function processPendingDocumentEmbeddingJobs({ batchSize = DEFAULT_
         }
     }
 
-    return { online: true, processed, completed, failed };
+    void recordResearchMetric({
+        eventType: 'document-chunking-batch',
+        durationMs: Date.now() - startedAt,
+        status: failed ? (completed ? 'warning' : 'failed') : 'success',
+        metricName: 'document_chunking_batch',
+        value: chunksCreated,
+        note: 'Document OCR and chunk persistence batch completed',
+        metadata: {
+            documentsProcessed: processed,
+            documentsChunked: completed,
+            documentsFailed: failed,
+            chunksCreated,
+            stage: 'ocr-and-chunking',
+            sourceKinds: normalizedKinds || ['all'],
+        },
+    });
+
+    return { processed, completed, failed, chunksCreated };
+}
+
+async function processPendingChunkEmbeddings({ batchSize = DEFAULT_BATCH_SIZE, sourceKinds = null } = {}) {
+    const startedAt = Date.now();
+    const filter = {
+        embeddingModel: 'pending',
+        ...(Array.isArray(sourceKinds) && sourceKinds.length ? { sourceKind: { $in: sourceKinds } } : {}),
+    };
+
+    const pendingChunks = await DocumentChunk.find(filter)
+        .sort({ createdAt: 1, sourceKey: 1, chunkIndex: 1 })
+        .limit(Math.max(batchSize, 1))
+        .lean();
+
+    if (!pendingChunks.length) return { online: true, processed: 0, completed: 0, failed: 0 };
+    if (!(await isLocalAiOnline())) return { online: false, processed: 0, completed: 0, failed: 0 };
+
+    let completed = 0;
+    let failed = 0;
+    for (const chunk of pendingChunks) {
+        try {
+            const embedding = await callLocalEmbedding({
+                input: embeddingInputForModel(LOCAL_AI_EMBED_MODEL, chunk.chunkText, 'document'),
+                model: LOCAL_AI_EMBED_MODEL,
+            });
+            if (!embedding.length) throw new Error('Embedding model returned an empty vector');
+
+            await DocumentChunk.updateOne(
+                { _id: chunk._id, embeddingModel: 'pending' },
+                { $set: { embedding, embeddingModel: LOCAL_AI_EMBED_MODEL } },
+            );
+
+            const remaining = await DocumentChunk.countDocuments({ sourceKey: chunk.sourceKey, embeddingModel: 'pending' });
+            await DocumentEmbeddingJob.findOneAndUpdate(
+                { sourceKey: chunk.sourceKey },
+                {
+                    $set: {
+                        status: remaining ? 'running' : 'completed',
+                        chunkCount: await DocumentChunk.countDocuments({ sourceKey: chunk.sourceKey }),
+                        embeddingModel: LOCAL_AI_EMBED_MODEL,
+                        processedAt: remaining ? null : new Date(),
+                        lastError: '',
+                    },
+                },
+            );
+            completed += 1;
+        } catch (error) {
+            failed += 1;
+            await DocumentEmbeddingJob.findOneAndUpdate(
+                { sourceKey: chunk.sourceKey },
+                { $set: { status: 'failed', lastError: error instanceof Error ? error.message : 'Embedding failed' } },
+            );
+        }
+    }
+
+    void recordResearchMetric({
+        eventType: 'document-embedding-batch',
+        durationMs: Date.now() - startedAt,
+        status: failed ? (completed ? 'warning' : 'failed') : 'success',
+        metricName: 'document_embedding_batch',
+        value: completed,
+        note: 'Document chunk embedding batch completed',
+        metadata: {
+            chunksProcessed: pendingChunks.length,
+            chunksEmbedded: completed,
+            chunksFailed: failed,
+            model: LOCAL_AI_EMBED_MODEL,
+            stage: 'embedding',
+            sourceKinds: Array.isArray(sourceKinds) && sourceKinds.length ? sourceKinds : ['all'],
+        },
+    });
+
+    return { online: true, processed: pendingChunks.length, completed, failed };
+}
+
+export async function processPendingDocumentEmbeddingJobs({ batchSize = DEFAULT_BATCH_SIZE, sourceKinds = null } = {}) {
+    // Complete the entire OCR/chunk persistence stage before making any
+    // embedding request. This makes MongoDB the durable hand-off point.
+    const chunking = await processPendingDocumentChunkingJobs({ batchSize, sourceKinds });
+    const embedding = await processPendingChunkEmbeddings({ batchSize, sourceKinds });
+    return {
+        online: embedding.online,
+        processed: chunking.processed + embedding.processed,
+        completed: chunking.completed + embedding.completed,
+        failed: chunking.failed + embedding.failed,
+    };
 }
 
 export async function getTenderDocumentEmbeddingProgress({ createdBy = null, tenderIds = [] } = {}) {
@@ -803,6 +905,106 @@ export async function getTenderDocumentEmbeddingProgress({ createdBy = null, ten
     });
 }
 
+export async function getDocumentProcessingDashboard({ createdBy = null } = {}) {
+    const tenders = await Tender.find(createdBy ? { createdBy } : {})
+        .select('_id title')
+        .lean();
+    const tenderIds = tenders.map((tender) => tender._id);
+    const jobFilter = tenderIds.length
+        ? { tenderId: { $in: tenderIds } }
+        : { tenderId: { $exists: false } };
+    const jobs = await DocumentEmbeddingJob.find(jobFilter)
+        .select('_id tenderId sourceKey sourceKind sourceName mimeType status chunkCount attempts lastError queuedAt updatedAt processedAt')
+        .sort({ sourceKind: 1, sourceName: 1, queuedAt: 1 })
+        .lean();
+    const sourceKeys = jobs.map((job) => job.sourceKey).filter(Boolean);
+    const chunks = sourceKeys.length
+        ? await DocumentChunk.find({ sourceKey: { $in: sourceKeys } })
+            .select('sourceKey chunkIndex embeddingModel')
+            .lean()
+        : [];
+
+    const statsBySource = new Map();
+    for (const chunk of chunks) {
+        const key = String(chunk.sourceKey);
+        const stats = statsBySource.get(key) || { total: 0, embedded: 0, pending: 0 };
+        stats.total += 1;
+        if (chunk.embeddingModel && chunk.embeddingModel !== 'pending') stats.embedded += 1;
+        else stats.pending += 1;
+        statsBySource.set(key, stats);
+    }
+
+    return jobs.map((job) => {
+        const stats = statsBySource.get(String(job.sourceKey)) || { total: 0, embedded: 0, pending: 0 };
+        const chunkStatus = stats.total > 0 ? 'completed' : job.status === 'failed' ? 'failed' : job.status === 'running' ? 'running' : 'pending';
+        const embeddingStatus = stats.total === 0
+            ? 'pending'
+            : stats.pending > 0
+                ? (stats.embedded > 0 ? 'running' : 'pending')
+                : 'completed';
+        return {
+            id: String(job._id),
+            tenderId: job.tenderId ? String(job.tenderId) : null,
+            tenderTitle: tenders.find((tender) => String(tender._id) === String(job.tenderId))?.title || 'System document',
+            sourceKey: job.sourceKey,
+            sourceKind: job.sourceKind,
+            sourceName: job.sourceName,
+            mimeType: job.mimeType || null,
+            jobStatus: job.status,
+            chunkStatus,
+            embeddingStatus,
+            chunkCount: Number(job.chunkCount || stats.total || 0),
+            savedChunks: stats.total,
+            embeddedChunks: stats.embedded,
+            pendingEmbeddings: stats.pending,
+            attempts: Number(job.attempts || 0),
+            lastError: job.lastError || '',
+            updatedAt: job.updatedAt || job.queuedAt || null,
+            processedAt: job.processedAt || null,
+        };
+    });
+}
+
+export async function restartDocumentEmbeddingJobs({ createdBy = null, sourceKey = '', scope = 'all', stage = 'all' } = {}) {
+    const tenders = await Tender.find(createdBy ? { createdBy } : {}).select('_id').lean();
+    const tenderIds = tenders.map((tender) => tender._id);
+    const filter = sourceKey
+        ? { sourceKey, tenderId: { $in: tenderIds } }
+        : {
+            tenderId: { $in: tenderIds },
+            ...(kindForScope(scope) ? { sourceKind: kindForScope(scope) } : {}),
+        };
+    const jobs = await DocumentEmbeddingJob.find(filter).select('sourceKey').lean();
+    const keys = jobs.map((job) => job.sourceKey).filter(Boolean);
+    if (!keys.length) return { restarted: 0 };
+
+    const normalizedStage = ['chunk', 'embedding'].includes(stage) ? stage : 'all';
+    if (normalizedStage === 'chunk' || normalizedStage === 'all') {
+        await DocumentChunk.deleteMany({ sourceKey: { $in: keys } });
+    } else {
+        await DocumentChunk.updateMany(
+            { sourceKey: { $in: keys } },
+            { $set: { embedding: [], embeddingModel: 'pending' } },
+        );
+    }
+    const result = await DocumentEmbeddingJob.updateMany(
+        { sourceKey: { $in: keys } },
+        {
+            $set: {
+                status: normalizedStage === 'embedding' ? 'running' : 'pending',
+                attempts: 0,
+                chunkCount: normalizedStage === 'embedding' ? undefined : 0,
+                embeddingModel: '',
+                lastError: '',
+                startedAt: null,
+                processedAt: null,
+                queuedAt: new Date(),
+            },
+        },
+    );
+    return { restarted: Number(result.modifiedCount || 0) };
+}
+
 export async function rebuildAllDocumentEmbeddings() {
     await seedDocumentEmbeddingJobs();
     return processPendingDocumentEmbeddingJobs({ batchSize: DEFAULT_BATCH_SIZE * 2 });
@@ -902,10 +1104,37 @@ export async function searchDocumentChunks({
 
     if (!chunks.length) return [];
 
-    const queryEmbedding = await callLocalEmbedding({
-        input: embeddingInputForModel(LOCAL_AI_EMBED_MODEL, queryText, 'query'),
-        model: LOCAL_AI_EMBED_MODEL,
-    });
+    let queryEmbedding = [];
+    try {
+        queryEmbedding = await callLocalEmbedding({
+            input: embeddingInputForModel(LOCAL_AI_EMBED_MODEL, queryText, 'query'),
+            model: LOCAL_AI_EMBED_MODEL,
+        });
+    } catch (error) {
+        console.warn('Search embedding unavailable; using lexical search:', error.message || error);
+    }
+
+    // Missing vectors are repaired opportunistically. Search remains usable
+    // immediately through lexical scoring and the next search gets vectors.
+    const missingChunks = chunks.filter((chunk) => !Array.isArray(chunk.embedding) || !chunk.embedding.length).slice(0, 8);
+    if (missingChunks.length) {
+        void Promise.all(missingChunks.map(async (chunk) => {
+            try {
+                const embedding = await callLocalEmbedding({
+                    input: embeddingInputForModel(LOCAL_AI_EMBED_MODEL, chunk.chunkText, 'document'),
+                    model: LOCAL_AI_EMBED_MODEL,
+                });
+                if (embedding.length) {
+                    await DocumentChunk.updateOne(
+                        { _id: chunk._id },
+                        { $set: { embedding, embeddingModel: LOCAL_AI_EMBED_MODEL } },
+                    );
+                }
+            } catch (error) {
+                console.warn(`Chunk embedding repair skipped for ${chunk.sourceKey}:${chunk.chunkIndex}:`, error.message || error);
+            }
+        }));
+    }
 
     const queryTokens = normalizeText(queryText).toLowerCase().match(/[a-z0-9]+/g) || [];
     const querySet = new Set(queryTokens);

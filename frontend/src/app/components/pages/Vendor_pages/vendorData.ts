@@ -51,6 +51,7 @@ export function useVendorData(vendorId?: string) {
         (tender.bids || [])
           .filter((bid) => resolveBidVendorId(bid.vendorId) === vendorId)
           .map((bid) => ({
+            bidId: bid._id,
             tenderId: tender._id,
             title: tender.title,
             category: tender.category || "General",

@@ -25,33 +25,46 @@ const average = (values) => {
 
 const round = (value, fractionDigits = 2) => Number(Number(value || 0).toFixed(fractionDigits));
 
-const getCommitteeConsistency = (tenders) => {
-  const deviations = [];
+const getAiCommitteeConsistency = (tenders, aiSummaries) => {
+  const comparisons = [];
+  const summariesByBid = new Map(aiSummaries.map((summary) => [String(summary.bidId), summary]));
 
   tenders.forEach((tender) => {
     (tender.bids || []).forEach((bid) => {
+      const ai = summariesByBid.get(String(bid._id));
       const evaluations = Array.isArray(bid.committeeEvaluations) ? bid.committeeEvaluations : [];
-      if (evaluations.length < 2) return;
+      if (!ai?.aiScores || !evaluations.length) return;
 
-      const technicalScores = evaluations.map((item) => Number(item.technicalScore || 0));
-      const financialScores = evaluations.map((item) => Number(item.financialScore || 0));
-      const technicalAverage = average(technicalScores);
-      const financialAverage = average(financialScores);
+      const maxTechnical = (tender.qcbsConfig?.technicalCriteria || [])
+        .reduce((sum, criterion) => sum + Number(criterion.maxMarks || 0), 0);
+      const committeeTechnical = average(evaluations.map((item) => Number(item.technicalScore || 0)));
+      const aiTechnical = Math.min(100, Math.max(0, Number(ai.aiScores.technicalScore || 0)));
+      const committeeTechnicalNormalized = maxTechnical > 0
+        ? Math.min(100, Math.max(0, (committeeTechnical / maxTechnical) * 100))
+        : Math.min(100, Math.max(0, committeeTechnical));
+      const technicalDifference = Math.abs(aiTechnical - committeeTechnicalNormalized);
 
-      const deviation = average([
-        ...technicalScores.map((score) => Math.abs(score - technicalAverage)),
-        ...financialScores.map((score) => Math.abs(score - financialAverage)),
-      ]);
-
-      deviations.push(Math.max(0, 100 - deviation * 2));
+      // Financial scores for QCBS are already normalized to a 0–100 scale.
+      // For L1, financialScore is a price, so compare technical scores only.
+      if (tender.evaluationMethod === 'L1') {
+        comparisons.push(Math.max(0, 100 - technicalDifference));
+        return;
+      }
+      const committeeFinancial = average(evaluations.map((item) => Number(item.financialScore || 0)));
+      const aiFinancial = Math.min(100, Math.max(0, Number(ai.aiScores.financialScore || 0)));
+      const committeeFinancialNormalized = Math.min(100, Math.max(0, committeeFinancial));
+      const financialDifference = Math.abs(aiFinancial - committeeFinancialNormalized);
+      comparisons.push(Math.max(0, 100 - ((technicalDifference + financialDifference) / 2)));
     });
   });
 
-  return round(average(deviations));
+  return comparisons.length ? round(average(comparisons)) : null;
 };
 
 const buildResearchLogs = async ({ tenderIds = [], contractIds = [], actorId = null, actorRole = null, limit = 10 }) => {
-  const query = {};
+  // Keep the research feed outcome-focused. Low-level local model calls are
+  // summarized separately and should not drown out tender/bid/milestone work.
+  const query = { eventType: { $nin: ['local-ai-inference'] } };
   const scopeClauses = [];
   if (tenderIds.length) {
     scopeClauses.push({ tenderId: { $in: tenderIds } });
@@ -101,32 +114,10 @@ const buildResearchSummary = async ({ tenderFilter, actorId, actorRole, limit = 
     ...(actorId ? { actorId } : {}),
     status: 'success',
   }).lean();
-  const qwenEvents = await ResearchMetricEvent.find({
-    eventType: 'local-ai-inference',
-    metricName: 'chat-completion',
-    status: 'success',
-    'metadata.model': /qwen/i,
-    ...(tenderIds.length ? { tenderId: { $in: tenderIds } } : {}),
-  }).lean();
-
   const aiEvaluationAvgMs = round(average(aiEvaluationEvents.map((event) => Number(event.durationMs || 0))));
   const committeeEvaluationAvgMs = round(average(committeeEvaluationEvents.map((event) => Number(event.durationMs || 0))));
   const chatQueryAvgMs = round(average(chatEvents.map((event) => Number(event.durationMs || 0))));
   const bidsProcessedPerHour = aiEvaluationAvgMs > 0 ? round(3600000 / aiEvaluationAvgMs) : 0;
-  const qwenTokens = qwenEvents.map((event) => Number(event.metadata?.totalTokens || 0)).filter((value) => value > 0);
-  const qwenEnergy = qwenEvents.map((event) => Number(event.metadata?.estimatedEnergyJoules)).filter(Number.isFinite);
-  const qwenPower = qwenEvents.map((event) => Number(event.metadata?.averageGpuPowerWatts)).filter(Number.isFinite);
-  const qwenResearch = {
-    sampleCount: qwenEvents.length,
-    averageResponseMs: round(average(qwenEvents.map((event) => Number(event.durationMs || 0)))),
-    averageTokens: round(average(qwenTokens)),
-    tokensPerSecond: round(average(qwenEvents.map((event) => Number(event.metadata?.tokensPerSecond)).filter(Number.isFinite))),
-    averageGpuPowerWatts: qwenPower.length ? round(average(qwenPower)) : null,
-    estimatedEnergyJoules: qwenEnergy.length ? round(average(qwenEnergy)) : null,
-    energyPer1000Tokens: qwenEnergy.length && qwenTokens.length
-      ? round((qwenEnergy.reduce((sum, value) => sum + value, 0) / qwenTokens.reduce((sum, value) => sum + value, 0)) * 1000)
-      : null,
-  };
 
   const aiRiskCount = aiSummaries.reduce((sum, summary) => (
     sum
@@ -139,6 +130,7 @@ const buildResearchSummary = async ({ tenderFilter, actorId, actorRole, limit = 
     + (await ResearchMetricEvent.countDocuments({
       tenderId: { $in: tenderIds },
       status: 'failed',
+      eventType: { $nin: ['local-ai-inference'] },
     }));
 
   return {
@@ -153,11 +145,10 @@ const buildResearchSummary = async ({ tenderFilter, actorId, actorRole, limit = 
       committeeEvaluationAvgMs,
       chatQueryAvgMs,
       bidsProcessedPerHour,
-      scoreConsistency: getCommitteeConsistency(tenders),
+      aiCommitteeConsistency: getAiCommitteeConsistency(tenders, aiSummaries),
       errorCount,
       riskyItemsDetected: aiRiskCount + milestoneRiskCount,
     },
-    qwenResearch,
     logs,
   };
 };
@@ -487,5 +478,17 @@ export const getCpoResearchAnalytics = async (_req, res) => {
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
+  }
+};
+
+export const purgeLegacyInferenceMetrics = async (_req, res) => {
+  try {
+    const result = await ResearchMetricEvent.deleteMany({ eventType: 'local-ai-inference' });
+    return res.json({
+      removed: Number(result.deletedCount || 0),
+      message: 'Legacy per-inference token and embedding metrics removed. Bid-level metrics are retained.',
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message || 'Failed to remove legacy inference metrics' });
   }
 };

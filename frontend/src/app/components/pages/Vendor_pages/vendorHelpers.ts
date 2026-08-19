@@ -71,6 +71,7 @@ export type ContractRecord = {
 };
 
 export type BidView = {
+  bidId: string;
   tenderId: string;
   title: string;
   category: string;

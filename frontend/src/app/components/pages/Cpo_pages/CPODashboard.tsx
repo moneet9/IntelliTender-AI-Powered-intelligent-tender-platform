@@ -12,8 +12,17 @@ import {
   Clock3,
   Sparkles,
   ShieldAlert,
-  Zap,
 } from "lucide-react";
+
+const formatDuration = (milliseconds?: number) => {
+  const value = Number(milliseconds || 0);
+  if (!Number.isFinite(value) || value <= 0) return "-";
+  const seconds = value / 1000;
+  if (seconds < 60) return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)} s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = Math.round(seconds % 60);
+  return `${minutes}m ${remainingSeconds}s`;
+};
 import {
   BarChart,
   Bar,
@@ -74,18 +83,9 @@ export function CPODashboard() {
       committeeEvaluationAvgMs: number;
       chatQueryAvgMs: number;
       bidsProcessedPerHour: number;
-      scoreConsistency: number;
+      aiCommitteeConsistency?: number | null;
       errorCount: number;
       riskyItemsDetected: number;
-    };
-    qwenResearch?: {
-      sampleCount: number;
-      averageResponseMs: number;
-      averageTokens: number;
-      tokensPerSecond: number;
-      averageGpuPowerWatts: number | null;
-      estimatedEnergyJoules: number | null;
-      energyPer1000Tokens: number | null;
     };
     logs?: ResearchLog[];
   }>({});
@@ -179,14 +179,12 @@ export function CPODashboard() {
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {[
-                { label: "AI Bid Time", value: researchMetrics.metrics?.aiEvaluationAvgMs ? `${researchMetrics.metrics.aiEvaluationAvgMs} ms` : "-", icon: Sparkles, color: "bg-[#1D4E89]" },
-                { label: "Committee Time", value: researchMetrics.metrics?.committeeEvaluationAvgMs ? `${researchMetrics.metrics.committeeEvaluationAvgMs} ms` : "-", icon: Clock3, color: "bg-[#2E8B57]" },
-                { label: "Chat Time", value: researchMetrics.metrics?.chatQueryAvgMs ? `${researchMetrics.metrics.chatQueryAvgMs} ms` : "-", icon: FileText, color: "bg-[#F4A300]" },
+                { label: "AI Bid Time", value: formatDuration(researchMetrics.metrics?.aiEvaluationAvgMs), icon: Sparkles, color: "bg-[#1D4E89]" },
+                { label: "Committee Time", value: formatDuration(researchMetrics.metrics?.committeeEvaluationAvgMs), icon: Clock3, color: "bg-[#2E8B57]" },
+                { label: "Chat Time", value: formatDuration(researchMetrics.metrics?.chatQueryAvgMs), icon: FileText, color: "bg-[#F4A300]" },
                 { label: "Bids / Hour", value: researchMetrics.metrics?.bidsProcessedPerHour ? String(researchMetrics.metrics.bidsProcessedPerHour) : "-", icon: Award, color: "bg-[#0B3C5D]" },
-                { label: "Score Consistency", value: researchMetrics.metrics?.scoreConsistency ? `${researchMetrics.metrics.scoreConsistency}%` : "-", icon: ClipboardCheck, color: "bg-[#2E8B57]" },
+                { label: "AI vs Committee", value: researchMetrics.metrics?.aiCommitteeConsistency != null ? `${researchMetrics.metrics.aiCommitteeConsistency}%` : "-", icon: ClipboardCheck, color: "bg-[#2E8B57]" },
                 { label: "Risk Flags", value: researchMetrics.metrics?.riskyItemsDetected ? String(researchMetrics.metrics.riskyItemsDetected) : "-", icon: ShieldAlert, color: "bg-[#B22222]" },
-                { label: "Qwen Energy / 1k Tokens", value: researchMetrics.qwenResearch?.energyPer1000Tokens !== null && researchMetrics.qwenResearch?.energyPer1000Tokens !== undefined ? `${researchMetrics.qwenResearch.energyPer1000Tokens} J` : "-", icon: Zap, color: "bg-[#8B5CF6]" },
-                { label: "Qwen GPU Power", value: researchMetrics.qwenResearch?.averageGpuPowerWatts !== null && researchMetrics.qwenResearch?.averageGpuPowerWatts !== undefined ? `${researchMetrics.qwenResearch.averageGpuPowerWatts} W` : "-", icon: Zap, color: "bg-[#D97706]" },
               ].map((stat) => (
                 <div key={stat.label} className="rounded-lg border border-gray-100 p-4 bg-[#F9FBFD]">
                   <div className="flex items-start justify-between">

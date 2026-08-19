@@ -1,7 +1,10 @@
-import { User, Tender, Contract, AIChatSession } from '../../models/model.js';
+import { User, Tender, Contract, AIBidSummary, AIChatSession } from '../../models/model.js';
 import { sensitiveVendorPattern } from './retrievalEngine.js';
-import { callLocalChat, LOCAL_AI_MODEL } from '../localModelClient.js';
+import { callLocalChat, LOCAL_AI_CHAT_MODEL } from '../localModelClient.js';
 import { recordResearchMetric } from '../../utils/researchMetrics.js';
+
+const CHAT_MAX_TOKENS = Number(process.env.LM_STUDIO_CHAT_MAX_TOKENS || 1200);
+const CHAT_STRUCTURED_OUTPUT = String(process.env.LM_STUDIO_CHAT_STRUCTURED_OUTPUT || 'false').toLowerCase() === 'true';
 
 const LOCAL_AI_TIMEOUT_MS = Number(process.env.LM_STUDIO_TIMEOUT_MS || process.env.OLLAMA_TIMEOUT_MS || 60000);
 
@@ -13,6 +16,10 @@ const countPattern = /\b(total|how many|count|number of)\b/i;
 const tenderPattern = /\b(tender|tenders)\b/i;
 const contractPattern = /\b(contract|contracts)\b/i;
 const bidPattern = /\b(bid|bids|submission|submissions)\b/i;
+const awardedContractDetailPattern = /(?:\b(recent|recently|latest|most recent|newest)\b[\s\S]*\b(contract|award|aw[a-z]*ed|awrded)\b)|(?:\b(contract|award)\b[\s\S]*\b(to\s*whom|towhom|who|top\s*2|scores?|rejected|reject)\b)|(?:\b(contract|award)\b[\s\S]*\b(bidder|winner|selected)\b)/i;
+const bidRejectionPattern = /\b(why|explain|reason)\b[\s\S]*\b(bid|bidder|rejected|reject)\b/i;
+const awardDecisionPattern = /\b(selected|winner|winning|second\s+bidder|second\s+bid|fair|fairness)\b[\s\S]*\b(bid|bidder|reject|reason|score|fair)|\b(which|what)\s+bid\b[\s\S]*\b(selected|won|winner)\b/i;
+const emptyAwardAnswerPattern = /\b(no bids? available|no bids? (were|was) found|no bid has been selected|no bid.*rejected|no bids? in the system)\b/i;
 
 const buildSmallTalkReply = ({ role, message }) => {
     const query = String(message || '').trim().toLowerCase();
@@ -82,14 +89,129 @@ const isSimpleLocalReply = (message) => {
 };
 
 const shouldUseFastLocalReply = (message) => {
-    const lower = String(message || '').trim().toLowerCase();
-    return (
-        isSimpleLocalReply(message)
-        || committeeCountPattern.test(lower)
-        || (countPattern.test(lower) && (tenderPattern.test(lower) || contractPattern.test(lower) || bidPattern.test(lower)))
-        || personLookupPattern.test(lower)
-    );
+    // Route all procurement/data questions through the agent. Only greetings
+    // and capability help are safe to answer without a database plan.
+    return isSimpleLocalReply(message);
 };
+
+function scoreAwardedBids(tender) {
+    const bids = Array.isArray(tender?.bids) ? tender.bids : [];
+    const evaluationMethod = tender?.evaluationMethod || 'QCBS';
+    const technicalCriteria = tender?.qcbsConfig?.technicalCriteria || [];
+    const maxTechnical = technicalCriteria.reduce((sum, criterion) => sum + Number(criterion.maxMarks || 0), 0);
+    const technicalWeight = Number(tender?.qcbsConfig?.technicalWeight || 0);
+    const commercialWeight = Number(tender?.qcbsConfig?.commercialWeight || 0);
+    const prices = bids.map((bid) => Number(bid.financialScore || bid.proposedAmount || 0)).filter((value) => value > 0);
+    const lowestPrice = prices.length ? Math.min(...prices) : 0;
+    const cutoff = Number(tender?.l1Config?.technicalCutoff || 0);
+
+    return bids.map((bid) => {
+        const technicalScore = Number(bid.technicalScore || 0);
+        const price = Number(bid.financialScore || bid.proposedAmount || 0);
+        const technicalNormalized = maxTechnical > 0 ? (technicalScore / maxTechnical) * 100 : 0;
+        const commercialNormalized = lowestPrice > 0 && price > 0 ? (lowestPrice / price) * 100 : 0;
+        const overallScore = evaluationMethod === 'L1'
+            ? technicalScore
+            : (technicalNormalized * (technicalWeight / 100)) + (commercialNormalized * (commercialWeight / 100));
+        return {
+            id: String(bid._id),
+            vendor: bid.vendorName || 'Unknown bidder',
+            status: bid.status,
+            proposedAmount: bid.proposedAmount,
+            technicalScore,
+            financialScore: bid.financialScore,
+            overallScore: Number(overallScore.toFixed(2)),
+            technicalNormalized: Number(technicalNormalized.toFixed(2)),
+            commercialNormalized: Number(commercialNormalized.toFixed(2)),
+            comments: bid.comments || '',
+            committeeEvaluations: Array.isArray(bid.committeeEvaluations) ? bid.committeeEvaluations : [],
+            cutoff,
+        };
+    }).sort((left, right) => right.overallScore - left.overallScore);
+}
+
+async function buildAwardedContractDetailReply({ role, userId }) {
+    const contracts = await fetchVisibleContracts(role, userId);
+    const awarded = contracts.filter((contract) => String(contract.status || '').toLowerCase() === 'awarded');
+    const contract = awarded.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))[0];
+    if (!contract?.tenderId?._id) return 'I could not find a recently awarded contract in your scope.';
+
+    const tender = await Tender.findById(contract.tenderId._id)
+        .select('title evaluationMethod qcbsConfig l1Config bids')
+        .lean();
+    if (!tender) return 'I found the awarded contract, but its tender and bidder scores are unavailable.';
+
+    const scored = scoreAwardedBids(tender);
+    const summaries = await AIBidSummary.find({ tenderId: tender._id, bidId: { $in: scored.map((bid) => bid.id) } })
+        .select('bidId eligibility rationale summary criteriaScores')
+        .lean();
+    const summaryByBid = new Map(summaries.map((item) => [String(item.bidId), item]));
+    const winner = scored.find((bid) => bid.status === 'Selected') || scored[0];
+    const topTwo = scored.slice(0, 2);
+    const scoreText = topTwo.map((bid, index) => {
+        const summary = summaryByBid.get(bid.id);
+        const eligibility = summary?.eligibility?.passed === false ? 'not eligible' : 'eligible';
+        const reason = summary?.summary || bid.comments || '';
+        return `${index + 1}) ${bid.vendor} — overall ${bid.overallScore.toFixed(2)}, technical ${bid.technicalScore.toFixed(2)}, commercial ${bid.financialScore ?? bid.proposedAmount ?? '-'} (${eligibility})${reason ? `; ${reason}` : ''}`;
+    }).join(' ');
+    const rejected = scored.filter((bid) => bid.status === 'Rejected');
+    const rejectionText = rejected.slice(0, 5).map((bid) => {
+        const summary = summaryByBid.get(bid.id);
+        const reasons = [
+            ...(summary?.eligibility?.reasons || []),
+            ...(summary?.rationale || []),
+            ...bid.committeeEvaluations.filter((item) => item.eligibilityChecked === false).map((item) => item.comments).filter(Boolean),
+        ].filter(Boolean);
+        const cutoffReason = tender.evaluationMethod === 'L1' && bid.technicalScore < bid.cutoff
+            ? `technical score ${bid.technicalScore} was below the cutoff ${bid.cutoff}` : '';
+        return `${bid.vendor}: ${reasons[0] || cutoffReason || 'not selected after the tender evaluation and award decision'}`;
+    }).join(' ');
+
+    const runnerUp = topTwo.find((bid) => bid.id !== winner?.id);
+    const fairness = winner && runnerUp
+        ? (winner.overallScore >= runnerUp.overallScore
+            ? `Fairness check: based on the recorded scores, the selection appears consistent because the selected bidder ranked above the second bidder (${winner.overallScore.toFixed(2)} vs ${runnerUp.overallScore.toFixed(2)}). This is a score-based assessment, not a legal finding.`
+            : `Fairness check: the selected bidder scored below the second bidder (${winner.overallScore.toFixed(2)} vs ${runnerUp.overallScore.toFixed(2)}), so the award should be reviewed against the configured evaluation rule and committee justification.`)
+        : 'Fairness check: there is not enough recorded score data to assess the decision.';
+    return `The most recently awarded contract is for "${tender.title}" and was awarded to ${winner?.vendor || 'the selected bidder'}. Top bidder scores: ${scoreText || 'score details are unavailable'}. ${rejectionText ? `Rejected bidder reasons: ${rejectionText}` : 'No rejected bidder reason was recorded in the available evaluation data.'} ${fairness}`;
+}
+
+async function buildBidRejectionReply({ role, userId, message }) {
+    if (!bidRejectionPattern.test(String(message || '').toLowerCase())) return null;
+    const nameMatch = String(message || '').match(/\b(?:why|explain|reason)\s+(?:was\s+)?([a-z0-9][a-z0-9 .&'-]*?)\s+(?:bid|bidder|was|is|rejected)\b/i);
+    if (!nameMatch) return null;
+    const searchName = String(nameMatch?.[1] || message).replace(/\b(why|explain|reason|bid|bidder|rejected|reject|was|is|does|it)\b/ig, ' ').replace(/[^a-z0-9 .&'-]/ig, ' ').trim();
+    if (!searchName) return null;
+    const tenderFilter = await getTenderScopeQuery(role, userId);
+    const tenders = await Tender.find(tenderFilter)
+        .select('title status bids evaluationMethod qcbsConfig l1Config')
+        .sort({ updatedAt: -1, createdAt: -1 })
+        .limit(20)
+        .lean();
+    const terms = searchName.toLowerCase().split(/\s+/).filter((term) => term.length > 2);
+    const matches = tenders.flatMap((tender) => (tender.bids || [])
+        .filter((bid) => {
+            const vendor = String(bid.vendorName || '').toLowerCase();
+            return terms.some((term) => vendor.includes(term)) && String(bid.status || '').toLowerCase() === 'rejected';
+        })
+        .map((bid) => ({ tender, bid })));
+    if (!matches.length) return `I could not find a rejected bid matching "${searchName}" in your scope.`;
+
+    const { tender, bid } = matches[0];
+    const summary = await AIBidSummary.findOne({ tenderId: tender._id, bidId: bid._id })
+        .select('eligibility rationale summary criteriaScores')
+        .lean();
+    const reasons = [
+        ...(summary?.eligibility?.reasons || []),
+        ...(summary?.rationale || []),
+        ...(bid.committeeEvaluations || []).filter((item) => item.eligibilityChecked === false).map((item) => item.comments),
+        bid.comments,
+    ].filter(Boolean);
+    const cutoff = Number(tender.l1Config?.technicalCutoff || 0);
+    const cutoffReason = tender.evaluationMethod === 'L1' && Number(bid.technicalScore || 0) < cutoff
+        ? `technical score ${bid.technicalScore || 0} was below the required cutoff of ${cutoff}` : '';
+    return `The bid from ${bid.vendorName || searchName} was rejected for the tender "${tender.title}". Recorded reason: ${reasons[0] || cutoffReason || 'the bid was not selected after evaluation'}. Its status is ${bid.status}; technical score: ${bid.technicalScore ?? '-'}, financial score: ${bid.financialScore ?? bid.proposedAmount ?? '-'}.`;
+}
 
 function inferTenderStatus(query) {
     if (/\b(published|open|visible)\b/i.test(query)) return 'Published';
@@ -237,7 +359,7 @@ const AGENT_ALLOWED_OPERATORS = new Set(['$and', '$or', '$in', '$ne', '$gte', '$
 
 const AGENT_SCHEMA_GUIDE = [
     'Mongo schema guide:',
-    '- Tender: _id, title, description, category, budget, preBidDate, finalSubmissionDate, evaluationMethod, status, createdBy, documents, bids, requiredDocuments, qcbsConfig, createdAt, updatedAt.',
+    '- Tender: _id, title, description, category, budget, preBidDate, finalSubmissionDate, evaluationMethod, l1Config, status, createdBy, documents, bids, requiredDocuments, qcbsConfig, createdAt, updatedAt. Each bid has vendorId, vendorName, proposedAmount, status (Pending|Evaluated|Selected|Rejected), technicalScore, financialScore, comments, committeeEvaluations, evaluatedDate.',
     '- Contract: _id, status, timelineDefined, timelineStartDate, timelineEndDate, tenderId, vendorId, milestones, milestoneStats, aiMilestoneReports, aiMilestoneSummary, createdAt, updatedAt.',
     '- User: _id, name, email, role, phone, department, specialization, designation, managerPo, accountStatus, createdAt, updatedAt.',
     '- Relationship rules: PO-owned committee members use User.managerPo === PO user id. PO-owned tenders use Tender.createdBy === PO user id. Committee scope uses the PO in managerPo. Vendor scope is only published tenders, and their own bids/contracts/profile.',
@@ -259,6 +381,8 @@ const AGENT_PROMPT = [
     '- For committee member questions, use the User collection with role = Committee and managerPo = the current PO user id when appropriate.',
     '- If the request is beyond the user role, answer directly with a short beyond-role message.',
     '- Do not fabricate ids, dates, counts, or records.',
+    '- For award/winner/top bidder/score/rejection questions, query Tender records and use the embedded bids and committeeEvaluations. Do not answer from generic knowledge.',
+    '- When the user gives a bidder name, search bids.vendorName with a case-insensitive regex. Never put a plain name such as "technova" into bids.vendorId; vendorId is an ObjectId and must not be fabricated.',
 ].join('\n');
 
 function isPlainObject(value) {
@@ -480,6 +604,23 @@ function summarizeMongoRecord(collection, record) {
             finalSubmissionDate: record.finalSubmissionDate ? new Date(record.finalSubmissionDate).toISOString().slice(0, 10) : null,
             budget: record.budget,
             createdAt: record.createdAt,
+            bids: scoreAwardedBids(record).map((bid) => ({
+                id: bid.id,
+                vendor: bid.vendor,
+                status: bid.status,
+                proposedAmount: bid.proposedAmount,
+                technicalScore: bid.technicalScore,
+                financialScore: bid.financialScore,
+                calculatedOverallScore: bid.overallScore,
+                comments: bid.comments,
+                committeeEvaluations: bid.committeeEvaluations.map((evaluation) => ({
+                    technicalScore: evaluation.technicalScore,
+                    financialScore: evaluation.financialScore,
+                    eligibilityChecked: evaluation.eligibilityChecked,
+                    comments: evaluation.comments,
+                    criteriaScores: evaluation.criteriaScores,
+                })),
+            })),
         };
     }
 
@@ -567,12 +708,21 @@ function buildDirectFallbackAnswer({ role, collection, count, records }) {
 async function executeMongoPlan(plan, role, userId) {
     const Model = getMongoModel(plan.collection);
     const roleScope = await resolveRoleScopedFilter(plan.collection, role, userId);
+    const repairedPlanFilter = { ...(plan.filter || {}) };
+    if (plan.collection === 'Tender') {
+        for (const [key, value] of Object.entries(repairedPlanFilter)) {
+            if (/^bids\.vendorId$/i.test(key) && typeof value === 'string' && !/^[a-f0-9]{24}$/i.test(value)) {
+                delete repairedPlanFilter[key];
+                repairedPlanFilter['bids.vendorName'] = { $regex: value, $options: 'i' };
+            }
+        }
+    }
 
     const hasRoleScope = isPlainObject(roleScope) && Object.keys(roleScope).length > 0;
-    const hasPlanFilter = isPlainObject(plan.filter) && Object.keys(plan.filter).length > 0;
+    const hasPlanFilter = isPlainObject(repairedPlanFilter) && Object.keys(repairedPlanFilter).length > 0;
     const query = hasRoleScope && hasPlanFilter
-        ? { $and: [roleScope, plan.filter] }
-        : (hasRoleScope ? roleScope : (hasPlanFilter ? plan.filter : {}));
+        ? { $and: [roleScope, repairedPlanFilter] }
+        : (hasRoleScope ? roleScope : (hasPlanFilter ? repairedPlanFilter : {}));
 
     const finder = Model.find(query).select(getMongoSelectFields(plan.collection));
 
@@ -596,61 +746,110 @@ async function executeMongoPlan(plan, role, userId) {
 }
 
 async function runMongoAgent({ role, userId, message, history, localFacts }) {
-    const planResponse = await callLocalChat({
-        model: LOCAL_AI_MODEL,
+    const telemetry = { promptTokens: 0, completionTokens: 0, totalTokens: 0, generationTimeSeconds: 0, timeToFirstTokenSeconds: 0, tokensPerSecond: 0, source: 'unavailable' };
+    const collectTelemetry = (item) => {
+        const usage = item?.usage || {};
+        const stats = item?.stats || {};
+        telemetry.promptTokens += Number(usage.prompt_tokens ?? stats.input_tokens ?? 0);
+        telemetry.completionTokens += Number(usage.completion_tokens ?? stats.total_output_tokens ?? 0);
+        telemetry.totalTokens += Number(usage.total_tokens || 0);
+        telemetry.generationTimeSeconds += Number(stats.generation_time ?? stats.generation_time_seconds ?? 0);
+        telemetry.timeToFirstTokenSeconds += Number(stats.time_to_first_token ?? stats.time_to_first_token_seconds ?? 0);
+        telemetry.tokensPerSecond = Number(stats.tokens_per_second || telemetry.tokensPerSecond || 0);
+        telemetry.source = item?.source || telemetry.source;
+    };
+    let planResponse = await callLocalChat({
+        model: LOCAL_AI_CHAT_MODEL,
         temperature: 0,
-        responseFormat: { type: 'json_object' },
+        ...(CHAT_STRUCTURED_OUTPUT ? { responseFormat: { type: 'json_object' } } : {}),
+        maxTokens: CHAT_MAX_TOKENS,
+        onTelemetry: collectTelemetry,
         messages: buildAgentMessages({ role, userId, message, history, localFacts }),
     });
 
-    const plan = normalizeMongoPlan(planResponse);
+    let plan = normalizeMongoPlan(planResponse);
+    if (!plan) {
+        // Qwen is running without structured output. Give it one compact
+        // repair attempt instead of exposing raw planning text to the user.
+        planResponse = await callLocalChat({
+            model: LOCAL_AI_CHAT_MODEL,
+            temperature: 0,
+            maxTokens: 500,
+            onTelemetry: collectTelemetry,
+            messages: [
+                { role: 'system', content: `${AGENT_PROMPT}\nReturn only one valid JSON object. No markdown and no explanation.` },
+                { role: 'system', content: AGENT_SCHEMA_GUIDE },
+                { role: 'user', content: message },
+            ],
+        });
+        plan = normalizeMongoPlan(planResponse);
+    }
     if (!plan) {
         return {
             reply: String(planResponse || '').trim(),
-            model: LOCAL_AI_MODEL,
+            model: LOCAL_AI_CHAT_MODEL,
             responseMode: 'lmstudio',
             plan: null,
             records: [],
             count: 0,
             collection: null,
+            telemetry,
         };
     }
 
     if (plan.action === 'direct') {
         return {
             reply: plan.answer,
-            model: LOCAL_AI_MODEL,
+            model: LOCAL_AI_CHAT_MODEL,
             responseMode: 'lmstudio',
             plan,
             records: [],
             count: 0,
             collection: null,
+            telemetry,
         };
     }
 
     const { count, records } = await executeMongoPlan(plan, role, userId);
 
-    const finalReply = await callLocalChat({
-        model: LOCAL_AI_MODEL,
-        temperature: 0.2,
-        messages: [
-            { role: 'system', content: AGENT_SCHEMA_GUIDE },
-            { role: 'system', content: buildFinalAnswerPrompt({ role, message, plan, records, count, collection: plan.collection }) },
-        ],
-    });
+    let finalReply = '';
+    try {
+        finalReply = await callLocalChat({
+            model: LOCAL_AI_CHAT_MODEL,
+            temperature: 0.2,
+            messages: [
+                { role: 'system', content: AGENT_SCHEMA_GUIDE },
+                { role: 'system', content: buildFinalAnswerPrompt({ role, message, plan, records, count, collection: plan.collection }) },
+            ],
+            maxTokens: CHAT_MAX_TOKENS,
+            onTelemetry: collectTelemetry,
+        });
+    } catch (error) {
+        console.error('[AI chat] Final answer generation failed after database query:', error instanceof Error ? error.message : error);
+    }
 
-    const reply = isLikelyGenericAssistantReply(finalReply)
-        ? buildDirectFallbackAnswer({ role, collection: plan.collection, count, records })
+    const isAwardQuestion = awardedContractDetailPattern.test(message) || awardDecisionPattern.test(message);
+    const reply = isAwardQuestion && emptyAwardAnswerPattern.test(finalReply)
+        ? await buildAwardedContractDetailReply({ role, userId })
+        : isLikelyGenericAssistantReply(finalReply)
+        ? (isAwardQuestion
+            ? await buildAwardedContractDetailReply({ role, userId })
+            : buildDirectFallbackAnswer({ role, collection: plan.collection, count, records }))
         : finalReply.trim();
 
     return {
         reply,
-        model: LOCAL_AI_MODEL,
-        responseMode: 'lmstudio',
+        model: LOCAL_AI_CHAT_MODEL,
+        responseMode: finalReply ? 'lmstudio' : 'lmstudio-query-recovery',
         plan,
         records,
         count,
         collection: plan.collection,
+        telemetry: {
+            ...telemetry,
+            totalTokens: telemetry.totalTokens || telemetry.promptTokens + telemetry.completionTokens,
+            tokensPerSecond: telemetry.tokensPerSecond || (telemetry.completionTokens > 0 && telemetry.generationTimeSeconds > 0 ? telemetry.completionTokens / telemetry.generationTimeSeconds : 0),
+        },
     };
 }
 
@@ -858,13 +1057,15 @@ function formatChatSession(session) {
 function buildAssistantMeta(agentResult, localFacts = []) {
     const records = Array.isArray(agentResult?.records) ? agentResult.records : [];
     return {
-        model: agentResult?.model || LOCAL_AI_MODEL,
+        model: agentResult?.model || LOCAL_AI_CHAT_MODEL,
         responseMode: agentResult?.responseMode || 'fallback',
         collection: agentResult?.collection || null,
         count: agentResult?.count || 0,
         plan: agentResult?.plan || null,
         localFactsCount: Array.isArray(localFacts) ? localFacts.length : 0,
         records,
+        telemetry: agentResult?.telemetry || null,
+        durationMs: Number(agentResult?.durationMs || 0),
     };
 }
 
@@ -952,6 +1153,13 @@ async function collectLocalFacts({ role, userId, message }) {
     const lower = query.toLowerCase();
     const facts = [];
 
+    if (awardedContractDetailPattern.test(lower) || awardDecisionPattern.test(lower)) {
+        facts.push(await buildAwardedContractDetailReply({ role, userId }));
+    }
+
+    const rejectionReply = await buildBidRejectionReply({ role, userId, message });
+    if (rejectionReply) facts.push(rejectionReply);
+
     if (helpPattern.test(lower)) {
         facts.push(buildRoleHelpReply(role));
     }
@@ -1003,10 +1211,10 @@ const buildFallbackReply = ({ role, message, context }) => {
 
     const parts = [];
 
-    if (scopedTenderReply) {
-        parts.push(scopedTenderReply);
-    } else if (localFacts.length) {
+    if (localFacts.length) {
         parts.push(localFacts[0]);
+    } else if (scopedTenderReply) {
+        parts.push(scopedTenderReply);
     } else if (firstTender && isLatestTenderQuery(query)) {
         const submissionDate = firstTender.finalSubmissionDate && firstTender.finalSubmissionDate !== '-'
             ? `, submission date ${firstTender.finalSubmissionDate}`
@@ -1016,10 +1224,6 @@ const buildFallbackReply = ({ role, message, context }) => {
         parts.push(`I can still help with "${query}".`);
     } else {
         parts.push('I can still help with that.');
-    }
-
-    if (localFacts.length > 1) {
-        parts.push(`Here is what I found: ${localFacts.join(' ')}`);
     }
 
     if (summary.structuredMatches || summary.semanticMatches || summary.knowledgeMatches || summary.toolActions) {
@@ -1035,7 +1239,9 @@ const buildFallbackReply = ({ role, message, context }) => {
         parts.push(`I checked ${retrievalPlan} for this one.`);
     }
 
-    parts.push('If you want, I can try again in a moment or we can narrow the question down together.');
+    if (!localFacts.length) {
+        parts.push('If you want, I can try again in a moment or we can narrow the question down together.');
+    }
     return parts.join(' ');
 };
 
@@ -1058,7 +1264,16 @@ export const chatWithAssistant = async (req, res) => {
         if (req.body?.chatId) {
             session = await loadChatSession(req.body.chatId, userId);
             if (!session) {
-                return res.status(404).json({ message: 'Chat not found' });
+                // The browser can retain a deleted/stale chat id. Recover by
+                // opening a new user-owned session instead of blocking the
+                // message before it reaches the agent.
+                session = await AIChatSession.create({
+                    userId,
+                    role,
+                    title: 'New chat',
+                    messages: [],
+                    lastMessageAt: new Date(),
+                });
             }
         } else {
             session = await AIChatSession.create({
@@ -1135,11 +1350,23 @@ export const chatWithAssistant = async (req, res) => {
         let count = 0;
         let records = [];
         let warning = '';
+        let telemetry = {
+            promptTokens: 0,
+            completionTokens: 0,
+            totalTokens: 0,
+            generationTimeSeconds: 0,
+            timeToFirstTokenSeconds: 0,
+            tokensPerSecond: 0,
+            source: 'estimated-local-rules',
+        };
 
         if (localFacts.length && shouldUseFastLocalReply(message)) {
             reply = localFacts.join(' ');
             model = 'local-rules';
             responseMode = 'local';
+            telemetry.promptTokens = Math.ceil(message.length / 4);
+            telemetry.completionTokens = Math.ceil(reply.length / 4);
+            telemetry.totalTokens = telemetry.promptTokens + telemetry.completionTokens;
         } else {
             const agentResult = await runMongoAgent({
                 role,
@@ -1150,12 +1377,17 @@ export const chatWithAssistant = async (req, res) => {
             });
 
             reply = agentResult.reply || buildFallbackReply({ role, message, context: null });
-            model = agentResult.model || LOCAL_AI_MODEL;
+            if (localFacts.length && isLikelyGenericAssistantReply(reply)) {
+                reply = localFacts[0];
+                responseMode = 'local-record-recovery';
+            }
+            model = agentResult.model || LOCAL_AI_CHAT_MODEL;
             responseMode = agentResult.responseMode || 'lmstudio';
             plan = agentResult.plan || null;
             collection = agentResult.collection || null;
             count = agentResult.count || 0;
             records = Array.isArray(agentResult.records) ? agentResult.records : [];
+            telemetry = agentResult.telemetry || telemetry;
 
             if (!agentResult.reply) {
                 warning = 'Mongo agent could not parse a query plan; returned raw model text.';
@@ -1169,6 +1401,8 @@ export const chatWithAssistant = async (req, res) => {
             count,
             plan,
             records,
+            telemetry,
+            durationMs: Date.now() - startedAt,
         }, localFacts);
 
         await saveChatSessionMessage(session, {
@@ -1218,8 +1452,12 @@ export const chatWithAssistant = async (req, res) => {
             retrievalPlan: [],
             intent: null,
             warning: warning || undefined,
+            telemetry,
+            durationMs: Date.now() - startedAt,
         });
-    } catch (error) {
+        } catch (error) {
+        console.error('[AI chat] Local model request failed; using database fallback:', error instanceof Error ? error.message : error);
+        if (error instanceof Error && error.stack) console.error(error.stack);
         try {
             if (session && (!Array.isArray(session.messages) || session.messages.length === 0)) {
                 await AIChatSession.deleteOne({ _id: session._id, userId: session.userId });
@@ -1238,16 +1476,30 @@ export const chatWithAssistant = async (req, res) => {
                     },
                 })
                 : 'I could not generate a response right now.';
+            const durationMs = Date.now() - startedAt;
+            const promptTokens = Math.ceil(message.length / 4);
+            const completionTokens = Math.ceil(reply.length / 4);
+            const telemetry = {
+                promptTokens,
+                completionTokens,
+                totalTokens: promptTokens + completionTokens,
+                generationTimeSeconds: durationMs / 1000,
+                timeToFirstTokenSeconds: 0,
+                tokensPerSecond: completionTokens > 0 ? completionTokens / Math.max(durationMs / 1000, 0.001) : 0,
+                source: 'estimated-database-fallback',
+            };
 
             return res.json({
                 reply,
                 model: 'fallback',
-                responseMode: 'fallback',
+                responseMode: localFacts.length ? 'local-record-fallback' : 'fallback',
                 thinking: false,
                 warning: error instanceof Error ? error.message : 'Failed to generate assistant response',
                 contextSummary: { localFacts: localFacts.length },
                 retrievalPlan: [],
                 intent: null,
+                telemetry,
+                durationMs,
             });
         } catch {
             void recordResearchMetric({

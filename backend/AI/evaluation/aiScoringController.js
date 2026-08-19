@@ -5,11 +5,63 @@ import { recordResearchMetric } from '../../utils/researchMetrics.js';
 const AI_QUEUE_STALE_RUNNING_MS = Number(process.env.AI_QUEUE_STALE_RUNNING_MS || 10 * 60 * 1000);
 const activeTenderScoringJobs = new Map();
 
+const bidTelemetryMetadata = (telemetry = {}) => {
+    const before = Number(telemetry.gpuPowerBeforeWatts);
+    const after = Number(telemetry.gpuPowerAfterWatts);
+    const hasPower = Number.isFinite(before) && Number.isFinite(after);
+    const generationTimeSeconds = Number(telemetry.generationTimeSeconds || 0);
+    const evaluationDurationSeconds = Number(telemetry.evaluationDurationSeconds || generationTimeSeconds || 0);
+    const averagePowerWatts = hasPower ? (before + after) / 2 : null;
+    return {
+        telemetrySource: telemetry.source || 'unavailable',
+        model: telemetry.model || null,
+        requests: Number(telemetry.requests || 0),
+        promptTokens: Number(telemetry.promptTokens || 0),
+        completionTokens: Number(telemetry.completionTokens || 0),
+        totalTokens: Number(telemetry.totalTokens || 0),
+        generationTimeSeconds,
+        evaluationDurationSeconds,
+        timeToFirstTokenSeconds: Number(telemetry.timeToFirstTokenSeconds || 0),
+        tokensPerSecond: Number(telemetry.tokensPerSecond || 0),
+        gpuPowerBeforeWatts: hasPower ? before : null,
+        gpuPowerAfterWatts: hasPower ? after : null,
+        averageGpuPowerWatts: averagePowerWatts,
+        estimatedEnergyJoules: hasPower && generationTimeSeconds > 0 ? averagePowerWatts * generationTimeSeconds : null,
+        usageAvailable: Number(telemetry.totalTokens || 0) > 0,
+        tokenCountSource: telemetry.source || 'unavailable',
+    };
+};
+
+const failedAiSummaryFields = (message) => ({
+    status: 'failed',
+    error: message,
+    aiRank: null,
+    eligibilityOverride: false,
+    eligibility: { passed: false, reasons: [message] },
+    criteriaScores: [],
+    commercialAnalysis: {
+        statedValue: null,
+        adjustedValue: null,
+        rationale: 'Commercial evaluation was not completed because AI evaluation failed.',
+        risks: [],
+    },
+    genuityChecks: { warnings: [message], confidence: 0 },
+    aiScores: { technicalScore: null, financialScore: null, overallScore: null },
+    summary: 'AI evaluation failed before a valid decision was produced.',
+    rationale: [message],
+    evaluationTrace: {},
+    inferenceTelemetry: {},
+    generatedAt: new Date(),
+});
+
 const normalizeCriteriaScores = (items) => Array.isArray(items)
     ? items.map((item) => ({
         criterion: String(item?.criterion || ''),
-        maxMarks: Number(item?.maxMarks || 0),
-        awardedMarks: Number(item?.awardedMarks || 0),
+        maxMarks: Math.max(0, Number(item?.maxMarks || 0)),
+        awardedMarks: Math.min(
+            Math.max(0, Number(item?.maxMarks || 0)),
+            Math.max(0, Number(item?.awardedMarks || 0)),
+        ),
         ruleType: item?.ruleType || 'textual',
         evidence: Array.isArray(item?.evidence) ? item.evidence.map((e) => String(e)) : [],
         documentLabel: String(item?.documentLabel || ''),
@@ -19,9 +71,11 @@ const normalizeCriteriaScores = (items) => Array.isArray(items)
 const coerceAiSummary = (parsed) => ({
     eligibility: {
         passed: Boolean(parsed?.eligibility?.passed),
-        reasons: Array.isArray(parsed?.eligibility?.reasons)
+        reasons: Array.isArray(parsed?.eligibility?.reasons) && parsed.eligibility.reasons.length
             ? parsed.eligibility.reasons.map((item) => String(item))
-            : [],
+            : [parsed?.eligibility?.passed === false
+                ? 'Eligibility failed because the uploaded bid evidence did not establish compliance with the tender requirements.'
+                : 'Eligibility passed based on the uploaded bid evidence.'],
     },
     criteriaScores: normalizeCriteriaScores(parsed?.criteriaScores),
     commercialAnalysis: {
@@ -50,8 +104,43 @@ const coerceAiSummary = (parsed) => ({
 
 const refreshTenderAiRanks = async (tenderId) => {
     const summaries = await AIBidSummary.find({ tenderId }).lean();
-    const ranked = summaries
-        .filter((summary) => summary.status === 'success')
+    const tender = await Tender.findById(tenderId).select('bids qcbsConfig evaluationMethod').lean();
+    const eligibleSummaries = summaries
+        // Only genuinely eligible bids can receive an award rank. A PO
+        // override exposes conditional marks for review, but must not turn an
+        // ineligible bid into an award-eligible result.
+        .filter((summary) => summary.status === 'success' && summary?.eligibility?.passed === true);
+    const validAmounts = eligibleSummaries
+        .map((summary) => Number(summary?.commercialAnalysis?.adjustedValue ?? summary?.commercialAnalysis?.statedValue))
+        .filter((amount) => Number.isFinite(amount) && amount > 0);
+    const lowestAmount = validAmounts.length ? Math.min(...validAmounts) : null;
+    const technicalWeight = Number(tender?.qcbsConfig?.technicalWeight);
+    const commercialWeight = Number(tender?.qcbsConfig?.commercialWeight);
+    const hasWeights = Number.isFinite(technicalWeight) && Number.isFinite(commercialWeight)
+        && technicalWeight >= 0 && commercialWeight >= 0 && technicalWeight + commercialWeight > 0;
+    const weightedTechnical = hasWeights ? technicalWeight : 50;
+    const weightedCommercial = hasWeights ? commercialWeight : 50;
+
+    const recalculated = eligibleSummaries.map((summary) => {
+        const bidAmount = Number(summary?.commercialAnalysis?.adjustedValue ?? summary?.commercialAnalysis?.statedValue);
+        const technicalScore = Math.min(100, Math.max(0, Number(summary?.aiScores?.technicalScore || 0)));
+        const financialScore = lowestAmount && Number.isFinite(bidAmount) && bidAmount > 0
+            ? Number(Math.min(100, (lowestAmount / bidAmount) * 100).toFixed(2))
+            : 0;
+        const overallScore = Number(((technicalScore * weightedTechnical + financialScore * weightedCommercial)
+            / (weightedTechnical + weightedCommercial)).toFixed(2));
+        return {
+            ...summary,
+            aiScores: { technicalScore, financialScore, overallScore },
+        };
+    });
+
+    await Promise.all(recalculated.map((summary) => AIBidSummary.updateOne(
+        { _id: summary._id },
+        { $set: { aiScores: summary.aiScores } },
+    )));
+
+    const ranked = recalculated
         .sort((left, right) => {
             const leftOverall = Number(left?.aiScores?.overallScore || 0);
             const rightOverall = Number(right?.aiScores?.overallScore || 0);
@@ -72,6 +161,15 @@ const refreshTenderAiRanks = async (tenderId) => {
         { _id: summary._id },
         { $set: { aiRank: index + 1 } }
     )));
+
+    await AIBidSummary.updateMany(
+        {
+            tenderId,
+            status: 'success',
+            'eligibility.passed': { $ne: true },
+        },
+        { $set: { aiRank: null } }
+    );
 };
 
 const DEFAULT_QUEUE_STATE = {
@@ -162,7 +260,10 @@ const getResumeIndex = (bids, summaryMap, force) => {
     for (let index = 0; index < bids.length; index += 1) {
         const bid = bids[index];
         const summary = summaryMap.get(String(bid._id));
-        if (summary) continue;
+        // Only a successful summary means this bid is complete. Pending and
+        // failed records must be retried so a crashed run cannot permanently
+        // strand a tender with zero AI scores.
+        if (summary?.status === 'success') continue;
         return index;
     }
 
@@ -403,6 +504,7 @@ const processTenderAiQueue = async ({ tenderId, force, manual, action, bidId = n
                         status: 'pending',
                         model: undefined,
                         error: undefined,
+                        eligibilityOverride: false,
                         aiRank: null,
                         generatedAt: new Date(),
                     },
@@ -426,6 +528,7 @@ const processTenderAiQueue = async ({ tenderId, force, manual, action, bidId = n
                         promptVersion: result.promptVersion,
                         generatedAt: new Date(),
                         eligibility: normalized.eligibility,
+                        eligibilityOverride: false,
                         criteriaScores: normalized.criteriaScores,
                         commercialAnalysis: normalized.commercialAnalysis,
                         genuityChecks: normalized.genuityChecks,
@@ -433,8 +536,13 @@ const processTenderAiQueue = async ({ tenderId, force, manual, action, bidId = n
                         aiRank: null,
                         summary: normalized.summary,
                         rationale: normalized.rationale,
+                        evaluationTrace: result.audit || {},
+                        inferenceTelemetry: bidTelemetryMetadata({
+                            ...result.telemetry,
+                            evaluationDurationSeconds: (Date.now() - scoringStartedAt) / 1000,
+                        }),
                         rawResponse: result.parsed,
-                        error: undefined,
+                        $unset: { error: 1 },
                     },
                     { upsert: true, new: true }
                 );
@@ -459,6 +567,7 @@ const processTenderAiQueue = async ({ tenderId, force, manual, action, bidId = n
                         aiRank: saved?.aiRank || null,
                         warnings: Array.isArray(normalized.genuityChecks?.warnings) ? normalized.genuityChecks.warnings.length : 0,
                         risks: Array.isArray(normalized.commercialAnalysis?.risks) ? normalized.commercialAnalysis.risks.length : 0,
+                        ...bidTelemetryMetadata(result.telemetry),
                     },
                 });
 
@@ -494,13 +603,11 @@ const processTenderAiQueue = async ({ tenderId, force, manual, action, bidId = n
                         bidId: bid._id,
                         vendorId: bid.vendorId,
                         evaluationMethod: tender.evaluationMethod || 'QCBS',
-                        status: 'failed',
-                        error: error instanceof Error ? error.message : 'AI scoring failed',
-                        aiRank: null,
-                        generatedAt: new Date(),
+                        ...failedAiSummaryFields(error instanceof Error ? error.message : 'AI scoring failed'),
                     },
                     { upsert: true, new: true }
                 );
+                await refreshTenderAiRanks(tenderId);
 
                 summaries.push(saved);
                 processedCount += 1;
@@ -511,13 +618,14 @@ const processTenderAiQueue = async ({ tenderId, force, manual, action, bidId = n
                     actorRole: 'PO',
                     tenderId: tender._id,
                     bidId: bid._id,
-                    durationMs: 0,
+                    durationMs: Date.now() - scoringStartedAt,
                     status: 'failed',
                     metricName: 'ai_bid_scoring_time',
                     value: 1,
                     note: error instanceof Error ? error.message : 'AI scoring failed',
                     metadata: {
                         vendorName,
+                        ...bidTelemetryMetadata(),
                     },
                 });
 
@@ -624,6 +732,7 @@ export const runTenderAiScoring = async (req, res) => {
         const manual = req.query.manual === 'true' || req.body.manual === true;
         const action = String(req.body.action || req.query.action || 'start').toLowerCase();
         const bidId = String(req.body.bidId || req.query.bidId || '').trim() || null;
+        const bypassEligibility = req.query.bypassEligibility === 'true' || req.body.bypassEligibility === true;
 
         // A re-evaluation is independent from the background tender queue. This
         // prevents a stale queue state from blocking the selected bid.
@@ -646,13 +755,14 @@ export const runTenderAiScoring = async (req, res) => {
                         evaluationMethod: tender.evaluationMethod || 'QCBS',
                         status: 'pending',
                         error: undefined,
+                        eligibilityOverride: false,
                         aiRank: null,
                         generatedAt: new Date(),
                     },
                     { upsert: true, new: true, setDefaultsOnInsert: true }
                 );
 
-                const result = await runAiScoring({ tender, bid });
+                const result = await runAiScoring({ tender, bid, bypassEligibility });
                 const normalized = coerceAiSummary(result.parsed);
                 const summary = await AIBidSummary.findOneAndUpdate(
                     { tenderId, bidId: bid._id },
@@ -666,6 +776,7 @@ export const runTenderAiScoring = async (req, res) => {
                         promptVersion: result.promptVersion,
                         generatedAt: new Date(),
                         eligibility: normalized.eligibility,
+                        eligibilityOverride: Boolean(bypassEligibility),
                         criteriaScores: normalized.criteriaScores,
                         commercialAnalysis: normalized.commercialAnalysis,
                         genuityChecks: normalized.genuityChecks,
@@ -673,8 +784,13 @@ export const runTenderAiScoring = async (req, res) => {
                         aiRank: null,
                         summary: normalized.summary,
                         rationale: normalized.rationale,
+                        evaluationTrace: result.audit || {},
+                        inferenceTelemetry: bidTelemetryMetadata({
+                            ...result.telemetry,
+                            evaluationDurationSeconds: (Date.now() - scoringStartedAt) / 1000,
+                        }),
                         rawResponse: result.parsed,
-                        error: undefined,
+                        $unset: { error: 1 },
                     },
                     { upsert: true, new: true }
                 );
@@ -695,6 +811,7 @@ export const runTenderAiScoring = async (req, res) => {
                         vendorName: bid.vendorName || '',
                         warnings: Array.isArray(normalized.genuityChecks?.warnings) ? normalized.genuityChecks.warnings.length : 0,
                         risks: Array.isArray(normalized.commercialAnalysis?.risks) ? normalized.commercialAnalysis.risks.length : 0,
+                        ...bidTelemetryMetadata(result.telemetry),
                     },
                 });
                 return res.json({
@@ -711,13 +828,11 @@ export const runTenderAiScoring = async (req, res) => {
                         bidId: bid._id,
                         vendorId: bid.vendorId,
                         evaluationMethod: tender.evaluationMethod || 'QCBS',
-                        status: 'failed',
-                        error: message,
-                        aiRank: null,
-                        generatedAt: new Date(),
+                        ...failedAiSummaryFields(message),
                     },
                     { upsert: true, new: true }
                 );
+                await refreshTenderAiRanks(tenderId);
 
                 void recordResearchMetric({
                     eventType: 'ai-bid-scoring',
@@ -732,6 +847,7 @@ export const runTenderAiScoring = async (req, res) => {
                     note: message,
                     metadata: {
                         vendorName: bid.vendorName || '',
+                        ...bidTelemetryMetadata(),
                     },
                 });
 
