@@ -83,9 +83,12 @@ type AiSummary = {
     criterion: string;
     maxMarks?: number;
     awardedMarks?: number;
+    documentLabel?: string;
     evidence?: string[];
   }>;
   commercialAnalysis?: {
+    statedValue?: number;
+    adjustedValue?: number;
     rationale?: string;
     risks?: string[];
   };
@@ -94,6 +97,7 @@ type AiSummary = {
     financialScore?: number;
     overallScore?: number;
   };
+  aiRank?: number | null;
   error?: string;
 };
 
@@ -140,9 +144,12 @@ export function AIEvaluation() {
     setLoadingTenders(true);
     setError("");
     try {
-      const data = await apiRequest<TenderRecord[]>("/api/tenders");
-      const createdByMe = (data || []).filter((tender) => String(getTenderOwnerId(tender)) === String(authUser?._id || ""));
-      const visible = createdByMe.filter((tender) => tender.status !== "Draft");
+      const data = await apiRequest<TenderRecord[]>("/api/tenders?summary=true");
+      const allTenderRecords = Array.isArray(data) ? data : [];
+      const createdByMe = allTenderRecords.filter((tender) => String(getTenderOwnerId(tender)) === String(authUser?._id || ""));
+      const visibleCreatedByMe = createdByMe.filter((tender) => tender.status !== "Draft");
+      const visibleFallback = allTenderRecords.filter((tender) => tender.status !== "Draft");
+      const visible = visibleCreatedByMe.length ? visibleCreatedByMe : visibleFallback;
       setTenders(visible);
       setSelectedTenderId((previousId) => {
         if (previousId && visible.some((item) => item._id === previousId)) {
@@ -301,11 +308,26 @@ export function AIEvaluation() {
 
   const aiRanking = useMemo(() => {
     return bids
-      .map((bid) => ({
-        bidId: bid._id,
-        score: Number(aiSummaryMap.get(bid._id)?.aiScores?.overallScore || aiSummaryMap.get(bid._id)?.aiScores?.technicalScore || 0),
-      }))
-      .sort((left, right) => right.score - left.score)
+      .map((bid) => {
+        const summary = aiSummaryMap.get(bid._id);
+        const explicitRank = Number(summary?.aiRank || 0);
+        return {
+          bidId: bid._id,
+          aiRank: Number.isFinite(explicitRank) && explicitRank > 0 ? explicitRank : null,
+          score: Number(summary?.aiScores?.overallScore || summary?.aiScores?.technicalScore || 0),
+        };
+      })
+      .sort((left, right) => {
+        const leftRank = left.aiRank ?? Number.MAX_SAFE_INTEGER;
+        const rightRank = right.aiRank ?? Number.MAX_SAFE_INTEGER;
+        if (leftRank !== rightRank) {
+          return leftRank - rightRank;
+        }
+        if (right.score !== left.score) {
+          return right.score - left.score;
+        }
+        return String(left.bidId).localeCompare(String(right.bidId));
+      })
       .map((item, index) => ({ ...item, rank: index + 1 }));
   }, [bids, aiSummaryMap]);
 
@@ -423,6 +445,7 @@ export function AIEvaluation() {
       committeeEntries: RowCommitteeEntry[];
       aiScore?: number;
       aiEvidence: string[];
+      documentLabel?: string;
       document?: BidDocumentEntry;
     };
 
@@ -485,6 +508,9 @@ export function AIEvaluation() {
 
       row.maxMarks = Math.max(row.maxMarks, Number(criteriaScore?.maxMarks || 0), getCriteriaMaxMarks(label));
       row.aiScore = Number(criteriaScore?.awardedMarks || 0);
+      if (criteriaScore?.documentLabel) {
+        row.documentLabel = String(criteriaScore.documentLabel).trim();
+      }
       row.aiEvidence = Array.isArray(criteriaScore?.evidence)
         ? criteriaScore.evidence.map((item) => String(item))
         : [];
@@ -878,6 +904,24 @@ export function AIEvaluation() {
                                 <p className="mt-2 text-sm text-gray-700">
                                   {summary?.summary || summary?.rationale?.join(" ") || "AI summary pending."}
                                 </p>
+                                <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                  <div className="rounded-xl border border-white bg-white/80 px-3 py-2">
+                                    <p className="text-[11px] uppercase tracking-wide text-gray-500">Eligibility</p>
+                                    <p className={`mt-1 text-sm font-medium ${summary?.eligibility?.passed === false ? "text-red-700" : "text-emerald-700"}`}>
+                                      {summary?.eligibility?.passed === false ? "Failed" : "Passed"}
+                                    </p>
+                                    <p className="mt-1 text-xs text-gray-500">
+                                      {summary?.eligibility?.reasons?.[0] || "Eligibility check completed from the uploaded documents."}
+                                    </p>
+                                  </div>
+                                  <div className="rounded-xl border border-white bg-white/80 px-3 py-2">
+                                    <p className="text-[11px] uppercase tracking-wide text-gray-500">AI rank</p>
+                                    <p className="mt-1 text-sm font-medium text-[#0B3C5D]">#{rank}</p>
+                                    <p className="mt-1 text-xs text-gray-500">
+                                      Technical, commercial, and eligibility checks combined.
+                                    </p>
+                                  </div>
+                                </div>
                                 {summary?.eligibility?.passed === false ? (
                                   <div className="mt-3 rounded-xl border border-red-100 bg-red-50/70 px-3 py-2">
                                     <p className="text-[11px] font-medium uppercase tracking-wide text-red-700">Ineligible as per AI</p>
@@ -938,6 +982,68 @@ export function AIEvaluation() {
                               </div>
                             </div>
 
+                            <div className="mt-5 grid grid-cols-1 gap-4 lg:grid-cols-2">
+                              <div className="rounded-2xl border border-emerald-100 bg-emerald-50/50 p-4">
+                                <p className="text-xs uppercase tracking-wide text-emerald-700">Technical breakdown</p>
+                                <div className="mt-3 grid grid-cols-3 gap-3">
+                                  <div className="rounded-xl bg-white px-3 py-2">
+                                    <p className="text-[11px] uppercase tracking-wide text-gray-500">AI technical</p>
+                                    <p className="mt-1 text-lg text-[#0B3C5D]">{formatScore(summary?.aiScores?.technicalScore)}</p>
+                                  </div>
+                                  <div className="rounded-xl bg-white px-3 py-2">
+                                    <p className="text-[11px] uppercase tracking-wide text-gray-500">AI commercial</p>
+                                    <p className="mt-1 text-lg text-[#0B3C5D]">{formatScore(summary?.aiScores?.financialScore)}</p>
+                                  </div>
+                                  <div className="rounded-xl bg-white px-3 py-2">
+                                    <p className="text-[11px] uppercase tracking-wide text-gray-500">Overall</p>
+                                    <p className="mt-1 text-lg text-[#0B3C5D]">{formatScore(summary?.aiScores?.overallScore)}</p>
+                                  </div>
+                                </div>
+                                <div className="mt-3 rounded-xl bg-white px-3 py-2">
+                                  <p className="text-[11px] uppercase tracking-wide text-gray-500">Commercial analysis</p>
+                                  <p className="mt-1 text-sm text-gray-700">
+                                    {summary?.commercialAnalysis?.rationale || "No commercial rationale recorded."}
+                                  </p>
+                                  <div className="mt-2 flex flex-wrap gap-2 text-xs text-gray-500">
+                                    {typeof summary?.commercialAnalysis?.statedValue === "number" && (
+                                      <span className="rounded-full bg-gray-100 px-2.5 py-1">
+                                        Stated: INR {Number(summary.commercialAnalysis.statedValue).toLocaleString()}
+                                      </span>
+                                    )}
+                                    {typeof summary?.commercialAnalysis?.adjustedValue === "number" && (
+                                      <span className="rounded-full bg-gray-100 px-2.5 py-1">
+                                        Adjusted: INR {Number(summary.commercialAnalysis.adjustedValue).toLocaleString()}
+                                      </span>
+                                    )}
+                                  </div>
+                                  {summary?.commercialAnalysis?.risks?.length ? (
+                                    <div className="mt-2 flex flex-wrap gap-2">
+                                      {summary.commercialAnalysis.risks.slice(0, 3).map((risk, index) => (
+                                        <span key={`${bid._id}-risk-${index}`} className="rounded-full bg-amber-50 px-2.5 py-1 text-[11px] text-amber-700">
+                                          {risk}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  ) : null}
+                                </div>
+                              </div>
+
+                              <div className="rounded-2xl border border-blue-100 bg-blue-50/50 p-4">
+                                <p className="text-xs uppercase tracking-wide text-blue-700">Document-by-document marks</p>
+                                <p className="mt-2 text-sm text-gray-700">
+                                  Each row below ties the criterion back to the uploaded document, the AI mark, and the committee mark.
+                                </p>
+                                <div className="mt-3 flex flex-wrap gap-2 text-xs text-gray-500">
+                                  <span className="rounded-full bg-white px-2.5 py-1">
+                                    AI criteria rows: {summary?.criteriaScores?.length || 0}
+                                  </span>
+                                  <span className="rounded-full bg-white px-2.5 py-1">
+                                    Document labels: {new Set((summary?.criteriaScores || []).map((item) => item.documentLabel).filter(Boolean)).size}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+
                             <div className="mt-5 overflow-hidden rounded-2xl border border-gray-200">
                               <table className="w-full text-sm">
                                 <thead className="bg-[#0B3C5D] text-white">
@@ -963,6 +1069,9 @@ export function AIEvaluation() {
                                         <tr key={`${bid._id}-${row.key}`} className="align-top hover:bg-gray-50">
                                           <td className="px-4 py-4 min-w-[220px]">
                                             <p className="font-medium text-[#0B3C5D]">{row.label}</p>
+                                            {row.documentLabel ? (
+                                              <p className="mt-1 text-xs text-blue-600">AI document: {row.documentLabel}</p>
+                                            ) : null}
                                             {documentName ? (
                                               <p className="mt-1 text-xs text-gray-500">{documentName}</p>
                                             ) : (

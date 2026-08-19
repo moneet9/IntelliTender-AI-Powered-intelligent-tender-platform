@@ -1,5 +1,6 @@
 import { AIMilestoneReport, AINotification, Tender } from '../../models/model.js';
 import { runMilestoneAiReview } from './aiMilestoneService.js';
+import { recordResearchMetric } from '../../utils/researchMetrics.js';
 
 const normalizeTimeline = (value) => ({
     plannedStartDate: value?.plannedStartDate ? new Date(value.plannedStartDate) : undefined,
@@ -33,6 +34,7 @@ const normalizeReport = (parsed) => ({
 });
 
 export const evaluateMilestoneWithAi = async ({ contract, milestone, update, report }) => {
+    const startedAt = Date.now();
     const tender = await Tender.findById(contract.tenderId).lean();
     if (!tender) throw new Error('Tender not found for contract');
 
@@ -77,6 +79,25 @@ export const evaluateMilestoneWithAi = async ({ contract, milestone, update, rep
         });
     }
 
+    void recordResearchMetric({
+        eventType: 'milestone-ai-review',
+        actorId: update?.verifiedBy || update?.updatedBy || report?.reportedBy || undefined,
+        actorRole: 'Committee',
+        contractId: contract._id,
+        tenderId: tender._id,
+        milestoneId: milestone._id,
+        durationMs: Date.now() - startedAt,
+        status: 'success',
+        metricName: 'milestone_review_time',
+        value: 1,
+        note: 'Milestone AI review completed',
+        metadata: {
+            severity: normalized.severity,
+            alerts: normalized.alerts.length,
+            delayedDays: Number(normalized.timeline?.delayedDays || 0),
+        },
+    });
+
     return saved;
 };
 
@@ -87,6 +108,20 @@ const persistFailedMilestoneReview = async ({ contract, milestone, update, repor
     if (!tender) return null;
 
     const message = error instanceof Error ? error.message : 'AI milestone review failed';
+    void recordResearchMetric({
+        eventType: 'milestone-ai-review',
+        actorId: update?.verifiedBy || update?.updatedBy || report?.reportedBy || undefined,
+        actorRole: 'Committee',
+        contractId: contract._id,
+        tenderId: tender._id,
+        milestoneId: milestone._id,
+        durationMs: 0,
+        status: 'failed',
+        metricName: 'milestone_review_time',
+        value: 1,
+        note: message,
+        metadata: {},
+    });
     return AIMilestoneReport.findOneAndUpdate(
         { contractId: contract._id, milestoneId: milestone._id },
         {

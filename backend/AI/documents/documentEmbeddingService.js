@@ -27,6 +27,54 @@ const truncateText = (value) => {
 
 const normalizeText = (value) => String(value || '').replace(/\r/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
 
+const tokenizeText = (value) => String(value || '').toLowerCase().match(/[a-z0-9]+/g) || [];
+
+const splitParagraphs = (text) => normalizeText(text)
+    .split(/\n{2,}/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+const splitLongParagraph = (paragraph, chunkSize) => {
+    const sentences = String(paragraph || '')
+        .split(/(?<=[.!?])\s+/)
+        .map((part) => part.trim())
+        .filter(Boolean);
+
+    if (!sentences.length) {
+        return [];
+    }
+
+    const chunks = [];
+    let buffer = '';
+
+    for (const sentence of sentences) {
+        const candidate = buffer ? `${buffer} ${sentence}` : sentence;
+        if (candidate.length <= chunkSize) {
+            buffer = candidate;
+            continue;
+        }
+
+        if (buffer) {
+            chunks.push(buffer);
+        }
+
+        if (sentence.length > chunkSize) {
+            for (let start = 0; start < sentence.length; start += chunkSize) {
+                chunks.push(sentence.slice(start, start + chunkSize).trim());
+            }
+            buffer = '';
+        } else {
+            buffer = sentence;
+        }
+    }
+
+    if (buffer) {
+        chunks.push(buffer);
+    }
+
+    return chunks.filter(Boolean);
+};
+
 const buildSearchableDocumentText = (chunk) => {
     const meta = chunk?.sourceMeta && typeof chunk.sourceMeta === 'object'
         ? JSON.stringify(chunk.sourceMeta)
@@ -47,25 +95,48 @@ const buildSearchableDocumentText = (chunk) => {
 };
 
 const splitTextIntoChunks = (text, chunkSize = DEFAULT_CHUNK_SIZE, overlap = DEFAULT_CHUNK_OVERLAP) => {
-    const normalized = normalizeText(text);
-    if (!normalized) return [];
-    if (normalized.length <= chunkSize) return [normalized];
+    const paragraphs = splitParagraphs(text);
+    if (!paragraphs.length) return [];
+    if (paragraphs.length === 1 && paragraphs[0].length <= chunkSize) return [paragraphs[0]];
 
     const chunks = [];
-    let start = 0;
+    let buffer = '';
 
-    while (start < normalized.length) {
-        const end = Math.min(start + chunkSize, normalized.length);
-        const chunk = normalized.slice(start, end).trim();
+    const pushBuffer = () => {
+        const chunk = buffer.trim();
         if (chunk) {
             chunks.push(chunk);
         }
+        buffer = '';
+    };
 
-        if (end >= normalized.length) {
-            break;
+    for (const paragraph of paragraphs) {
+        if (paragraph.length > chunkSize) {
+            pushBuffer();
+            const pieces = splitLongParagraph(paragraph, chunkSize);
+            chunks.push(...pieces);
+            continue;
         }
 
-        start = Math.max(0, end - overlap);
+        const candidate = buffer ? `${buffer}\n\n${paragraph}` : paragraph;
+        if (candidate.length <= chunkSize) {
+            buffer = candidate;
+            continue;
+        }
+
+        pushBuffer();
+
+        if (paragraph.length <= chunkSize) {
+            buffer = paragraph;
+        } else {
+            chunks.push(paragraph.slice(0, chunkSize).trim());
+        }
+    }
+
+    pushBuffer();
+
+    if (!chunks.length && overlap > 0) {
+        return [normalizeText(text).slice(0, chunkSize).trim()].filter(Boolean);
     }
 
     return chunks;
@@ -85,6 +156,31 @@ const embeddingInputForModel = (modelId, text, kind = 'document') => {
 
     return cleaned;
 };
+
+function cosineSimilarity(leftVector, rightVector) {
+    if (!Array.isArray(leftVector) || !Array.isArray(rightVector) || !leftVector.length || !rightVector.length) {
+        return 0;
+    }
+
+    let dot = 0;
+    let leftNorm = 0;
+    let rightNorm = 0;
+    const size = Math.min(leftVector.length, rightVector.length);
+
+    for (let index = 0; index < size; index += 1) {
+        const leftValue = Number(leftVector[index]) || 0;
+        const rightValue = Number(rightVector[index]) || 0;
+        dot += leftValue * rightValue;
+        leftNorm += leftValue * leftValue;
+        rightNorm += rightValue * rightValue;
+    }
+
+    if (!leftNorm || !rightNorm) {
+        return 0;
+    }
+
+    return dot / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm));
+}
 
 const buildSourceKey = (sourceKind, parts = []) => `${sourceKind}:${parts.map((part) => String(part || '').trim()).filter(Boolean).join(':')}`;
 
@@ -227,7 +323,18 @@ export async function queueBidDocumentEmbeddings({ tenderId, bidId, vendorId, do
         });
     }
 
+    const uniqueDocuments = new Map();
     for (const entry of normalizedDocuments) {
+        const documentId = entry?.documentId || entry?._id;
+        const key = documentId
+            ? String(documentId)
+            : `${String(entry?.label || '')}:${sha1(String(entry?.document || ''))}`;
+        if (!uniqueDocuments.has(key)) {
+            uniqueDocuments.set(key, entry);
+        }
+    }
+
+    for (const entry of uniqueDocuments.values()) {
         const rawContent = typeof entry?.document === 'string' ? entry.document : '';
         if (!rawContent) continue;
 
@@ -584,7 +691,7 @@ export async function processPendingDocumentEmbeddingJobs({ batchSize = DEFAULT_
             await DocumentEmbeddingJob.findByIdAndUpdate(job._id, {
                 $set: {
                     status: 'failed',
-                    lastError: error instanceof Error ? error.message : 'Document embedding failed',
+                    lastError: error instanceof Error ? error.message : 'Document prep failed',
                     processedAt: new Date(),
                 },
             });
@@ -737,31 +844,6 @@ export async function reparseDocumentTextByScope(scope) {
     });
 }
 
-function cosineSimilarity(leftVector, rightVector) {
-    if (!Array.isArray(leftVector) || !Array.isArray(rightVector) || !leftVector.length || !rightVector.length) {
-        return 0;
-    }
-
-    let dot = 0;
-    let leftNorm = 0;
-    let rightNorm = 0;
-    const size = Math.min(leftVector.length, rightVector.length);
-
-    for (let index = 0; index < size; index += 1) {
-        const leftValue = Number(leftVector[index]) || 0;
-        const rightValue = Number(rightVector[index]) || 0;
-        dot += leftValue * rightValue;
-        leftNorm += leftValue * leftValue;
-        rightNorm += rightValue * rightValue;
-    }
-
-    if (!leftNorm || !rightNorm) {
-        return 0;
-    }
-
-    return dot / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm));
-}
-
 export async function searchDocumentChunks({
     query,
     role,
@@ -826,23 +908,57 @@ export async function searchDocumentChunks({
     });
 
     const queryTokens = normalizeText(queryText).toLowerCase().match(/[a-z0-9]+/g) || [];
+    const querySet = new Set(queryTokens);
+    const queryBigrams = [];
+    for (let index = 0; index < Math.max(0, queryTokens.length - 1); index += 1) {
+        queryBigrams.push(`${queryTokens[index]} ${queryTokens[index + 1]}`);
+    }
 
+    const queryLength = Math.max(queryTokens.length, 1);
     const scored = chunks
         .map((chunk) => {
-            const similarityScore = cosineSimilarity(queryEmbedding, Array.isArray(chunk.embedding) ? chunk.embedding : []);
             const searchableText = buildSearchableDocumentText(chunk).toLowerCase();
-            const lexicalScore = queryTokens.reduce((score, token) => score + (searchableText.includes(token) ? (token.length >= 5 ? 0.08 : 0.04) : 0), 0);
-            const sourceKindBoost = queryTokens.some((token) => token === 'tender' && chunk.sourceKind === 'tender-document')
-                || queryTokens.some((token) => token === 'bid' && chunk.sourceKind === 'bid-document')
-                || queryTokens.some((token) => token === 'report' && chunk.sourceKind === 'committee-report')
-                ? 0.05
+            const similarityScore = cosineSimilarity(queryEmbedding, Array.isArray(chunk.embedding) ? chunk.embedding : []);
+            const chunkTokens = tokenizeText(searchableText);
+            if (!chunkTokens.length) {
+                return { ...chunk, score: similarityScore, lexicalScore: 0 };
+            }
+
+            const termCounts = chunkTokens.reduce((accumulator, token) => {
+                accumulator[token] = (accumulator[token] || 0) + 1;
+                return accumulator;
+            }, {});
+            const chunkLength = chunkTokens.length;
+            const avgChunkLength = 180;
+            const k1 = 1.2;
+            const b = 0.72;
+
+            const bm25Score = queryTokens.reduce((sum, token) => {
+                const frequency = termCounts[token] || 0;
+                if (!frequency) return sum;
+                const idf = token.length >= 8 ? 1.4 : token.length >= 5 ? 1.1 : 0.8;
+                const numerator = frequency * (k1 + 1);
+                const denominator = frequency + k1 * (1 - b + (b * chunkLength) / avgChunkLength);
+                return sum + (idf * numerator / denominator);
+            }, 0);
+
+            const exactPhraseHits = queryBigrams.reduce((score, phrase) => score + (searchableText.includes(phrase) ? 1.3 : 0), 0);
+            const coverage = queryTokens.filter((token) => termCounts[token]).length / queryLength;
+            const sourceKindBoost = querySet.has('tender') && chunk.sourceKind === 'tender-document'
+                ? 0.7
+                : querySet.has('bid') && chunk.sourceKind === 'bid-document'
+                    ? 0.7
+                    : querySet.has('report') && chunk.sourceKind === 'committee-report'
+                        ? 0.7
+                        : 0;
+            const authorityBoost = /requirements|specification|scope|eligibility|submission|deadline|criteria|compliance|terms|conditions|instructions/.test(searchableText)
+                ? 0.4
                 : 0;
 
             return {
                 ...chunk,
-                score: similarityScore + lexicalScore + sourceKindBoost,
-                similarityScore,
-                lexicalScore,
+                score: similarityScore + bm25Score + exactPhraseHits + (coverage * 1.2) + sourceKindBoost + authorityBoost,
+                lexicalScore: bm25Score,
             };
         })
         .filter((item) => item.score > 0)

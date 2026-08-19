@@ -15,13 +15,13 @@ async function runCycle() {
     try {
         await seedDocumentEmbeddingJobs();
         const result = await processPendingDocumentEmbeddingJobs();
-        if (result.online) {
+        if (result.online && process.env.AI_AUTO_RUN_ENABLED === 'true') {
             await runAutoAiScoring().catch((error) => {
-                console.error('AI auto-scoring failed after document embedding:', error.message || error);
+                console.error('AI auto-scoring failed after document prep:', error.message || error);
             });
         }
     } catch (error) {
-        console.error('Document embedding worker failed:', error.message || error);
+        console.error('Document prep worker failed:', error.message || error);
     } finally {
         workerRunning = false;
     }
@@ -34,7 +34,7 @@ export function startDocumentEmbeddingWorker() {
     setTimeout(() => {
         runCycle()
             .catch((error) => {
-                console.error('Document embedding seed failed:', error.message || error);
+                console.error('Document prep seed failed:', error.message || error);
             });
     }, WORKER_READY_DELAY_MS);
 

@@ -26,6 +26,21 @@ export type TenderRecord = {
   requiredDocuments?: Array<{ label: string; category: "Technical" | "Commercial" }>;
 };
 
+export const requiredDocumentsForDisplay = (
+  documents?: TenderRecord["requiredDocuments"]
+) => {
+  const configuredDocuments = documents?.length
+    ? documents
+    : [{ label: "Commercial Bid Document", category: "Commercial" as const }];
+  const hasEligibilityProof = configuredDocuments.some(
+    (document) => document.label.trim().toLowerCase() === "eligibility proof"
+  );
+
+  return hasEligibilityProof
+    ? configuredDocuments
+    : [{ label: "Eligibility Proof", category: "Technical" as const }, ...configuredDocuments];
+};
+
 export type MilestoneSummary = {
   _id: string;
   title: string;

@@ -43,6 +43,17 @@ type AiSummary = {
   bidId: string;
   status: "pending" | "success" | "failed";
   generatedAt?: string;
+  summary?: string;
+  eligibility?: {
+    passed?: boolean;
+    reasons?: string[];
+  };
+  aiScores?: {
+    technicalScore?: number;
+    financialScore?: number;
+    overallScore?: number;
+  };
+  aiRank?: number | null;
 };
 
 type EmbeddingDocumentProgress = {
@@ -118,10 +129,10 @@ export function AIEvaluationQueue() {
     setLoading(true);
     setError("");
     try {
-      const data = await apiRequest<TenderRecord[]>("/api/tenders");
-      const queueItems = (data || []).filter((tender) => {
-        return isOwnTender(tender);
-      });
+      const data = await apiRequest<TenderRecord[]>("/api/tenders?summary=true");
+      const allTenderRecords = Array.isArray(data) ? data : [];
+      const ownedQueueItems = allTenderRecords.filter((tender) => isOwnTender(tender));
+      const queueItems = ownedQueueItems.length ? ownedQueueItems : allTenderRecords;
 
       setTenders(queueItems);
       setSelectedTenderId((previousId) => {
@@ -247,6 +258,26 @@ export function AIEvaluationQueue() {
     );
   }, [aiSummaries]);
 
+  const rankedSummaries = useMemo(() => {
+    return [...aiSummaries]
+      .map((summary) => {
+        const explicitRank = Number(summary.aiRank || 0);
+        return {
+          ...summary,
+          resolvedRank: Number.isFinite(explicitRank) && explicitRank > 0 ? explicitRank : null,
+          resolvedScore: Number(summary.aiScores?.overallScore || summary.aiScores?.technicalScore || 0),
+        };
+      })
+      .sort((left, right) => {
+        const leftRank = left.resolvedRank ?? Number.MAX_SAFE_INTEGER;
+        const rightRank = right.resolvedRank ?? Number.MAX_SAFE_INTEGER;
+        if (leftRank !== rightRank) return leftRank - rightRank;
+        if (right.resolvedScore !== left.resolvedScore) return right.resolvedScore - left.resolvedScore;
+        return String(left.bidId).localeCompare(String(right.bidId));
+      })
+      .slice(0, 3);
+  }, [aiSummaries]);
+
   return (
     <div className="flex h-screen bg-[#F4F6F9]">
       <Sidebar role="po" />
@@ -357,12 +388,12 @@ export function AIEvaluationQueue() {
                     )}
                     <div className="mt-4 space-y-2">
                       <div className="flex items-center justify-between gap-3 text-xs text-gray-500">
-                        <span className="font-medium text-[#0B3C5D]">Embedding progress</span>
+                        <span className="font-medium text-[#0B3C5D]">Document prep progress</span>
                         <span>
                           {loadingEmbeddingProgress && !tenderEmbeddingProgress
                             ? "Loading..."
                             : embeddingTotal > 0
-                              ? `${embeddingCompleted}/${embeddingTotal} documents indexed`
+                              ? `${embeddingCompleted}/${embeddingTotal} documents prepared`
                               : "No document jobs queued yet"}
                         </span>
                       </div>
@@ -465,13 +496,49 @@ export function AIEvaluationQueue() {
                 </div>
               )}
 
+              {!!rankedSummaries.length && (
+                <div className="rounded-lg border border-gray-100 bg-white p-4 mb-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="font-medium text-[#0B3C5D]">AI result snapshot</p>
+                      <p className="text-xs text-gray-500">Top summaries sorted by AI rank when available, otherwise by score.</p>
+                    </div>
+                    <span className="text-xs text-gray-400">{rankedSummaries.length} shown</span>
+                  </div>
+                  <div className="mt-3 space-y-2">
+                    {rankedSummaries.map((summary) => (
+                      <div key={summary._id} className="rounded-md border border-gray-100 bg-gray-50 px-3 py-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <p className="text-sm text-[#0B3C5D]">
+                              Bid {String(summary.bidId).slice(-6).toUpperCase()} {summary.resolvedRank ? `#${summary.resolvedRank}` : ""}
+                            </p>
+                            <p className="text-xs text-gray-500">
+                              Tech {Number(summary.aiScores?.technicalScore || 0).toFixed(2)} · Fin {Number(summary.aiScores?.financialScore || 0).toFixed(2)} · Total {Number(summary.aiScores?.overallScore || 0).toFixed(2)}
+                            </p>
+                          </div>
+                          <span className={`rounded-full px-2 py-1 text-xs ${summary.eligibility?.passed === false ? "bg-red-100 text-red-700" : "bg-emerald-100 text-emerald-700"}`}>
+                            {summary.eligibility?.passed === false ? "Eligibility failed" : "Eligibility passed"}
+                          </span>
+                        </div>
+                        {(summary.eligibility?.reasons?.[0] || summary.summary) && (
+                          <p className="mt-1 text-xs text-gray-600">
+                            {summary.eligibility?.reasons?.[0] || summary.summary}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {selectedTender && embeddingProgressMap.get(selectedTender._id) && (
                 <div className="rounded-lg border border-gray-100 bg-gray-50 p-4 mb-4 text-sm text-gray-700">
                   <div className="flex items-center justify-between gap-3">
                     <div>
-                      <p className="font-medium text-[#0B3C5D]">Document embedding checkpoint</p>
+                      <p className="font-medium text-[#0B3C5D]">Document prep checkpoint</p>
                       <p className="text-gray-600">
-                        {embeddingProgressMap.get(selectedTender._id)?.completedJobs || 0}/{embeddingProgressMap.get(selectedTender._id)?.totalJobs || 0} documents indexed for RAG
+                        {embeddingProgressMap.get(selectedTender._id)?.completedJobs || 0}/{embeddingProgressMap.get(selectedTender._id)?.totalJobs || 0} documents prepared for direct comparison
                       </p>
                     </div>
                     <span className="text-xs text-gray-500">

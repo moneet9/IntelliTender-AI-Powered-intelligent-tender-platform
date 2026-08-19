@@ -1,6 +1,7 @@
 import { User, Tender, Contract, AIChatSession } from '../../models/model.js';
 import { sensitiveVendorPattern } from './retrievalEngine.js';
 import { callLocalChat, LOCAL_AI_MODEL } from '../localModelClient.js';
+import { recordResearchMetric } from '../../utils/researchMetrics.js';
 
 const LOCAL_AI_TIMEOUT_MS = Number(process.env.LM_STUDIO_TIMEOUT_MS || process.env.OLLAMA_TIMEOUT_MS || 60000);
 
@@ -78,6 +79,16 @@ const buildGreetingReply = (role, message) => {
 const isSimpleLocalReply = (message) => {
     const lower = String(message || '').trim().toLowerCase();
     return smallTalkPattern.test(lower) || helpPattern.test(lower);
+};
+
+const shouldUseFastLocalReply = (message) => {
+    const lower = String(message || '').trim().toLowerCase();
+    return (
+        isSimpleLocalReply(message)
+        || committeeCountPattern.test(lower)
+        || (countPattern.test(lower) && (tenderPattern.test(lower) || contractPattern.test(lower) || bidPattern.test(lower)))
+        || personLookupPattern.test(lower)
+    );
 };
 
 function inferTenderStatus(query) {
@@ -1030,6 +1041,7 @@ const buildFallbackReply = ({ role, message, context }) => {
 
 export const chatWithAssistant = async (req, res) => {
     let session = null;
+    const startedAt = Date.now();
     try {
         const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
         if (!message) {
@@ -1080,6 +1092,21 @@ export const chatWithAssistant = async (req, res) => {
                 meta: assistantMeta,
             });
 
+            void recordResearchMetric({
+                eventType: 'chat-query',
+                actorId: userId,
+                actorRole: role,
+                chatId: session._id,
+                durationMs: Date.now() - startedAt,
+                status: 'warning',
+                metricName: 'chat_response_time',
+                value: 1,
+                note: 'Vendor query blocked by policy guard',
+                metadata: {
+                    responseMode: 'policy',
+                },
+            });
+
             return res.json({
                 chatId: String(session._id),
                 chat: formatChatSession(session),
@@ -1109,8 +1136,8 @@ export const chatWithAssistant = async (req, res) => {
         let records = [];
         let warning = '';
 
-        if (localFacts.length && isSimpleLocalReply(message)) {
-            reply = localFacts[0];
+        if (localFacts.length && shouldUseFastLocalReply(message)) {
+            reply = localFacts.join(' ');
             model = 'local-rules';
             responseMode = 'local';
         } else {
@@ -1154,6 +1181,26 @@ export const chatWithAssistant = async (req, res) => {
             content: reply,
             createdAt: new Date(),
             meta: assistantMeta,
+        });
+
+        void recordResearchMetric({
+            eventType: 'chat-query',
+            actorId: userId,
+            actorRole: role,
+            chatId: session._id,
+            durationMs: Date.now() - startedAt,
+            status: 'success',
+            metricName: 'chat_response_time',
+            value: 1,
+            note: 'Chatbot response completed',
+            metadata: {
+                model,
+                responseMode,
+                plan: plan || null,
+                collection,
+                count,
+                records: Array.isArray(records) ? records.length : 0,
+            },
         });
 
         return res.json({
@@ -1203,6 +1250,18 @@ export const chatWithAssistant = async (req, res) => {
                 intent: null,
             });
         } catch {
+            void recordResearchMetric({
+                eventType: 'chat-query',
+                actorId: req.user?.id,
+                actorRole: req.user?.role || 'System',
+                chatId: session?._id,
+                durationMs: Date.now() - startedAt,
+                status: 'failed',
+                metricName: 'chat_response_time',
+                value: 1,
+                note: 'Failed to generate assistant response',
+                metadata: {},
+            });
             return res.status(500).json({
                 message: error instanceof Error ? error.message : 'Failed to generate assistant response',
             });

@@ -151,6 +151,11 @@ export function TenderCreation() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!documents.length) {
+      setError("Upload at least one tender document before publishing");
+      return;
+    }
+
     if (evaluationMethod === "L1") {
       if (!isL1Valid) {
         setError("L1 technical cutoff must be a number between 0 and 100");
@@ -353,7 +358,7 @@ export function TenderCreation() {
               <h3 className="text-lg text-[#0B3C5D] mb-4">Tender Documents</h3>
               <label className="block border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-[#1D4E89] transition-colors cursor-pointer">
                 <Upload className="w-10 h-10 text-gray-400 mx-auto mb-3" />
-                <p className="text-sm text-gray-600 mb-1">Upload bid documents, specifications, or compliance sheets</p>
+                <p className="text-sm text-gray-600 mb-1">Upload at least one bid document, specification, or compliance sheet</p>
                 <p className="text-xs text-gray-500">PDF, DOC, DOCX (Max 10MB)</p>
                 <input
                   type="file"

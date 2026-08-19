@@ -1,5 +1,6 @@
 import bcrypt from 'bcryptjs';
-import { User, Tender } from '../models/model.js';
+import { User, Tender, Contract, AIBidSummary, AIMilestoneReport, ResearchMetricEvent } from '../models/model.js';
+import { formatMetricEvent } from '../utils/researchMetrics.js';
 
 const sanitizeUser = (user) => ({
   _id: user._id,
@@ -15,6 +16,151 @@ const sanitizeUser = (user) => ({
   frozenUntil: user.frozenUntil,
   createdAt: user.createdAt,
 });
+
+const average = (values) => {
+  const numbers = values.filter((value) => Number.isFinite(value));
+  if (!numbers.length) return 0;
+  return numbers.reduce((sum, value) => sum + value, 0) / numbers.length;
+};
+
+const round = (value, fractionDigits = 2) => Number(Number(value || 0).toFixed(fractionDigits));
+
+const getCommitteeConsistency = (tenders) => {
+  const deviations = [];
+
+  tenders.forEach((tender) => {
+    (tender.bids || []).forEach((bid) => {
+      const evaluations = Array.isArray(bid.committeeEvaluations) ? bid.committeeEvaluations : [];
+      if (evaluations.length < 2) return;
+
+      const technicalScores = evaluations.map((item) => Number(item.technicalScore || 0));
+      const financialScores = evaluations.map((item) => Number(item.financialScore || 0));
+      const technicalAverage = average(technicalScores);
+      const financialAverage = average(financialScores);
+
+      const deviation = average([
+        ...technicalScores.map((score) => Math.abs(score - technicalAverage)),
+        ...financialScores.map((score) => Math.abs(score - financialAverage)),
+      ]);
+
+      deviations.push(Math.max(0, 100 - deviation * 2));
+    });
+  });
+
+  return round(average(deviations));
+};
+
+const buildResearchLogs = async ({ tenderIds = [], contractIds = [], actorId = null, actorRole = null, limit = 10 }) => {
+  const query = {};
+  const scopeClauses = [];
+  if (tenderIds.length) {
+    scopeClauses.push({ tenderId: { $in: tenderIds } });
+  }
+  if (contractIds.length) {
+    scopeClauses.push({ contractId: { $in: contractIds } });
+  }
+  if (scopeClauses.length) {
+    query.$or = scopeClauses;
+  }
+  if (actorId) {
+    query.actorId = actorId;
+  }
+  if (actorRole) {
+    query.actorRole = actorRole;
+  }
+
+  const logs = await ResearchMetricEvent.find(query)
+    .sort({ createdAt: -1 })
+    .limit(limit)
+    .lean();
+
+  return logs.map(formatMetricEvent);
+};
+
+const buildResearchSummary = async ({ tenderFilter, actorId, actorRole, limit = 8 }) => {
+  const tenders = await Tender.find(tenderFilter).lean();
+  const tenderIds = tenders.map((tender) => tender._id);
+  const contracts = await Contract.find({ tenderId: { $in: tenderIds } }).lean();
+  const aiSummaries = await AIBidSummary.find({ tenderId: { $in: tenderIds } }).lean();
+  const milestoneReports = await AIMilestoneReport.find({ tenderId: { $in: tenderIds } }).lean();
+  const contractIds = contracts.map((contract) => contract._id);
+  const logs = await buildResearchLogs({ tenderIds, contractIds, actorId, actorRole, limit });
+
+  const aiEvaluationEvents = await ResearchMetricEvent.find({
+    eventType: 'ai-bid-scoring',
+    tenderId: { $in: tenderIds },
+    status: 'success',
+  }).lean();
+  const committeeEvaluationEvents = await ResearchMetricEvent.find({
+    eventType: 'committee-evaluation',
+    tenderId: { $in: tenderIds },
+    status: 'success',
+  }).lean();
+  const chatEvents = await ResearchMetricEvent.find({
+    eventType: 'chat-query',
+    ...(actorId ? { actorId } : {}),
+    status: 'success',
+  }).lean();
+  const qwenEvents = await ResearchMetricEvent.find({
+    eventType: 'local-ai-inference',
+    metricName: 'chat-completion',
+    status: 'success',
+    'metadata.model': /qwen/i,
+    ...(tenderIds.length ? { tenderId: { $in: tenderIds } } : {}),
+  }).lean();
+
+  const aiEvaluationAvgMs = round(average(aiEvaluationEvents.map((event) => Number(event.durationMs || 0))));
+  const committeeEvaluationAvgMs = round(average(committeeEvaluationEvents.map((event) => Number(event.durationMs || 0))));
+  const chatQueryAvgMs = round(average(chatEvents.map((event) => Number(event.durationMs || 0))));
+  const bidsProcessedPerHour = aiEvaluationAvgMs > 0 ? round(3600000 / aiEvaluationAvgMs) : 0;
+  const qwenTokens = qwenEvents.map((event) => Number(event.metadata?.totalTokens || 0)).filter((value) => value > 0);
+  const qwenEnergy = qwenEvents.map((event) => Number(event.metadata?.estimatedEnergyJoules)).filter(Number.isFinite);
+  const qwenPower = qwenEvents.map((event) => Number(event.metadata?.averageGpuPowerWatts)).filter(Number.isFinite);
+  const qwenResearch = {
+    sampleCount: qwenEvents.length,
+    averageResponseMs: round(average(qwenEvents.map((event) => Number(event.durationMs || 0)))),
+    averageTokens: round(average(qwenTokens)),
+    tokensPerSecond: round(average(qwenEvents.map((event) => Number(event.metadata?.tokensPerSecond)).filter(Number.isFinite))),
+    averageGpuPowerWatts: qwenPower.length ? round(average(qwenPower)) : null,
+    estimatedEnergyJoules: qwenEnergy.length ? round(average(qwenEnergy)) : null,
+    energyPer1000Tokens: qwenEnergy.length && qwenTokens.length
+      ? round((qwenEnergy.reduce((sum, value) => sum + value, 0) / qwenTokens.reduce((sum, value) => sum + value, 0)) * 1000)
+      : null,
+  };
+
+  const aiRiskCount = aiSummaries.reduce((sum, summary) => (
+    sum
+      + (Array.isArray(summary?.genuityChecks?.warnings) ? summary.genuityChecks.warnings.length : 0)
+      + (Array.isArray(summary?.commercialAnalysis?.risks) ? summary.commercialAnalysis.risks.length : 0)
+  ), 0);
+  const milestoneRiskCount = milestoneReports.reduce((sum, report) => sum + (Array.isArray(report.alerts) ? report.alerts.length : 0), 0);
+  const errorCount = aiSummaries.filter((summary) => summary.status === 'failed').length
+    + milestoneReports.filter((report) => report.status === 'failed').length
+    + (await ResearchMetricEvent.countDocuments({
+      tenderId: { $in: tenderIds },
+      status: 'failed',
+    }));
+
+  return {
+    totals: {
+      tenders: tenders.length,
+      contracts: contracts.length,
+      aiScoredBids: aiSummaries.filter((summary) => summary.status === 'success').length,
+      committeeReviews: committeeEvaluationEvents.length,
+    },
+    metrics: {
+      aiEvaluationAvgMs,
+      committeeEvaluationAvgMs,
+      chatQueryAvgMs,
+      bidsProcessedPerHour,
+      scoreConsistency: getCommitteeConsistency(tenders),
+      errorCount,
+      riskyItemsDetected: aiRiskCount + milestoneRiskCount,
+    },
+    qwenResearch,
+    logs,
+  };
+};
 
 export const createPO = async (req, res) => {
   try {
@@ -294,6 +440,50 @@ export const getCpoAnalytics = async (_req, res) => {
     res.json({
       departmentPerformance: Array.from(departmentMap.values()),
       poPerformance,
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+export const getPoAnalytics = async (req, res) => {
+  try {
+    const tenderFilter = { createdBy: req.user.id };
+    const summary = await buildResearchSummary({ tenderFilter, actorId: req.user.id, actorRole: 'PO', limit: 12 });
+    const tenders = await Tender.find(tenderFilter).lean();
+
+    const publishedTenders = tenders.filter((tender) => tender.status === 'Published').length;
+    const totalSubmissions = tenders.reduce((sum, tender) => sum + (tender.bids?.length || 0), 0);
+    const committeeCount = await User.countDocuments({ role: 'Committee', managerPo: req.user.id });
+
+    res.json({
+      ...summary,
+      dashboard: {
+        publishedTenders,
+        totalSubmissions,
+        committeeCount,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+export const getCpoResearchAnalytics = async (_req, res) => {
+  try {
+    const tenderFilter = {};
+    const summary = await buildResearchSummary({ tenderFilter, actorRole: null, limit: 12 });
+    const tenderCount = await Tender.countDocuments({});
+    const poCount = await User.countDocuments({ role: 'PO' });
+    const committeeCount = await User.countDocuments({ role: 'Committee' });
+
+    res.json({
+      ...summary,
+      dashboard: {
+        tenderCount,
+        poCount,
+        committeeCount,
+      },
     });
   } catch (error) {
     res.status(500).json({ message: error.message });

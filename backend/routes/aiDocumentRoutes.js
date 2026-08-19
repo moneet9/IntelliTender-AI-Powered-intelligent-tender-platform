@@ -19,25 +19,25 @@ router.get('/status', auth(['PO', 'CPO']), async (req, res) => {
 });
 
 router.post('/rebuild', auth(['PO', 'CPO']), async (req, res) => {
-  try {
+    try {
     const scope = String(req.body?.scope || 'all').toLowerCase();
     const result = await rebuildDocumentEmbeddingsByScope(scope);
     res.json({
-      message: 'Document embeddings rebuilt',
+      message: 'Document prep refreshed',
       scope,
       result,
     });
   } catch (error) {
-    res.status(500).json({ message: error.message || 'Failed to rebuild document embeddings' });
+    res.status(500).json({ message: error.message || 'Failed to refresh document prep' });
   }
 });
 
 router.post('/reparse', auth(['PO', 'CPO']), async (req, res) => {
-  try {
+    try {
     const scope = String(req.body?.scope || 'all').toLowerCase();
     const result = await reparseDocumentTextByScope(scope);
     res.json({
-      message: 'Document text reparsed',
+      message: 'Document text refreshed',
       scope,
       result,
     });
@@ -51,7 +51,7 @@ router.get('/progress', auth(['PO', 'CPO']), async (req, res) => {
     const progress = await getTenderDocumentEmbeddingProgress({ createdBy: req.user?.id });
     res.json(progress);
   } catch (error) {
-    res.status(500).json({ message: error.message || 'Failed to load document embedding progress' });
+    res.status(500).json({ message: error.message || 'Failed to load document prep progress' });
   }
 });
 

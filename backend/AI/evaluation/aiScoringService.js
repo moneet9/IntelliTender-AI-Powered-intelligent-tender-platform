@@ -98,6 +98,7 @@ const buildFallbackCriteriaScores = ({ tender, summary, tenderDocs, bidDocs }) =
             awardedMarks: 0,
             ruleType: 'textual',
             evidence: contextEvidence,
+            documentLabel: criterion.label,
         }));
 };
 
@@ -105,6 +106,21 @@ const truncateText = (value) => {
     const text = String(value || '').trim();
     if (text.length <= MAX_TEXT_CHARS) return text;
     return `${text.slice(0, MAX_TEXT_CHARS)}\n[TRUNCATED]`;
+};
+
+const normalizeLabel = (value) => String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+
+const buildDocumentPack = (documents, sideLabel) => {
+    return Array.isArray(documents)
+        ? documents.map((document, index) => ({
+            index: index + 1,
+            label: String(document?.label || document?.name || `${sideLabel} document ${index + 1}`).trim(),
+            referenceName: String(document?.name || document?.label || `${sideLabel} document ${index + 1}`).trim(),
+            category: String(document?.category || '').trim(),
+            mimeType: document?.mimeType || null,
+            text: truncateText(document?.text || ''),
+        }))
+        : [];
 };
 
 const budgetDocumentContext = (documents, sideLabel) => {
@@ -194,6 +210,7 @@ const collectBidDocuments = async (bid) => {
                 const text = await extractTextFromContent(decoded.content, decoded.mimeType, decoded.name);
                 outputs.push({
                     label: entry.label || stored.name || 'Bid document',
+                    category: entry.category || 'Technical',
                     mimeType: decoded.mimeType || stored.mimeType,
                     text: truncateText(text),
                 });
@@ -205,6 +222,7 @@ const collectBidDocuments = async (bid) => {
         const text = await extractTextFromContent(decoded.content, decoded.mimeType, decoded.name);
         outputs.push({
             label: entry?.label || decoded.name || 'Bid document',
+            category: entry?.category || 'Technical',
             mimeType: decoded.mimeType,
             text: truncateText(text),
         });
@@ -215,6 +233,7 @@ const collectBidDocuments = async (bid) => {
         const text = await extractTextFromContent(decoded.content, decoded.mimeType, decoded.name);
         outputs.push({
             label: 'Proposal document',
+            category: 'Commercial',
             mimeType: decoded.mimeType,
             text: truncateText(text),
         });
@@ -236,12 +255,15 @@ const collectIndexedBidDocuments = async (tender, bid) => {
 
     return groups.map((group, index) => ({
         label: group.sourceName || `Bid document ${index + 1}`,
+        category: group.sourceKind === 'bid-document' ? 'Technical' : 'Technical',
         mimeType: null,
         text: truncateText(group.text || ''),
     })).filter((item) => item.text);
 };
 
 const buildPrompt = ({ tender, bid, tenderDocs, bidDocs }) => {
+    const tenderPack = buildDocumentPack(tenderDocs, 'Tender');
+    const bidPack = buildDocumentPack(bidDocs, 'Bid');
     const tenderMeta = {
         title: tender?.title,
         category: tender?.category,
@@ -259,20 +281,33 @@ const buildPrompt = ({ tender, bid, tenderDocs, bidDocs }) => {
     return `You are an AI evaluation engine for procurement tenders.
 
 Rules:
-- First decide eligibility by comparing the tender document, required documents, and submitted bid documents. If the bid is ineligible, explain why and set technical and financial scores to zero.
-- If eligible, evaluate the uploaded documents against each required technical criterion and award marks with evidence.
+- Treat the tender documents as the source of truth.
+- Read the bid documents only as claims that must be checked against the tender.
+- Separate the buyer-side identity from the bidder identity.
+- Any organization name on the tender pack is usually the issuing authority, buyer, or certifier, not the bidder.
+- Do not reject a bid because the tender-side document shows a different company name than the bidder name.
+- Only flag a name mismatch when the bid response pack itself names a different bidder than bid.vendorName or the tender explicitly requires a bidder legal name that conflicts with the bid pack.
+- Phase 1: decide eligibility first.
+- Phase 2: only if eligibility passes, evaluate technical criteria one by one.
+- Phase 3: only if eligibility passes, evaluate the commercial bid document.
+- Review documents in their labeled order. Use the label as the source of truth for what each document is meant to do.
+- The upload flow already enforces the required document labels, so do not waste scoring on re-checking whether the files were accepted; focus on their content, purpose, and evidence.
+- For each technical criterion, return the documentLabel you used for the score.
 - Score each criterion using maxMarks. Binary criteria are full marks or zero.
 - Ratio criteria: award proportional marks (e.g., 2/3 * 20).
-- Validate certificate issuing authority when specified (logo/letterhead/issuer).
+- Validate certificate issuing authority only against the bid response pack and the tender's explicit requirement. A tender-side issuer name is not a bidder mismatch.
 - Flag suspected document tampering or manipulation.
 - Keep evidence and rationale short: one brief sentence per criterion, no long quotes, no filler.
+- Do not assume a bid is compliant unless the bid text explicitly proves it against the tender text.
+- If a tender requirement is not found in the bid documents, mark it as missing.
+- For missing commercial bid documents, mark the bid ineligible instead of inferring compliance from tender-side paperwork.
 - For commercial values, apply the tender evaluation method. Use QCBS weights when QCBS is selected and use the lowest-price commercial logic for L1-style evaluation.
 - Keep the answer structured so the PO can review committee marks, AI marks, and the final award decision.
 
 Return STRICT JSON with this shape:
 {
   "eligibility": {"passed": boolean, "reasons": [string]},
-  "criteriaScores": [{"criterion": string, "maxMarks": number, "awardedMarks": number, "ruleType": "binary|ratio|numeric|textual", "evidence": [string]}],
+  "criteriaScores": [{"criterion": string, "documentLabel": string, "maxMarks": number, "awardedMarks": number, "ruleType": "binary|ratio|numeric|textual", "evidence": [string]}],
   "commercialAnalysis": {"statedValue": number, "adjustedValue": number, "rationale": string, "risks": [string]},
   "genuityChecks": {"warnings": [string], "confidence": number},
   "aiScores": {"technicalScore": number, "financialScore": number, "overallScore": number},
@@ -283,14 +318,14 @@ Return STRICT JSON with this shape:
 Tender metadata:
 ${JSON.stringify(tenderMeta)}
 
-Tender documents (text extracts):
-${JSON.stringify(tenderDocs)}
+Tender authority pack:
+${JSON.stringify(tenderPack)}
 
 Bid metadata:
 ${JSON.stringify(bidMeta)}
 
-Bid documents (text extracts):
-${JSON.stringify(bidDocs)}
+Bid response pack:
+${JSON.stringify(bidPack)}
 `;
 };
 
@@ -320,6 +355,7 @@ export const runAiScoring = async ({ tender, bid }) => {
         indexedBidDocs.length ? indexedBidDocs : await collectBidDocuments(bid),
         'Bid'
     );
+
     const prompt = buildPrompt({ tender, bid, tenderDocs, bidDocs });
 
     let responseText = await callLocalModel(prompt);
@@ -345,7 +381,7 @@ export const runAiScoring = async ({ tender, bid }) => {
         raw: responseText,
         tenderDocs,
         bidDocs,
-        promptVersion: 'v1',
+        promptVersion: 'strict-doc-compare-v2',
         model: AI_SCORING_MODEL || LOCAL_AI_MODEL,
         parseWarning: parsed && typeof parsed === 'object' ? null : 'AI response could not be parsed cleanly',
     };

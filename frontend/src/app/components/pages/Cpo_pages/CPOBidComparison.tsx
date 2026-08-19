@@ -91,19 +91,38 @@ export function CPOBidComparison() {
 
   const aiRanking = useMemo(() => {
     return [...evaluatedBids]
-      .map((bid) => ({
-        bidId: bid._id,
-        score: Number(aiSummaryMap.get(bid._id)?.aiScores?.overallScore || 0),
-      }))
-      .sort((a, b) => b.score - a.score)
+      .map((bid) => {
+        const summary = aiSummaryMap.get(bid._id);
+        const explicitRank = Number(summary?.aiRank || 0);
+        return {
+          bidId: bid._id,
+          aiRank: Number.isFinite(explicitRank) && explicitRank > 0 ? explicitRank : null,
+          score: Number(summary?.aiScores?.overallScore || summary?.aiScores?.technicalScore || 0),
+        };
+      })
+      .sort((left, right) => {
+        const leftRank = left.aiRank ?? Number.MAX_SAFE_INTEGER;
+        const rightRank = right.aiRank ?? Number.MAX_SAFE_INTEGER;
+        if (leftRank !== rightRank) {
+          return leftRank - rightRank;
+        }
+        if (right.score !== left.score) {
+          return right.score - left.score;
+        }
+        return String(left.bidId).localeCompare(String(right.bidId));
+      })
       .map((item, index) => ({ ...item, rank: index + 1 }));
   }, [evaluatedBids, aiSummaryMap]);
+
+  const aiRankMap = useMemo(() => {
+    return new Map(aiRanking.map((item) => [item.bidId, item.rank]));
+  }, [aiRanking]);
 
   const evaluationMethod = selectedTender?.evaluationMethod || "QCBS";
 
   const loadTenders = async () => {
     try {
-      const data = await apiRequest<any[]>("/api/tenders");
+      const data = await apiRequest<any[]>("/api/tenders?summary=true");
       setTenders(data);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Failed to load tenders");
@@ -320,7 +339,14 @@ export function CPOBidComparison() {
                               bid.committeeEvaluations.length
                           )
                         : Number(bid.technicalScore || 0);
-                      const rank = aiRanking.find((item) => item.bidId === bid._id)?.rank || "-";
+                      const rank = aiRankMap.get(bid._id) || "-";
+                      const eligibilityPassed = ai?.eligibility?.passed;
+                      const eligibilityReason = ai?.eligibility?.reasons?.[0] || "";
+                      const scoreSummary = [
+                        `Tech ${Number(ai?.aiScores?.technicalScore || 0).toFixed(2)}`,
+                        `Fin ${Number(ai?.aiScores?.financialScore || 0).toFixed(2)}`,
+                        `Total ${Number(ai?.aiScores?.overallScore || 0).toFixed(2)}`,
+                      ].join(" · ");
                       return (
                         <tr key={bid._id} className="hover:bg-gray-50">
                           <td className="px-4 py-3">
@@ -340,8 +366,21 @@ export function CPOBidComparison() {
                               #{rank}
                             </span>
                           </td>
-                          <td className="px-4 py-3 text-xs text-gray-600 max-w-[280px]">
-                            {ai?.summary || ai?.rationale?.join(" ") || "AI analysis pending"}
+                          <td className="px-4 py-3 text-xs text-gray-600 max-w-[320px]">
+                            <div className="space-y-2">
+                              <p>{ai?.summary || ai?.rationale?.join(" ") || "AI analysis pending"}</p>
+                              <p className="text-[11px] text-gray-500">{scoreSummary}</p>
+                              <div className="flex flex-wrap gap-1">
+                                <span className={`rounded-full px-2 py-0.5 text-[11px] ${eligibilityPassed === false ? "bg-red-50 text-red-700" : "bg-emerald-50 text-emerald-700"}`}>
+                                  {eligibilityPassed === false ? "Eligibility failed" : "Eligibility passed"}
+                                </span>
+                                {eligibilityReason ? (
+                                  <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] text-gray-600">
+                                    {eligibilityReason}
+                                  </span>
+                                ) : null}
+                              </div>
+                            </div>
                           </td>
                         </tr>
                       );

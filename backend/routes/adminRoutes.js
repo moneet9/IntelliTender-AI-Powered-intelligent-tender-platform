@@ -13,6 +13,8 @@ import {
   freezeVendor,
   deleteVendor,
   getCpoAnalytics,
+  getPoAnalytics,
+  getCpoResearchAnalytics,
 } from '../controllers/adminController.js';
 
 const router = express.Router();
@@ -32,5 +34,7 @@ router.put('/vendors/:id/freeze', auth(['PO', 'CPO']), freezeVendor);
 router.delete('/vendors/:id', auth(['PO', 'CPO']), deleteVendor);
 
 router.get('/analytics/cpo', auth('CPO'), getCpoAnalytics);
+router.get('/analytics/po', auth('PO'), getPoAnalytics);
+router.get('/analytics/research', auth(['PO', 'CPO']), getCpoResearchAnalytics);
 
 export default router;

@@ -44,14 +44,15 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server started on port ${PORT}`));
 startDocumentEmbeddingWorker();
 
-runAutoAiScoring().catch((error) => {
-	console.error('AI auto-scoring initial run failed:', error.message || error);
-});
-
+const autoScoringEnabled = process.env.AI_AUTO_RUN_ENABLED === 'true';
 const autoRunInterval = Number(process.env.AI_AUTO_RUN_INTERVAL_MS || 120000);
-if (autoRunInterval > 0) {
+if (autoScoringEnabled && autoRunInterval > 0) {
+	void runAutoAiScoring().catch((error) => {
+		console.error('AI auto-scoring initial run failed:', error.message || error);
+	});
+
 	setInterval(() => {
-		runAutoAiScoring().catch((error) => {
+		void runAutoAiScoring().catch((error) => {
 			console.error('AI auto-scoring failed:', error.message || error);
 		});
 	}, autoRunInterval);

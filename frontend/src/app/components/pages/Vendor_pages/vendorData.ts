@@ -14,8 +14,8 @@ export function useVendorData(vendorId?: string) {
 
     try {
       const [tenderData, contractData] = await Promise.all([
-        apiRequest<TenderRecord[]>("/api/tenders"),
-        apiRequest<ContractRecord[]>("/api/contracts"),
+        apiRequest<TenderRecord[]>("/api/tenders?summary=true"),
+        apiRequest<ContractRecord[]>("/api/contracts?summary=true"),
       ]);
 
       setTenders(tenderData || []);

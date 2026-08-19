@@ -7,6 +7,7 @@ import { CPOContractStatus } from "./components/pages/Cpo_pages/CPOContractStatu
 import { PODashboard } from "./components/pages/Po_pages/PODashboard";
 import { CommitteeDashboard } from "./components/pages/Commitee_member_pages/CommitteeDashboard";
 import { TenderCreation } from "./components/pages/Po_pages/TenderCreation";
+import { TenderDocumentEdit } from "./components/pages/Po_pages/TenderDocumentEdit";
 import { AIEvaluation } from "./components/pages/Po_pages/AIEvaluation";
 import { AIEvaluationQueue } from "./components/pages/Po_pages/AIEvaluationQueue";
 import { PoAlerts } from "./components/pages/Po_pages/PoAlerts";
@@ -68,6 +69,10 @@ export const router = createBrowserRouter([
   {
     path: "/po/publish-tender",
     Component: TenderCreation,
+  },
+  {
+    path: "/po/edit-tender",
+    Component: TenderDocumentEdit,
   },
   {
     path: "/po/evaluation",

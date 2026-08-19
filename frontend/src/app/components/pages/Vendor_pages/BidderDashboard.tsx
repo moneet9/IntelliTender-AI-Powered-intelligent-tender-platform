@@ -10,6 +10,7 @@ import {
   getStoredDocumentName,
   getStoredDocumentUrl,
 } from "../../../document-utils";
+import { requiredDocumentsForDisplay } from "./vendorHelpers";
 
 type BidStatus = "Pending" | "Evaluated" | "Selected" | "Rejected";
 type ContractStatus = "Awarded" | "Signed" | "Completed" | "Cancelled";
@@ -93,8 +94,8 @@ export function BidderDashboard() {
   const [selectedTenderId, setSelectedTenderId] = useState("");
   const [declaration, setDeclaration] = useState(false);
   const [proposedAmount, setProposedAmount] = useState("");
-  const [documentUploads, setDocumentUploads] = useState<Record<string, string>>({});
-  const [documentNames, setDocumentNames] = useState<Record<string, string>>({});
+  const [documentUploads, setDocumentUploads] = useState<Record<string, string[]>>({});
+  const [documentNames, setDocumentNames] = useState<Record<string, string[]>>({});
   const [tenders, setTenders] = useState<TenderRecord[]>([]);
   const [contracts, setContracts] = useState<ContractRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -108,8 +109,8 @@ export function BidderDashboard() {
 
     try {
       const [tenderData, contractData] = await Promise.all([
-        apiRequest<TenderRecord[]>("/api/tenders"),
-        apiRequest<ContractRecord[]>("/api/contracts"),
+        apiRequest<TenderRecord[]>("/api/tenders?summary=true"),
+        apiRequest<ContractRecord[]>("/api/contracts?summary=true"),
       ]);
 
       setTenders(tenderData || []);
@@ -194,6 +195,12 @@ export function BidderDashboard() {
   );
 
   const openBidModal = (tenderId: string) => {
+    const tender = tenders.find((item) => item._id === tenderId);
+    if (tender && hasExistingBid(tender, authUser?._id)) {
+      setFormError("You have already submitted a bid for this tender");
+      return;
+    }
+
     setSelectedTenderId(tenderId);
     setShowSubmissionForm(true);
     setError("");
@@ -220,16 +227,14 @@ export function BidderDashboard() {
       setError("Enter a valid proposed amount before submitting the bid");
       return;
     }
-    const requiredDocs = (selectedTender?.requiredDocuments || []).length
-      ? selectedTender?.requiredDocuments || []
-      : [{ label: "Commercial Bid Document", category: "Commercial" }];
+    const requiredDocs = requiredDocumentsForDisplay(selectedTender?.requiredDocuments);
 
     // Only Eligibility Proof and Commercial are mandatory
     const mandatoryDocs = requiredDocs.filter(
       (d) => d.category === "Commercial" || (d.label || "").trim().toLowerCase() === "eligibility proof"
     );
 
-    const missingDocs = mandatoryDocs.filter((doc) => !documentUploads[doc.label]);
+    const missingDocs = mandatoryDocs.filter((doc) => !(documentUploads[doc.label] || []).length);
     if (missingDocs.length > 0) {
       setError(`Upload required documents: ${missingDocs.map((doc) => doc.label).join(", ")}`);
       return;
@@ -244,7 +249,7 @@ export function BidderDashboard() {
         method: "POST",
         body: {
           proposedAmount: Number(proposedAmount),
-          documents: Object.entries(documentUploads).map(([label, document]) => ({ label, document })),
+          documents: Object.entries(documentUploads).flatMap(([label, documents]) => documents.map((document) => ({ label, document }))),
         },
       });
 
@@ -575,7 +580,7 @@ export function BidderDashboard() {
                   <div>
                     <label className="block text-sm text-gray-700 mb-2">Required Documents</label>
                     <div className="space-y-3">
-                      {(selectedTender?.requiredDocuments || [{ label: "Commercial Bid Document", category: "Commercial" }]).map((doc) => (
+                      {requiredDocumentsForDisplay(selectedTender?.requiredDocuments).map((doc) => (
                         <div key={doc.label} className="border border-gray-200 rounded-lg p-3">
                           <p className="text-xs text-gray-600 mb-2">
                             {doc.label} <span className="text-gray-400">({doc.category})</span>
@@ -583,46 +588,44 @@ export function BidderDashboard() {
                           <label className="block border-2 border-dashed border-gray-300 rounded-lg p-4 text-center hover:border-[#1D4E89] transition-colors cursor-pointer">
                             <Upload className="w-6 h-6 text-gray-400 mx-auto mb-2" />
                             <p className="text-sm text-gray-600 mb-1">
-                              {documentNames[doc.label] ? "Replace uploaded file" : "Upload file"}
+                              {documentNames[doc.label]?.length ? `${documentNames[doc.label].length} file(s) selected` : "Upload file(s)"}
                             </p>
                             <p className="text-xs text-gray-500">PDF, JPG, or PNG only, up to 10MB</p>
                             <input
                               type="file"
+                              multiple
                               className="hidden"
                               accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
                               onChange={async (event) => {
-                                const file = event.target.files?.[0];
-                                if (!file) return;
+                                const files = Array.from(event.target.files || []);
+                                if (!files.length) return;
 
                                 const allowedTypes = ["application/pdf", "image/jpeg", "image/png"];
                                 const allowedExtensions = [".pdf", ".jpg", ".jpeg", ".png"];
-                                const fileName = file.name.toLowerCase();
-                                const hasAllowedExtension = allowedExtensions.some((extension) => fileName.endsWith(extension));
-
-                                if (!allowedTypes.includes(file.type) && !hasAllowedExtension) {
+                                if (files.some((file) => !allowedTypes.includes(file.type) && !allowedExtensions.some((extension) => file.name.toLowerCase().endsWith(extension)))) {
                                   setError("Only PDF, JPG, or PNG files are allowed");
                                   return;
                                 }
 
-                                if (file.size > 10 * 1024 * 1024) {
+                                if (files.some((file) => file.size > 10 * 1024 * 1024)) {
                                   setError("Document size must be 10MB or less");
                                   return;
                                 }
 
                                 try {
                                   setError("");
-                                  const encoded = await encodeFileToStoredDocument(file);
-                                  setDocumentUploads((prev) => ({ ...prev, [doc.label]: encoded }));
-                                  setDocumentNames((prev) => ({ ...prev, [doc.label]: file.name }));
+                                  const encoded = await Promise.all(files.map(encodeFileToStoredDocument));
+                                  setDocumentUploads((prev) => ({ ...prev, [doc.label]: [...(prev[doc.label] || []), ...encoded] }));
+                                  setDocumentNames((prev) => ({ ...prev, [doc.label]: [...(prev[doc.label] || []), ...files.map((file) => file.name)] }));
                                 } catch {
                                   setError("Failed to process selected document");
                                 }
                               }}
                             />
                           </label>
-                          {documentNames[doc.label] && (
+                          {documentNames[doc.label]?.length > 0 && (
                             <div className="mt-2 flex items-center justify-between text-xs">
-                              <span className="text-green-700">Uploaded: {documentNames[doc.label]}</span>
+                              <span className="text-green-700">Uploaded: {documentNames[doc.label].join(", ")}</span>
                               <button
                                 type="button"
                                 onClick={() => {

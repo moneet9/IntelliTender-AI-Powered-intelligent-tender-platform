@@ -305,6 +305,15 @@ const createDelayAnalysis = (contract) => {
 export const getContracts = async (req, res) => {
     try {
         const filter = req.user?.role === 'Vendor' ? { vendorId: req.user.id } : {};
+        if (req.query.summary === 'true') {
+            const contracts = await Contract.find(filter)
+                .select('status timelineDefined timelineStartDate timelineEndDate tenderId vendorId milestones createdAt')
+                .populate('tenderId', 'title')
+                .populate('vendorId', 'name email')
+                .lean();
+            return res.json(contracts);
+        }
+
         const contracts = await Contract.find(filter)
             .populate('tenderId', 'title description category budget preBidDate finalSubmissionDate documents')
             .populate('vendorId', 'name email phone department specialization accountStatus')

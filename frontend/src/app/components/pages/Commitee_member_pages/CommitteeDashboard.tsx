@@ -198,7 +198,7 @@ export function CommitteeDashboard() {
     setError("");
     setSuccess("");
     try {
-      const data = await apiRequest<Tender[]>("/api/tenders");
+      const data = await apiRequest<Tender[]>("/api/tenders?summary=true");
       setTenders(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load tenders");

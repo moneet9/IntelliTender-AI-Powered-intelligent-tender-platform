@@ -1,6 +1,7 @@
 import { Tender, Contract, User, BidDocument } from '../models/model.js';
 import { queueBidDocumentEmbeddings, queueTenderDocumentEmbeddings } from '../AI/documents/documentEmbeddingService.js';
 import { scheduleTenderAiScoring } from '../AI/evaluation/aiScoringController.js';
+import { recordResearchMetric } from '../utils/researchMetrics.js';
 
 const decodeStoredDocument = (value, fallbackName) => {
     if (!value || typeof value !== 'string') {
@@ -376,6 +377,10 @@ export const createTender = async (req, res) => {
             documents,
             milestones,
         } = req.body;
+        if (!Array.isArray(documents) || documents.length === 0) {
+            return res.status(400).json({ message: 'At least one tender document is required before publishing' });
+        }
+
         const normalizedRequiredDocuments = normalizeRequiredDocuments(requiredDocuments);
         const derivedRequiredDocuments = normalizedRequiredDocuments.length
             ? ensureEligibilityProof(normalizedRequiredDocuments)
@@ -416,6 +421,36 @@ export const getTenders = async (req, res) => {
                 return res.json([]);
             }
             filter = { createdBy: user.managerPo };
+        }
+
+        if (req.query.summary === 'true') {
+            const isDocumentListConsumer = ['Vendor', 'Committee'].includes(req.user?.role);
+            const summaryFields = [
+                'title',
+                'status',
+                'createdBy',
+                'createdAt',
+                'finalSubmissionDate',
+                'category',
+                'budget',
+                'evaluationMethod',
+                'qcbsConfig',
+                'requiredDocuments',
+                'bids._id bids.vendorId',
+                ...(isDocumentListConsumer ? [] : ['documents']),
+            ].join(' ');
+            const tenders = await Tender.find(filter)
+                .select(summaryFields)
+                .populate('createdBy', 'name')
+                .lean();
+
+            return res.json(tenders.map((tender) => ({
+                ...tender,
+                documents: isDocumentListConsumer ? [] : (Array.isArray(tender.documents) ? tender.documents : []),
+                bids: Array.isArray(tender.bids)
+                    ? tender.bids.map((bid) => ({ _id: bid._id, vendorId: bid.vendorId }))
+                    : [],
+            })));
         }
 
         const tenders = await Tender.find(filter).populate('createdBy', 'name').lean();
@@ -530,6 +565,9 @@ export const publishTender = async (req, res) => {
         const tender = await Tender.findById(req.params.id);
         if (!tender) return res.status(404).json({ message: 'Tender not found' });
         if (tender.status !== 'Draft') return res.status(400).json({ message: 'Only draft tender can be published' });
+        if (!Array.isArray(tender.documents) || tender.documents.length === 0) {
+            return res.status(400).json({ message: 'At least one tender document is required before publishing' });
+        }
         tender.status = 'Published';
         await tender.save();
         res.json(tender);
@@ -549,6 +587,7 @@ export const closeTender = async (req, res) => {
 
 // --- BID SUBMISSION ---
 export const submitBid = async (req, res) => {
+    const startedAt = Date.now();
     try {
         const tender = await Tender.findById(req.params.id);
         if (!tender) return res.status(404).json({ message: 'Tender not found' });
@@ -563,9 +602,10 @@ export const submitBid = async (req, res) => {
         if (!req.body.proposedAmount || Number(req.body.proposedAmount) <= 0) {
             return res.status(400).json({ message: 'Valid proposedAmount is required' });
         }
-        const requiredDocuments = Array.isArray(tender.requiredDocuments) && tender.requiredDocuments.length > 0
+        const configuredDocuments = Array.isArray(tender.requiredDocuments) && tender.requiredDocuments.length > 0
             ? tender.requiredDocuments
-            : [{ label: 'Commercial Bid Document', category: 'Commercial' }];
+            : buildRequiredDocumentsFromQcbs(tender.qcbsConfig);
+        const requiredDocuments = ensureEligibilityProof(configuredDocuments);
         const submittedDocuments = Array.isArray(req.body.documents) ? req.body.documents : [];
 
         const documentsByLabel = new Map(
@@ -686,6 +726,24 @@ export const submitBid = async (req, res) => {
 
         scheduleTenderAiScoring(tender._id);
 
+        void recordResearchMetric({
+            eventType: 'bid-submission',
+            actorId: req.user.id,
+            actorRole: 'Vendor',
+            actorName: vendor.name,
+            tenderId: tender._id,
+            bidId: tender.bids[tender.bids.length - 1]?._id,
+            durationMs: Date.now() - startedAt,
+            status: 'success',
+            metricName: 'bid_submission_time',
+            value: 1,
+            note: 'Bid submitted successfully',
+            metadata: {
+                documentsSubmitted: submittedDocuments.length,
+                mandatoryDocuments: mandatoryDocs.length,
+            },
+        });
+
         res.status(201).json({ message: 'Bid submitted' });
     } catch (e) { res.status(500).json({ error: e.message }); }
 };
@@ -720,6 +778,7 @@ export const getBidsByTender = async (req, res) => {
 
 // --- MANUAL EVALUATION ---
 export const evaluateBid = async (req, res) => {
+     const startedAt = Date.now();
      try {
         const tender = await Tender.findById(req.params.tenderId);
         if (!tender) return res.status(404).json({ message: 'Tender not found' });
@@ -802,6 +861,22 @@ export const evaluateBid = async (req, res) => {
             bid.evaluatedDate = new Date();
 
             await tender.save();
+            void recordResearchMetric({
+                eventType: 'committee-evaluation',
+                actorId: req.user.id,
+                actorRole: 'Committee',
+                tenderId: tender._id,
+                bidId: bid._id,
+                durationMs: Date.now() - startedAt,
+                status: 'warning',
+                metricName: 'committee_evaluation_time',
+                value: 1,
+                note: 'Bid marked ineligible by committee',
+                metadata: {
+                    committeeEvaluations: bid.committeeEvaluations.length,
+                    eligibilityChecked: false,
+                },
+            });
             return res.json({ message: 'Bid marked ineligible', bid });
         }
 
@@ -823,6 +898,24 @@ export const evaluateBid = async (req, res) => {
         bid.evaluatedDate = new Date();
 
         await tender.save();
+        void recordResearchMetric({
+            eventType: 'committee-evaluation',
+            actorId: req.user.id,
+            actorRole: 'Committee',
+            tenderId: tender._id,
+            bidId: bid._id,
+            durationMs: Date.now() - startedAt,
+            status: 'success',
+            metricName: 'committee_evaluation_time',
+            value: 1,
+            note: 'Committee completed bid evaluation',
+            metadata: {
+                committeeEvaluations: bid.committeeEvaluations.length,
+                averageTechnicalScore: bid.technicalScore,
+                averageFinancialScore: bid.financialScore,
+                eligibilityChecked,
+            },
+        });
         res.json({ message: 'Bid evaluated', bid });
     } catch (e) { res.status(500).json({ error: e.message }); }
 };

@@ -554,7 +554,6 @@ async function buildSemanticBranch(role, userId, query) {
 
     const queryTokens = tokenize(query);
     let queryEmbedding = null;
-
     try {
         queryEmbedding = await getEmbedding(query);
     } catch {
@@ -583,7 +582,7 @@ async function buildSemanticBranch(role, userId, query) {
         summary: {
             candidates: candidates.length,
             matched: topMatches.length,
-            embeddingModel: LOCAL_AI_EMBED_MODEL,
+            scoringModel: LOCAL_AI_EMBED_MODEL,
         },
         matches: topMatches.map((match) => ({
             kind: match.kind,
@@ -638,7 +637,6 @@ async function buildKnowledgeBranch(query) {
 
     const queryTokens = tokenize(query);
     let queryEmbedding = null;
-
     try {
         queryEmbedding = await getEmbedding(query);
     } catch {
@@ -706,7 +704,7 @@ async function buildDocumentBranch(role, userId, query) {
             tenderIds: tenderIds.length,
             contractIds: contractIds.length,
             matches: matches.length,
-            embeddingModel: LOCAL_AI_EMBED_MODEL,
+            scoringModel: LOCAL_AI_EMBED_MODEL,
         },
         matches,
     };

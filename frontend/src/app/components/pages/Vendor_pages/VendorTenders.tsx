@@ -9,6 +9,7 @@ import {
   formatCurrency,
   formatDate,
   hasExistingBid,
+  requiredDocumentsForDisplay,
 } from "./vendorHelpers";
 import { DocumentLinks } from "./vendorShared";
 import { useVendorData } from "./vendorData";
@@ -22,8 +23,8 @@ export function VendorTenders() {
   const [selectedTenderId, setSelectedTenderId] = useState("");
   const [declaration, setDeclaration] = useState(false);
   const [proposedAmount, setProposedAmount] = useState("");
-  const [documentUploads, setDocumentUploads] = useState<Record<string, string>>({});
-  const [documentNames, setDocumentNames] = useState<Record<string, string>>({});
+  const [documentUploads, setDocumentUploads] = useState<Record<string, string[]>>({});
+  const [documentNames, setDocumentNames] = useState<Record<string, string[]>>({});
   const [submittingBid, setSubmittingBid] = useState(false);
   const [formError, setFormError] = useState("");
   const [success, setSuccess] = useState("");
@@ -34,6 +35,12 @@ export function VendorTenders() {
   );
 
   const openBidModal = (tenderId: string) => {
+    const tender = publishedTenders.find((item) => item._id === tenderId);
+    if (tender && hasExistingBid(tender, authUser?._id)) {
+      setFormError("You have already submitted a bid for this tender");
+      return;
+    }
+
     setSelectedTenderId(tenderId);
     setShowSubmissionForm(true);
     setFormError("");
@@ -61,9 +68,7 @@ export function VendorTenders() {
       setFormError("Enter a valid proposed amount before submitting the bid");
       return;
     }
-    const requiredDocs = (selectedTender?.requiredDocuments || []).length
-      ? selectedTender?.requiredDocuments || []
-      : [{ label: "Commercial Bid Document", category: "Commercial" }];
+    const requiredDocs = requiredDocumentsForDisplay(selectedTender?.requiredDocuments);
 
     // Only enforce Commercial category and explicit 'Eligibility Proof' as mandatory
     const mandatoryDocs = requiredDocs.filter((doc) => {
@@ -71,7 +76,7 @@ export function VendorTenders() {
       return doc.category === "Commercial" || label === "eligibility proof";
     });
 
-    const missingDocs = mandatoryDocs.filter((doc) => !documentUploads[String(doc.label || "").trim().toLowerCase()]);
+    const missingDocs = mandatoryDocs.filter((doc) => !(documentUploads[String(doc.label || "").trim().toLowerCase()] || []).length);
     if (missingDocs.length > 0) {
       setFormError(`Upload required documents: ${missingDocs.map((doc) => doc.label).join(", ")}`);
       return;
@@ -89,9 +94,9 @@ export function VendorTenders() {
           documents: requiredDocs
             .map((doc) => ({
               label: doc.label,
-              document: documentUploads[String(doc.label || "").trim().toLowerCase()],
+              document: documentUploads[String(doc.label || "").trim().toLowerCase()] || [],
             }))
-            .filter((d) => d.document),
+              .flatMap((d) => d.document.map((document) => ({ label: d.label, document }))),
         },
       });
 
@@ -233,7 +238,7 @@ export function VendorTenders() {
                   <div>
                     <label className="block text-sm text-gray-700 mb-2">Required Documents</label>
                     <div className="space-y-3">
-                      {(selectedTender?.requiredDocuments || [{ label: "Commercial Bid Document", category: "Commercial" }]).map((doc) => {
+                      {requiredDocumentsForDisplay(selectedTender?.requiredDocuments).map((doc) => {
                         const key = String(doc.label || "").trim();
                         const docKey = key.toLowerCase();
                         return (
@@ -244,46 +249,44 @@ export function VendorTenders() {
                           <label className="block border-2 border-dashed border-gray-300 rounded-lg p-4 text-center hover:border-[#1D4E89] transition-colors cursor-pointer">
                             <Upload className="w-6 h-6 text-gray-400 mx-auto mb-2" />
                             <p className="text-sm text-gray-600 mb-1">
-                              {documentNames[docKey] ? "Replace uploaded file" : "Upload file"}
+                              {documentNames[docKey]?.length ? `${documentNames[docKey].length} file(s) selected` : "Upload file(s)"}
                             </p>
                             <p className="text-xs text-gray-500">PDF, JPG, or PNG only, up to 10MB</p>
                             <input
                               type="file"
+                              multiple
                               className="hidden"
                               accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
                               onChange={async (event) => {
-                                const file = event.target.files?.[0];
-                                if (!file) return;
+                                const files = Array.from(event.target.files || []);
+                                if (!files.length) return;
 
                                 const allowedTypes = ["application/pdf", "image/jpeg", "image/png"];
                                 const allowedExtensions = [".pdf", ".jpg", ".jpeg", ".png"];
-                                const fileName = file.name.toLowerCase();
-                                const hasAllowedExtension = allowedExtensions.some((extension) => fileName.endsWith(extension));
-
-                                if (!allowedTypes.includes(file.type) && !hasAllowedExtension) {
+                                if (files.some((file) => !allowedTypes.includes(file.type) && !allowedExtensions.some((extension) => file.name.toLowerCase().endsWith(extension)))) {
                                   setFormError("Only PDF, JPG, or PNG files are allowed");
                                   return;
                                 }
 
-                                if (file.size > 10 * 1024 * 1024) {
+                                if (files.some((file) => file.size > 10 * 1024 * 1024)) {
                                   setFormError("Document size must be 10MB or less");
                                   return;
                                 }
 
                                 try {
                                   setFormError("");
-                                  const encoded = await encodeFileToStoredDocument(file);
-                                  setDocumentUploads((prev) => ({ ...prev, [docKey]: encoded }));
-                                  setDocumentNames((prev) => ({ ...prev, [docKey]: file.name }));
+                                  const encoded = await Promise.all(files.map(encodeFileToStoredDocument));
+                                  setDocumentUploads((prev) => ({ ...prev, [docKey]: [...(prev[docKey] || []), ...encoded] }));
+                                  setDocumentNames((prev) => ({ ...prev, [docKey]: [...(prev[docKey] || []), ...files.map((file) => file.name)] }));
                                 } catch {
                                   setFormError("Failed to process selected document");
                                 }
                               }}
                             />
                           </label>
-                          {documentNames[docKey] && (
+                          {documentNames[docKey]?.length > 0 && (
                             <div className="mt-2 flex items-center justify-between text-xs">
-                              <span className="text-green-700">Uploaded: {documentNames[docKey]}</span>
+                              <span className="text-green-700">Uploaded: {documentNames[docKey].join(", ")}</span>
                               <button
                                 type="button"
                                 onClick={() => {

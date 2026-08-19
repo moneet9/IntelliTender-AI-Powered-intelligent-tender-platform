@@ -6,7 +6,7 @@ import { Search, Filter, X, Calendar, FileText, SlidersHorizontal, Upload, Check
 import { apiRequest, getAuthUser } from "../../../api";
 import { encodeFileToStoredDocument } from "../../../document-utils";
 import { DocumentLinks } from "./vendorShared";
-import { formatDateTime, hasExistingBid, type TenderRecord } from "./vendorHelpers";
+import { formatDateTime, hasExistingBid, requiredDocumentsForDisplay, type TenderRecord } from "./vendorHelpers";
 
 export function ContractSearch() {
   const authUser = getAuthUser();
@@ -28,8 +28,8 @@ export function ContractSearch() {
   const [selectedTenderId, setSelectedTenderId] = useState("");
   const [declaration, setDeclaration] = useState(false);
   const [proposedAmount, setProposedAmount] = useState("");
-  const [documentUploads, setDocumentUploads] = useState<Record<string, string>>({});
-  const [documentNames, setDocumentNames] = useState<Record<string, string>>({});
+  const [documentUploads, setDocumentUploads] = useState<Record<string, string[]>>({});
+  const [documentNames, setDocumentNames] = useState<Record<string, string[]>>({});
   const [submittingBid, setSubmittingBid] = useState(false);
   const [formError, setFormError] = useState("");
   const [success, setSuccess] = useState("");
@@ -37,13 +37,14 @@ export function ContractSearch() {
   // View Details modal state
   const [showDetailsModal, setShowDetailsModal] = useState(false);
   const [selectedDetailsId, setSelectedDetailsId] = useState("");
+  const [loadingDetails, setLoadingDetails] = useState(false);
 
   // Load tenders from backend
   useEffect(() => {
     const loadTenders = async () => {
       try {
         setLoading(true);
-        const data = await apiRequest<TenderRecord[]>("/api/tenders");
+        const data = await apiRequest<TenderRecord[]>("/api/tenders?summary=true");
         setTenders(Array.isArray(data) ? data : []);
         setError("");
       } catch (err) {
@@ -67,9 +68,20 @@ export function ContractSearch() {
     [tenders, selectedDetailsId]
   );
 
-  const openDetailsModal = (tenderId: string) => {
+  const openDetailsModal = async (tenderId: string) => {
     setSelectedDetailsId(tenderId);
     setShowDetailsModal(true);
+    setLoadingDetails(true);
+    try {
+      const detailedTender = await apiRequest<TenderRecord>(`/api/tenders/${tenderId}`);
+      setTenders((current) => current.map((tender) => (
+        tender._id === tenderId ? detailedTender : tender
+      )));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load tender details");
+    } finally {
+      setLoadingDetails(false);
+    }
   };
 
   const closeDetailsModal = () => {
@@ -78,6 +90,12 @@ export function ContractSearch() {
   };
 
   const openBidModal = (tenderId: string) => {
+    const tender = tenders.find((item) => item._id === tenderId);
+    if (tender && hasExistingBid(tender, authUser?._id)) {
+      setFormError("You have already submitted a bid for this tender");
+      return;
+    }
+
     setSelectedTenderId(tenderId);
     setShowSubmissionForm(true);
     setFormError("");
@@ -106,16 +124,14 @@ export function ContractSearch() {
       return;
     }
 
-    const requiredDocs = (selectedTender?.requiredDocuments || []).length
-      ? selectedTender?.requiredDocuments || []
-      : [{ label: "Commercial Bid Document", category: "Commercial" }];
+    const requiredDocs = requiredDocumentsForDisplay(selectedTender?.requiredDocuments);
 
     // Only Eligibility Proof and Commercial are mandatory
     const mandatoryDocs = requiredDocs.filter(
       (d) => d.category === "Commercial" || (d.label || "").trim().toLowerCase() === "eligibility proof"
     );
 
-    const missingDocs = mandatoryDocs.filter((doc) => !documentUploads[doc.label]);
+    const missingDocs = mandatoryDocs.filter((doc) => !(documentUploads[doc.label] || []).length);
     if (missingDocs.length > 0) {
       setFormError(`Upload required documents: ${missingDocs.map((doc) => doc.label).join(", ")}`);
       return;
@@ -130,14 +146,14 @@ export function ContractSearch() {
         method: "POST",
         body: {
           proposedAmount: Number(proposedAmount),
-          documents: Object.entries(documentUploads).map(([label, document]) => ({ label, document })),
+          documents: Object.entries(documentUploads).flatMap(([label, documents]) => documents.map((document) => ({ label, document }))),
         },
       });
 
       setSuccess("Bid submitted successfully");
       closeBidModal();
       // Reload tenders to reflect new bid status
-      const data = await apiRequest<TenderRecord[]>("/api/tenders");
+      const data = await apiRequest<TenderRecord[]>("/api/tenders?summary=true");
       setTenders(Array.isArray(data) ? data : []);
     } catch (err) {
       setFormError(err instanceof Error ? err.message : "Bid submission failed");
@@ -460,7 +476,7 @@ export function ContractSearch() {
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">Required Documents (PDF, JPG, PNG)</label>
                       <div className="space-y-3">
-                        {(selectedTender?.requiredDocuments || [{ label: "Commercial Bid Document", category: "Commercial" }]).map(
+                        {requiredDocumentsForDisplay(selectedTender?.requiredDocuments).map(
                           (doc) => {
                             const displayCategory =
                               doc.label.trim().toLowerCase() === "eligibility proof" ? "Eligibility" : doc.category;
@@ -472,44 +488,42 @@ export function ContractSearch() {
                                 </p>
                                 <label className="w-full px-4 py-2 border-2 border-dashed border-gray-300 rounded-md cursor-pointer hover:border-[#1D4E89] transition-colors flex items-center justify-center gap-2 text-sm text-gray-600">
                                   <Upload className="w-4 h-4" />
-                                  {documentNames[doc.label] || "Click to upload file"}
+                                  {documentNames[doc.label]?.length ? `${documentNames[doc.label].length} file(s) selected` : "Click to upload file(s)"}
                                   <input
                                     type="file"
+                                    multiple
                                     accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
                                     className="hidden"
                                     onChange={async (event) => {
-                                      const file = event.target.files?.[0];
-                                      if (!file) return;
+                                      const files = Array.from(event.target.files || []);
+                                      if (!files.length) return;
 
                                       const allowedTypes = ["application/pdf", "image/jpeg", "image/png"];
                                       const allowedExtensions = [".pdf", ".jpg", ".jpeg", ".png"];
-                                      const fileName = file.name.toLowerCase();
-                                      const hasAllowedExtension = allowedExtensions.some((extension) => fileName.endsWith(extension));
-
-                                      if (!allowedTypes.includes(file.type) && !hasAllowedExtension) {
+                                      if (files.some((file) => !allowedTypes.includes(file.type) && !allowedExtensions.some((extension) => file.name.toLowerCase().endsWith(extension)))) {
                                         setFormError("Please upload a PDF, JPG, or PNG file");
                                         return;
                                       }
 
-                                      if (file.size > 10 * 1024 * 1024) {
+                                      if (files.some((file) => file.size > 10 * 1024 * 1024)) {
                                         setFormError("File size must be less than 10MB");
                                         return;
                                       }
 
                                       try {
                                         setFormError("");
-                                        const encoded = await encodeFileToStoredDocument(file);
-                                        setDocumentUploads((prev) => ({ ...prev, [doc.label]: encoded }));
-                                        setDocumentNames((prev) => ({ ...prev, [doc.label]: file.name }));
+                                        const encoded = await Promise.all(files.map(encodeFileToStoredDocument));
+                                        setDocumentUploads((prev) => ({ ...prev, [doc.label]: [...(prev[doc.label] || []), ...encoded] }));
+                                        setDocumentNames((prev) => ({ ...prev, [doc.label]: [...(prev[doc.label] || []), ...files.map((file) => file.name)] }));
                                       } catch (err) {
                                         setFormError(err instanceof Error ? err.message : "File upload failed");
                                       }
                                     }}
                                   />
                                 </label>
-                                {documentNames[doc.label] && (
+                                {documentNames[doc.label]?.length > 0 && (
                                   <div className="mt-2 flex items-center justify-between text-xs">
-                                    <span className="text-green-700">Uploaded: {documentNames[doc.label]}</span>
+                                    <span className="text-green-700">Uploaded: {documentNames[doc.label].join(", ")}</span>
                                     <button
                                       type="button"
                                       onClick={() => {
@@ -608,7 +622,11 @@ export function ContractSearch() {
                   {/* Description */}
                   <div className="mb-6">
                     <h3 className="text-sm font-semibold text-gray-700 mb-2">Description</h3>
-                    <p className="text-sm text-gray-600">{detailedTender.description}</p>
+                    {loadingDetails ? (
+                      <p className="text-sm text-gray-500">Loading tender details...</p>
+                    ) : (
+                      <p className="text-sm text-gray-600">{detailedTender.description}</p>
+                    )}
                   </div>
 
                   {/* Key Details */}
@@ -633,7 +651,7 @@ export function ContractSearch() {
                   </div>
 
                   {/* Documents Section */}
-                  {detailedTender.documents && detailedTender.documents.length > 0 && (
+                  {!loadingDetails && detailedTender.documents && detailedTender.documents.length > 0 && (
                     <div className="mb-6">
                       <h3 className="text-sm font-semibold text-gray-700 mb-3">Specification Documents</h3>
                       <div className="bg-blue-50 p-4 rounded-lg">

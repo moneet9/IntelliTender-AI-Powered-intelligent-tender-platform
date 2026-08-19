@@ -9,6 +9,10 @@ import {
   AlertTriangle,
   Clock,
   IndianRupee,
+  Clock3,
+  Sparkles,
+  ShieldAlert,
+  Zap,
 } from "lucide-react";
 import {
   BarChart,
@@ -45,21 +49,60 @@ const recentAudits = [
   { tender: "TND-2026-042", action: "Penalty Imposed", officer: "Amit Singh", time: "1 day ago" },
 ];
 
+type ResearchLog = {
+  id: string;
+  eventType: string;
+  actorRole: string;
+  actorName: string;
+  durationMs: number;
+  status: string;
+  note: string;
+  metricName: string;
+  createdAt: string;
+  metadata?: Record<string, unknown>;
+};
+
 export function CPODashboard() {
   const navigate = useNavigate();
   const authUser = getAuthUser();
   const [departmentPerformance, setDepartmentPerformance] = useState<any[]>([]);
   const [poPerformance, setPoPerformance] = useState<any[]>([]);
+  const [researchMetrics, setResearchMetrics] = useState<{
+    dashboard?: { tenderCount: number; poCount: number; committeeCount: number };
+    metrics?: {
+      aiEvaluationAvgMs: number;
+      committeeEvaluationAvgMs: number;
+      chatQueryAvgMs: number;
+      bidsProcessedPerHour: number;
+      scoreConsistency: number;
+      errorCount: number;
+      riskyItemsDetected: number;
+    };
+    qwenResearch?: {
+      sampleCount: number;
+      averageResponseMs: number;
+      averageTokens: number;
+      tokensPerSecond: number;
+      averageGpuPowerWatts: number | null;
+      estimatedEnergyJoules: number | null;
+      energyPer1000Tokens: number | null;
+    };
+    logs?: ResearchLog[];
+  }>({});
   const [actionError, setActionError] = useState("");
 
   const loadCpoAnalytics = async () => {
     try {
-      const data = await apiRequest<{
+      const [data, researchData] = await Promise.all([
+        apiRequest<{
         departmentPerformance: Array<{ department: string; totalTenders: number; awardedTenders: number }>;
         poPerformance: Array<{ poName: string; committeeCount: number; totalTenders: number; committeeEvaluations: number }>;
-      }>("/api/admin/analytics/cpo");
+      }>("/api/admin/analytics/cpo"),
+        apiRequest<typeof researchMetrics>("/api/admin/analytics/research"),
+      ]);
       setDepartmentPerformance(data.departmentPerformance || []);
       setPoPerformance(data.poPerformance || []);
+      setResearchMetrics(researchData || {});
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Failed to load analytics");
     }
@@ -122,6 +165,42 @@ export function CPODashboard() {
                 </div>
               </div>
             ))}
+          </div>
+
+          <div className="bg-white rounded-lg shadow-sm p-5 border border-gray-100 mb-6">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-base font-medium text-[#0B3C5D]">Research Metrics</h3>
+                <p className="text-sm text-gray-500">CPO-wide timing and quality numbers</p>
+              </div>
+              <div className="text-xs px-3 py-1 rounded-full bg-gray-100 text-gray-600">
+                {researchMetrics.dashboard?.tenderCount || 0} tenders in scope
+              </div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {[
+                { label: "AI Bid Time", value: researchMetrics.metrics?.aiEvaluationAvgMs ? `${researchMetrics.metrics.aiEvaluationAvgMs} ms` : "-", icon: Sparkles, color: "bg-[#1D4E89]" },
+                { label: "Committee Time", value: researchMetrics.metrics?.committeeEvaluationAvgMs ? `${researchMetrics.metrics.committeeEvaluationAvgMs} ms` : "-", icon: Clock3, color: "bg-[#2E8B57]" },
+                { label: "Chat Time", value: researchMetrics.metrics?.chatQueryAvgMs ? `${researchMetrics.metrics.chatQueryAvgMs} ms` : "-", icon: FileText, color: "bg-[#F4A300]" },
+                { label: "Bids / Hour", value: researchMetrics.metrics?.bidsProcessedPerHour ? String(researchMetrics.metrics.bidsProcessedPerHour) : "-", icon: Award, color: "bg-[#0B3C5D]" },
+                { label: "Score Consistency", value: researchMetrics.metrics?.scoreConsistency ? `${researchMetrics.metrics.scoreConsistency}%` : "-", icon: ClipboardCheck, color: "bg-[#2E8B57]" },
+                { label: "Risk Flags", value: researchMetrics.metrics?.riskyItemsDetected ? String(researchMetrics.metrics.riskyItemsDetected) : "-", icon: ShieldAlert, color: "bg-[#B22222]" },
+                { label: "Qwen Energy / 1k Tokens", value: researchMetrics.qwenResearch?.energyPer1000Tokens !== null && researchMetrics.qwenResearch?.energyPer1000Tokens !== undefined ? `${researchMetrics.qwenResearch.energyPer1000Tokens} J` : "-", icon: Zap, color: "bg-[#8B5CF6]" },
+                { label: "Qwen GPU Power", value: researchMetrics.qwenResearch?.averageGpuPowerWatts !== null && researchMetrics.qwenResearch?.averageGpuPowerWatts !== undefined ? `${researchMetrics.qwenResearch.averageGpuPowerWatts} W` : "-", icon: Zap, color: "bg-[#D97706]" },
+              ].map((stat) => (
+                <div key={stat.label} className="rounded-lg border border-gray-100 p-4 bg-[#F9FBFD]">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <p className="text-sm text-gray-600">{stat.label}</p>
+                      <p className="text-2xl text-[#0B3C5D] mt-1">{stat.value}</p>
+                    </div>
+                    <div className={`${stat.color} p-2 rounded-lg`}>
+                      <stat.icon className="w-5 h-5 text-white" />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
 
           {/* Charts Row */}
@@ -205,6 +284,40 @@ export function CPODashboard() {
               </div>
             </div>
           </div>
+
+          <div className="bg-white rounded-lg shadow-sm p-5 border border-gray-100 mb-6">
+            <h3 className="text-base font-medium text-[#0B3C5D] mb-4">Recent Research Logs</h3>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-gray-500 border-b border-gray-100">
+                    <th className="py-2 pr-4">Time</th>
+                    <th className="py-2 pr-4">Event</th>
+                    <th className="py-2 pr-4">Role</th>
+                    <th className="py-2 pr-4">Duration</th>
+                    <th className="py-2 pr-4">Note</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(researchMetrics.logs || []).map((log) => (
+                    <tr key={log.id} className="border-b border-gray-50 last:border-0">
+                      <td className="py-3 pr-4 text-gray-500">{new Date(log.createdAt).toLocaleString()}</td>
+                      <td className="py-3 pr-4 text-[#1D4E89]">{log.eventType}</td>
+                      <td className="py-3 pr-4 text-gray-700">{log.actorRole}</td>
+                      <td className="py-3 pr-4 text-gray-700">{log.durationMs} ms</td>
+                      <td className="py-3 pr-4 text-gray-600">{log.note}</td>
+                    </tr>
+                  ))}
+                  {!researchMetrics.logs?.length && (
+                    <tr>
+                      <td className="py-3 text-gray-400" colSpan={5}>No research logs yet</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
           <div className="mt-8 text-center text-xs text-gray-500 border-t border-gray-200 pt-6">
             © 2026 IntelliTender
           </div>

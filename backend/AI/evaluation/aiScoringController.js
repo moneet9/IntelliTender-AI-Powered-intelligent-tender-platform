@@ -1,5 +1,6 @@
 import { AIBidSummary, Tender } from '../../models/model.js';
 import { runAiScoring } from './aiScoringService.js';
+import { recordResearchMetric } from '../../utils/researchMetrics.js';
 
 const AI_QUEUE_STALE_RUNNING_MS = Number(process.env.AI_QUEUE_STALE_RUNNING_MS || 10 * 60 * 1000);
 const activeTenderScoringJobs = new Map();
@@ -11,6 +12,7 @@ const normalizeCriteriaScores = (items) => Array.isArray(items)
         awardedMarks: Number(item?.awardedMarks || 0),
         ruleType: item?.ruleType || 'textual',
         evidence: Array.isArray(item?.evidence) ? item.evidence.map((e) => String(e)) : [],
+        documentLabel: String(item?.documentLabel || ''),
     }))
     : [];
 
@@ -41,9 +43,36 @@ const coerceAiSummary = (parsed) => ({
         financialScore: parsed?.aiScores?.financialScore ?? null,
         overallScore: parsed?.aiScores?.overallScore ?? null,
     },
+    aiRank: parsed?.aiRank ?? null,
     summary: parsed?.summary || '',
     rationale: Array.isArray(parsed?.rationale) ? parsed.rationale.map((item) => String(item)) : [],
 });
+
+const refreshTenderAiRanks = async (tenderId) => {
+    const summaries = await AIBidSummary.find({ tenderId }).lean();
+    const ranked = summaries
+        .filter((summary) => summary.status === 'success')
+        .sort((left, right) => {
+            const leftOverall = Number(left?.aiScores?.overallScore || 0);
+            const rightOverall = Number(right?.aiScores?.overallScore || 0);
+            if (rightOverall !== leftOverall) return rightOverall - leftOverall;
+
+            const leftTechnical = Number(left?.aiScores?.technicalScore || 0);
+            const rightTechnical = Number(right?.aiScores?.technicalScore || 0);
+            if (rightTechnical !== leftTechnical) return rightTechnical - leftTechnical;
+
+            const leftFinancial = Number(left?.aiScores?.financialScore || 0);
+            const rightFinancial = Number(right?.aiScores?.financialScore || 0);
+            if (rightFinancial !== leftFinancial) return rightFinancial - leftFinancial;
+
+            return new Date(left?.generatedAt || 0).getTime() - new Date(right?.generatedAt || 0).getTime();
+        });
+
+    await Promise.all(ranked.map((summary, index) => AIBidSummary.updateOne(
+        { _id: summary._id },
+        { $set: { aiRank: index + 1 } }
+    )));
+};
 
 const DEFAULT_QUEUE_STATE = {
     status: 'idle',
@@ -364,22 +393,24 @@ const processTenderAiQueue = async ({ tenderId, force, manual, action, bidId = n
                 continue;
             }
 
-            await AIBidSummary.findOneAndUpdate(
-                { tenderId, bidId: bid._id },
-                {
-                    tenderId,
-                    bidId: bid._id,
-                    vendorId: bid.vendorId,
-                    evaluationMethod: tender.evaluationMethod || 'QCBS',
-                    status: 'pending',
-                    model: undefined,
-                    error: undefined,
-                    generatedAt: new Date(),
-                },
-                { upsert: true, new: true, setDefaultsOnInsert: true }
-            );
+                await AIBidSummary.findOneAndUpdate(
+                    { tenderId, bidId: bid._id },
+                    {
+                        tenderId,
+                        bidId: bid._id,
+                        vendorId: bid.vendorId,
+                        evaluationMethod: tender.evaluationMethod || 'QCBS',
+                        status: 'pending',
+                        model: undefined,
+                        error: undefined,
+                        aiRank: null,
+                        generatedAt: new Date(),
+                    },
+                    { upsert: true, new: true, setDefaultsOnInsert: true }
+                );
 
             try {
+                const scoringStartedAt = Date.now();
                 const result = await runAiScoring({ tender, bid });
                 const normalized = coerceAiSummary(result.parsed);
 
@@ -399,6 +430,7 @@ const processTenderAiQueue = async ({ tenderId, force, manual, action, bidId = n
                         commercialAnalysis: normalized.commercialAnalysis,
                         genuityChecks: normalized.genuityChecks,
                         aiScores: normalized.aiScores,
+                        aiRank: null,
                         summary: normalized.summary,
                         rationale: normalized.rationale,
                         rawResponse: result.parsed,
@@ -407,8 +439,28 @@ const processTenderAiQueue = async ({ tenderId, force, manual, action, bidId = n
                     { upsert: true, new: true }
                 );
 
+                await refreshTenderAiRanks(tenderId);
                 summaries.push(saved);
                 processedCount += 1;
+
+                void recordResearchMetric({
+                    eventType: 'ai-bid-scoring',
+                    actorId: tender.createdBy,
+                    actorRole: 'PO',
+                    tenderId: tender._id,
+                    bidId: bid._id,
+                    durationMs: Date.now() - scoringStartedAt,
+                    status: 'success',
+                    metricName: 'ai_bid_scoring_time',
+                    value: 1,
+                    note: 'AI bid scoring completed',
+                    metadata: {
+                        vendorName,
+                        aiRank: saved?.aiRank || null,
+                        warnings: Array.isArray(normalized.genuityChecks?.warnings) ? normalized.genuityChecks.warnings.length : 0,
+                        risks: Array.isArray(normalized.commercialAnalysis?.risks) ? normalized.commercialAnalysis.risks.length : 0,
+                    },
+                });
 
                 const latestAfterSuccess = await Tender.findById(tenderId).select('aiEvaluationState').lean();
                 const latestAfterSuccessState = getQueueState(latestAfterSuccess);
@@ -444,6 +496,7 @@ const processTenderAiQueue = async ({ tenderId, force, manual, action, bidId = n
                         evaluationMethod: tender.evaluationMethod || 'QCBS',
                         status: 'failed',
                         error: error instanceof Error ? error.message : 'AI scoring failed',
+                        aiRank: null,
                         generatedAt: new Date(),
                     },
                     { upsert: true, new: true }
@@ -451,6 +504,22 @@ const processTenderAiQueue = async ({ tenderId, force, manual, action, bidId = n
 
                 summaries.push(saved);
                 processedCount += 1;
+
+                void recordResearchMetric({
+                    eventType: 'ai-bid-scoring',
+                    actorId: tender.createdBy,
+                    actorRole: 'PO',
+                    tenderId: tender._id,
+                    bidId: bid._id,
+                    durationMs: 0,
+                    status: 'failed',
+                    metricName: 'ai_bid_scoring_time',
+                    value: 1,
+                    note: error instanceof Error ? error.message : 'AI scoring failed',
+                    metadata: {
+                        vendorName,
+                    },
+                });
 
                 const latestAfterFailure = await Tender.findById(tenderId).select('aiEvaluationState').lean();
                 const latestAfterFailureState = getQueueState(latestAfterFailure);
@@ -567,6 +636,7 @@ export const runTenderAiScoring = async (req, res) => {
             if (!bid) return res.status(404).json({ message: 'Bid not found for this tender' });
 
             try {
+                const scoringStartedAt = Date.now();
                 await AIBidSummary.findOneAndUpdate(
                     { tenderId, bidId: bid._id },
                     {
@@ -576,6 +646,7 @@ export const runTenderAiScoring = async (req, res) => {
                         evaluationMethod: tender.evaluationMethod || 'QCBS',
                         status: 'pending',
                         error: undefined,
+                        aiRank: null,
                         generatedAt: new Date(),
                     },
                     { upsert: true, new: true, setDefaultsOnInsert: true }
@@ -599,6 +670,7 @@ export const runTenderAiScoring = async (req, res) => {
                         commercialAnalysis: normalized.commercialAnalysis,
                         genuityChecks: normalized.genuityChecks,
                         aiScores: normalized.aiScores,
+                        aiRank: null,
                         summary: normalized.summary,
                         rationale: normalized.rationale,
                         rawResponse: result.parsed,
@@ -607,6 +679,24 @@ export const runTenderAiScoring = async (req, res) => {
                     { upsert: true, new: true }
                 );
 
+                await refreshTenderAiRanks(tenderId);
+                void recordResearchMetric({
+                    eventType: 'ai-bid-scoring',
+                    actorId: tender.createdBy,
+                    actorRole: 'PO',
+                    tenderId: tender._id,
+                    bidId: bid._id,
+                    durationMs: Date.now() - scoringStartedAt,
+                    status: 'success',
+                    metricName: 'ai_bid_scoring_time',
+                    value: 1,
+                    note: 'AI bid re-evaluation completed',
+                    metadata: {
+                        vendorName: bid.vendorName || '',
+                        warnings: Array.isArray(normalized.genuityChecks?.warnings) ? normalized.genuityChecks.warnings.length : 0,
+                        risks: Array.isArray(normalized.commercialAnalysis?.risks) ? normalized.commercialAnalysis.risks.length : 0,
+                    },
+                });
                 return res.json({
                     message: 'Bid AI re-evaluation completed',
                     summary,
@@ -623,10 +713,27 @@ export const runTenderAiScoring = async (req, res) => {
                         evaluationMethod: tender.evaluationMethod || 'QCBS',
                         status: 'failed',
                         error: message,
+                        aiRank: null,
                         generatedAt: new Date(),
                     },
                     { upsert: true, new: true }
                 );
+
+                void recordResearchMetric({
+                    eventType: 'ai-bid-scoring',
+                    actorId: tender.createdBy,
+                    actorRole: 'PO',
+                    tenderId: tender._id,
+                    bidId: bid._id,
+                    durationMs: Date.now() - scoringStartedAt,
+                    status: 'failed',
+                    metricName: 'ai_bid_scoring_time',
+                    value: 1,
+                    note: message,
+                    metadata: {
+                        vendorName: bid.vendorName || '',
+                    },
+                });
 
                 return res.status(200).json({
                     message: 'Bid AI re-evaluation failed',

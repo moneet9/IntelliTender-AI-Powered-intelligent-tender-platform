@@ -127,6 +127,9 @@ const tenderSchema = new mongoose.Schema({
     }]
 }, { timestamps: true });
 
+tenderSchema.index({ createdBy: 1, status: 1, createdAt: -1 });
+tenderSchema.index({ status: 1, finalSubmissionDate: -1 });
+
 const bidDocumentSchema = new mongoose.Schema({
     tenderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Tender', required: true, index: true },
     vendorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
@@ -141,6 +144,7 @@ const aiCriteriaScoreSchema = new mongoose.Schema({
     awardedMarks: { type: Number, required: true },
     ruleType: { type: String, enum: ['binary', 'ratio', 'numeric', 'textual'], default: 'textual' },
     evidence: { type: [String], default: [] },
+    documentLabel: { type: String, default: '' },
 }, { _id: false });
 
 const aiBidSummarySchema = new mongoose.Schema({
@@ -172,6 +176,7 @@ const aiBidSummarySchema = new mongoose.Schema({
         financialScore: { type: Number },
         overallScore: { type: Number },
     },
+    aiRank: { type: Number },
     summary: { type: String },
     rationale: { type: [String], default: [] },
     rawResponse: { type: mongoose.Schema.Types.Mixed },
@@ -237,6 +242,37 @@ const aiChatSessionSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 aiChatSessionSchema.index({ userId: 1, lastMessageAt: -1 });
+
+const researchMetricEventSchema = new mongoose.Schema({
+    eventType: {
+        type: String,
+        required: true,
+        index: true,
+    },
+    actorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
+    actorRole: {
+        type: String,
+        enum: ['CPO', 'PO', 'Committee', 'Vendor', 'System'],
+        default: 'System',
+        index: true,
+    },
+    actorName: { type: String, default: '' },
+    tenderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Tender', index: true },
+    bidId: { type: mongoose.Schema.Types.ObjectId, index: true },
+    contractId: { type: mongoose.Schema.Types.ObjectId, ref: 'Contract', index: true },
+    milestoneId: { type: mongoose.Schema.Types.ObjectId, index: true },
+    chatId: { type: mongoose.Schema.Types.ObjectId, index: true },
+    durationMs: { type: Number, default: 0 },
+    status: { type: String, enum: ['success', 'failed', 'warning'], default: 'success', index: true },
+    metricName: { type: String, default: '' },
+    value: { type: Number, default: 0 },
+    note: { type: String, default: '' },
+    metadata: { type: mongoose.Schema.Types.Mixed, default: {} },
+}, { timestamps: true });
+
+researchMetricEventSchema.index({ eventType: 1, createdAt: -1 });
+researchMetricEventSchema.index({ actorRole: 1, createdAt: -1 });
+researchMetricEventSchema.index({ tenderId: 1, createdAt: -1 });
 
 const documentEmbeddingJobSchema = new mongoose.Schema({
     sourceKind: {
@@ -398,5 +434,6 @@ export const AIBidSummary = mongoose.model('AIBidSummary', aiBidSummarySchema);
 export const AIMilestoneReport = mongoose.model('AIMilestoneReport', aiMilestoneReportSchema);
 export const AINotification = mongoose.model('AINotification', aiNotificationSchema);
 export const AIChatSession = mongoose.model('AIChatSession', aiChatSessionSchema);
+export const ResearchMetricEvent = mongoose.model('ResearchMetricEvent', researchMetricEventSchema);
 export const DocumentEmbeddingJob = mongoose.model('DocumentEmbeddingJob', documentEmbeddingJobSchema);
 export const DocumentChunk = mongoose.model('DocumentChunk', documentChunkSchema);

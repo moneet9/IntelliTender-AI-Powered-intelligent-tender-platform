@@ -44,7 +44,7 @@ export function CPOContractStatus() {
 
   const loadContracts = async () => {
     try {
-      const data = await apiRequest<any[]>("/api/contracts");
+      const data = await apiRequest<any[]>("/api/contracts?summary=true");
       setContracts(data);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Failed to load contracts");

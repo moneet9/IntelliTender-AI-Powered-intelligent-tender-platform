@@ -260,7 +260,7 @@ export function MilestoneTracking({ userRole = "committee" }: MilestoneTrackingP
     setLoading(true);
     setError("");
     try {
-      const data = await apiRequest<ContractRecord[]>("/api/contracts");
+      const data = await apiRequest<ContractRecord[]>("/api/contracts?summary=true");
       setContracts(data || []);
 
       if (!selectedContractId && data?.length) {

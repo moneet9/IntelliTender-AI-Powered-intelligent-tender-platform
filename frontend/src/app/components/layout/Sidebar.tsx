@@ -73,6 +73,7 @@ export function Sidebar({ role }: SidebarProps) {
       items: [
         { path: "/po", icon: LayoutDashboard, label: "Dashboard" },
         { path: "/po/publish-tender", icon: FileText, label: "Publish Tender", aliases: ["/po/create-tender"] },
+        { path: "/po/edit-tender", icon: FileText, label: "Edit Tender Documents" },
         { path: "/po/create-committee", icon: UserPlus, label: "Create Committee" },
         { path: "/po/milestones", icon: Calendar, label: "Milestones" },
         { section: "AI Workspace", path: "/po/ai-settings", icon: Settings, label: "AI Settings" },

@@ -35,24 +35,24 @@ type ScopeConfig = {
 const scopeCards: ScopeConfig[] = [
   {
     scope: "tender",
-    title: "Tender documents",
-    description: "Re-embed purchase order tender files, add fresh chunks, and keep tender-level search sharp.",
+    title: "Tender document prep",
+    description: "Refresh purchase order tender files, add fresh text chunks, and keep tender-level search sharp.",
     helper: "Best after you upload or edit tender attachments.",
     accent: "from-[#1D4E89] to-[#0B3C5D]",
     icon: FileText,
   },
   {
     scope: "bid",
-    title: "Vendor bid documents",
-    description: "Refresh the proposal and bid document index so vendor submissions are easier to retrieve.",
+    title: "Vendor bid prep",
+    description: "Refresh the proposal and bid document store so vendor submissions are easier to retrieve.",
     helper: "Useful when vendors upload new bid files or revised attachments.",
     accent: "from-[#2E8B57] to-[#1F6A43]",
     icon: Sparkles,
   },
   {
     scope: "committee",
-    title: "Committee reports",
-    description: "Re-embed milestone reports, committee notes, and review attachments for stronger context.",
+    title: "Committee report prep",
+    description: "Refresh milestone reports, committee notes, and review attachments for stronger context.",
     helper: "Useful when committee members add new progress notes or attachments.",
     accent: "from-[#A16207] to-[#7C4A03]",
     icon: ShieldAlert,
@@ -95,13 +95,13 @@ export function AISettings() {
       });
       const stats = result.result;
       setSuccess(
-        `${result.message || "Document embeddings rebuilt"} for ${scope}. ` +
+        `${result.message || "Document prep refreshed"} for ${scope}. ` +
           `${stats?.completed || 0} job${stats?.completed === 1 ? "" : "s"} completed, ` +
           `${stats?.failed || 0} failed.`
       );
       await loadStatus();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to rebuild embeddings");
+      setError(err instanceof Error ? err.message : "Failed to refresh document prep");
     } finally {
       setRunningScope("");
     }
@@ -118,9 +118,9 @@ export function AISettings() {
               <Settings2 className="h-3.5 w-3.5" />
               AI Settings
             </div>
-            <h1 className="text-2xl text-[#0B3C5D] mb-1">Document Embedding Controls</h1>
+            <h1 className="text-2xl text-[#0B3C5D] mb-1">Document Comparison Controls</h1>
             <p className="text-sm text-gray-600 max-w-3xl">
-              Keep tender files, vendor bids, and committee reports indexed separately so search stays fast and answers stay relevant.
+              Keep tender files, vendor bids, and committee reports prepared separately so search stays fast and answers stay relevant.
             </p>
           </div>
 
@@ -137,7 +137,7 @@ export function AISettings() {
                 </span>
               </div>
               <p className="mt-2 text-sm text-gray-600">
-                The embedding worker will only run when LM Studio responds on the local API.
+                The document prep worker will only run when LM Studio responds on the local API.
               </p>
               <button
                 type="button"
@@ -155,7 +155,7 @@ export function AISettings() {
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="rounded-xl bg-slate-50 p-4">
                   <p className="text-sm font-medium text-[#0B3C5D]">Tender indexing</p>
-                  <p className="mt-2 text-sm text-gray-600">PO uploads are re-embedded into the tender document store.</p>
+                  <p className="mt-2 text-sm text-gray-600">PO uploads are parsed into the tender document store for direct comparison.</p>
                 </div>
                 <div className="rounded-xl bg-slate-50 p-4">
                   <p className="text-sm font-medium text-[#0B3C5D]">Vendor indexing</p>
@@ -179,7 +179,7 @@ export function AISettings() {
                   <div className={`bg-gradient-to-r ${card.accent} p-5 text-white`}>
                     <div className="flex items-center justify-between gap-3">
                       <div>
-                        <p className="text-xs uppercase tracking-[0.2em] text-white/70">Manual re-embed</p>
+                        <p className="text-xs uppercase tracking-[0.2em] text-white/70">Manual refresh</p>
                         <h2 className="mt-2 text-xl font-medium">{card.title}</h2>
                       </div>
                       <Icon className="h-8 w-8 text-white/90" />
@@ -196,7 +196,7 @@ export function AISettings() {
                       className="mt-4 inline-flex items-center gap-2 rounded-md bg-[#0B3C5D] px-4 py-2.5 text-sm text-white hover:bg-[#09415f] disabled:cursor-not-allowed disabled:bg-gray-400"
                     >
                       <RefreshCw className={`h-4 w-4 ${running ? "animate-spin" : ""}`} />
-                      {running ? "Re-embedding..." : `Re-embed ${card.scope}`}
+                      {running ? "Refreshing..." : `Refresh ${card.scope}`}
                     </button>
                   </div>
                 </div>
@@ -236,10 +236,10 @@ export function AISettings() {
             <div className="rounded-2xl border border-gray-100 bg-white p-5 shadow-sm">
               <h3 className="text-lg text-[#0B3C5D]">Search quality notes</h3>
               <div className="mt-4 space-y-3 text-sm text-gray-600">
-                <p>- Tender documents are indexed first for PO uploads and tender attachments.</p>
+                <p>- Tender documents are prepared first for PO uploads and tender attachments.</p>
                 <p>- Vendor bids are kept separate, so bid search does not mix with tender text.</p>
-                <p>- Committee reports and progress notes are stored in their own embedding stream.</p>
-                <p>- Tender numbers, vendor names, and report metadata are kept in the index for stronger matching.</p>
+                <p>- Committee reports and progress notes are stored in their own document stream.</p>
+                <p>- Tender numbers, vendor names, and report metadata are used for stronger matching.</p>
               </div>
             </div>
           </div>
