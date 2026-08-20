@@ -5,8 +5,16 @@ import { decodeStoredDocument, extractTextFromContent } from '../documents/docum
 const MAX_TEXT_CHARS = Number(process.env.AI_SCORING_MAX_TEXT_CHARS || 1800);
 const MAX_COMMERCIAL_TEXT_CHARS = Number(process.env.AI_SCORING_MAX_COMMERCIAL_TEXT_CHARS || 2400);
 const MAX_DOCS_PER_SIDE = Number(process.env.AI_SCORING_MAX_DOCS_PER_SIDE || 8);
-const MAX_TOTAL_CONTEXT_CHARS = Number(process.env.AI_SCORING_MAX_CONTEXT_CHARS || 10000);
+// Keep enough room for the commercial file plus all normal technical uploads.
+// The previous 10k default could omit a later consolidated technical PDF.
+const MAX_TOTAL_CONTEXT_CHARS = Number(process.env.AI_SCORING_MAX_CONTEXT_CHARS || 16000);
+const PRIORITIZE_SCHEDULE_DOCUMENTS = String(process.env.AI_SCORING_PRIORITIZE_SCHEDULE_DOCUMENTS ?? 'true').toLowerCase() !== 'false';
+const SCHEDULE_PRIORITY_TERMS = String(process.env.AI_SCORING_SCHEDULE_PRIORITY_TERMS || 'schedule,methodology')
+    .split(',')
+    .map((term) => String(term || '').trim().toLowerCase())
+    .filter(Boolean);
 const AI_SCORING_MODEL = process.env.AI_SCORING_MODEL || 'qwen/qwen3-4b-2507';
+const AI_SCORING_STRUCTURED_OUTPUT = String(process.env.AI_SCORING_STRUCTURED_OUTPUT || 'false').toLowerCase() === 'true';
 // Set to 0 to omit the cap, but keep a finite default to prevent runaway JSON.
 const AI_SCORING_MAX_TOKENS = Number(process.env.AI_SCORING_MAX_TOKENS ?? 700);
 const extractedTextCache = new Map();
@@ -131,7 +139,76 @@ const extractCachedText = async (content, mimeType, name) => {
     return text;
 };
 
-const normalizeLabel = (value) => String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+const normalizeLabel = (value) => String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_./\\-]+/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ');
+
+const findMatchingBidDocument = (criterion, bidDocs) => {
+    const criterionLabel = normalizeLabel(criterion);
+    if (!criterionLabel) return null;
+
+    const labelMatch = bidDocs.find((document) => {
+        const documentLabel = normalizeLabel(document?.label || document?.name);
+        return documentLabel && (
+            documentLabel === criterionLabel
+            || documentLabel.includes(criterionLabel)
+            || criterionLabel.includes(documentLabel)
+        );
+    });
+    if (labelMatch) return labelMatch;
+
+    // Some vendors upload a single consolidated PDF with a generic filename
+    // (for example, Technical_Documents.pdf). Match the criterion against the
+    // extracted content as a fallback so a readable section is not treated as
+    // an absent document.
+    const isScheduleCriterion = criterionLabel.includes('schedule') && criterionLabel.includes('methodolog');
+    if (!isScheduleCriterion) return null;
+
+    const criterionTerms = criterionLabel
+        .split(' ')
+        .filter((term) => term.length >= 4 && !['and', 'with', 'from', 'this'].includes(term));
+    return bidDocs.find((document) => {
+        const documentText = normalizeLabel(document?.text);
+        const matchedTerms = criterionTerms.filter((term) => documentText.includes(term));
+        return criterionTerms.length >= 2 && matchedTerms.length >= Math.min(criterionTerms.length, 2);
+    }) || null;
+};
+
+const repairFalseMissingTechnicalEvidence = ({ tender, criteriaScores, bidDocs }) => {
+    if (!Array.isArray(criteriaScores)) return [];
+    const configuredCriteria = Array.isArray(tender?.qcbsConfig?.technicalCriteria)
+        ? tender.qcbsConfig.technicalCriteria
+        : [];
+
+    return criteriaScores.map((criterion) => {
+        const configured = configuredCriteria.find((item) =>
+            normalizeLabel(item?.name) === normalizeLabel(criterion?.criterion)
+        );
+        const match = findMatchingBidDocument(configured?.name || criterion?.criterion, bidDocs);
+        const readable = match && String(match.text || '').trim();
+        if (!match || !readable) return criterion;
+
+        const evidence = Array.isArray(criterion.evidence)
+            ? criterion.evidence.map((item) => String(item).trim()).filter(Boolean)
+            : [];
+        const falselyMissing = evidence.length === 0
+            || evidence.some((item) => /not uploaded|missing|no evidence|not found|could not find/i.test(item));
+        if (!falselyMissing) {
+            return { ...criterion, documentLabel: match.label || criterion.documentLabel };
+        }
+
+        return {
+            ...criterion,
+            documentLabel: match.label || criterion.documentLabel,
+            // Preserve the model's evidence-based mark, including zero. This
+            // repair only corrects the false missing-document explanation.
+            evidence: [`Readable evidence was extracted from the uploaded document “${match.label}”; assess its contents against the criterion.`],
+        };
+    });
+};
 
 const buildDocumentGateSummary = (reasons) => ({
     eligibility: {
@@ -199,15 +276,12 @@ const repairFalseMissingDocumentEligibility = ({ tender, summary, bidDocs }) => 
     const hasIdentityOrIntegrityFailure = reasons.some((reason) => /mismatch|wrong entity|identity|tamper|fake|invalid|expired/i.test(String(reason)));
     if (hasIdentityOrIntegrityFailure) return summary;
 
-    const uploadedLabels = bidDocs
-        .map((document) => normalizeLabel(document?.label || document?.name))
-        .filter(Boolean);
     const criteria = Array.isArray(tender?.qcbsConfig?.technicalCriteria) ? tender.qcbsConfig.technicalCriteria : [];
     const allCriteriaUploaded = criteria.length > 0 && criteria.every((criterion) => {
-        const criterionLabel = normalizeLabel(criterion?.name);
-        return uploadedLabels.some((uploaded) => uploaded === criterionLabel || uploaded.includes(criterionLabel) || criterionLabel.includes(uploaded));
+        const matchingDocument = findMatchingBidDocument(criterion?.name, bidDocs);
+        return Boolean(matchingDocument && String(matchingDocument.text || '').trim());
     });
-    const hasOnlyMissingClaims = reasons.length > 0 && reasons.every((reason) => /missing|not uploaded|no document|not found|unavailable|could not find/i.test(String(reason)));
+    const hasOnlyMissingClaims = reasons.length > 0 && reasons.every((reason) => /missing|not uploaded|no (?:evidence|document|proof|schedule|methodology)|not found|unavailable|could not find|not provided|not submitted/i.test(String(reason)));
     if (!allCriteriaUploaded || !hasOnlyMissingClaims) return summary;
 
     return {
@@ -287,7 +361,16 @@ const budgetDocumentContext = (documents, sideLabel) => {
     const result = [];
     let totalChars = 0;
     const orderedDocuments = sideLabel === 'Bid'
-        ? [...documents].sort((left, right) => (left?.category === 'Commercial' ? -1 : 0) - (right?.category === 'Commercial' ? -1 : 0))
+        ? [...documents].sort((left, right) => {
+            const commercialPriority = (document) => document?.category === 'Commercial' ? 0 : 1;
+            const schedulePriority = (document) => {
+                if (!PRIORITIZE_SCHEDULE_DOCUMENTS) return 1;
+                const value = normalizeLabel(`${document?.label || ''} ${document?.name || ''} ${document?.text || ''}`);
+                return SCHEDULE_PRIORITY_TERMS.some((term) => value.includes(term)) ? 0 : 1;
+            };
+            return (commercialPriority(left) - commercialPriority(right))
+                || (schedulePriority(left) - schedulePriority(right));
+        })
         : documents;
 
     for (const document of orderedDocuments) {
@@ -371,7 +454,9 @@ const collectBidDocuments = async (bid) => {
         };
     })).then((items) => items.filter(Boolean));
 
-    if (bid?.proposalDocument) {
+    const proposalAlreadyCollected = bid?.proposalDocumentId
+        && bidDocs.some((entry) => String(entry?.documentId || '') === String(bid.proposalDocumentId));
+    if (bid?.proposalDocument && !proposalAlreadyCollected) {
         const decoded = decodeStoredDocument(bid.proposalDocument, 'Proposal document');
         const text = await extractCachedText(decoded.content, decoded.mimeType, decoded.name);
         outputs.push({
@@ -417,6 +502,7 @@ Rules:
 - Phase 3: only if eligibility passes, evaluate the commercial bid document.
 ${bypassEligibility ? '- PO override is active: report eligibility honestly, but continue with conditional technical and commercial scoring using only supported vendor evidence. Do not change eligibility from false to true because of the override.' : ''}
 - Compare every configured technical criterion against the most relevant vendor document individually.
+- A vendor may submit a consolidated document with a generic filename (for example, Technical_Documents.pdf). Match criteria by extracted document content as well as the upload label; do not call a criterion missing when its required evidence is clearly present in that content.
 - If the vendor did not upload the document needed for a technical criterion, award exactly zero for that criterion and explain that the document was not uploaded.
 - For every awarded mark, include the exact vendor documentLabel and one concise evidence/reason sentence.
 - Never award more than maxMarks. Never invent evidence that is not present in the vendor document text.
@@ -480,7 +566,7 @@ const callLocalModel = async (prompt, onTelemetry) => {
         ],
         onTelemetry,
         useNativeApi: true,
-        responseFormat: { type: 'json_object' },
+        responseFormat: AI_SCORING_STRUCTURED_OUTPUT ? { type: 'json_object' } : null,
         maxTokens: AI_SCORING_MAX_TOKENS,
     });
 };
@@ -632,6 +718,11 @@ export const runAiScoring = async ({ tender, bid, bypassEligibility = false }) =
     }
     normalized.criteriaScores = applyTenderTextDocumentRequirements({
         tenderDocs: directTenderDocs,
+        criteriaScores: normalized.criteriaScores,
+        bidDocs: directBidDocs,
+    });
+    normalized.criteriaScores = repairFalseMissingTechnicalEvidence({
+        tender,
         criteriaScores: normalized.criteriaScores,
         bidDocs: directBidDocs,
     });
