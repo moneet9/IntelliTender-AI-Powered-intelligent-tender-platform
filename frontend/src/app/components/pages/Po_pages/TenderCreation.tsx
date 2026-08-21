@@ -1,0 +1,724 @@
+import { useState } from "react";
+import { Sidebar } from "../../layout/Sidebar";
+import { Header } from "../../layout/Header";
+import { AIAssistant } from "../../AIAssistant";
+import { Upload, AlertCircle, FileText, X } from "lucide-react";
+import { useNavigate } from "react-router";
+import { apiRequest } from "../../../api";
+import { encodeFilesToStoredDocuments } from "../../../document-utils";
+
+type EvaluationMethod = "L1" | "QCBS";
+
+type QcbsCriterion = {
+  name: string;
+  maxMarks: string;
+};
+
+type MilestoneData = {
+  title: string;
+  description: string;
+  plannedStartDate: string;
+  plannedEndDate: string;
+  checklistItems: string[];
+};
+
+const maxIndividualDocumentSizeBytes = 10 * 1024 * 1024;
+const maxCombinedDocumentSizeBytes = 35 * 1024 * 1024;
+
+const emptyQcbsCriterion = (): QcbsCriterion => ({
+  name: "",
+  maxMarks: "",
+});
+
+const isValidPercentage = (value: string) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 100;
+};
+
+
+const emptyMilestone = (): MilestoneData => ({
+  title: "",
+  description: "",
+  plannedStartDate: "",
+  plannedEndDate: "",
+  checklistItems: [],
+});
+
+export function TenderCreation() {
+  const navigate = useNavigate();
+  const [formData, setFormData] = useState({
+    title: "",
+    category: "supply",
+    description: "",
+    budget: "",
+    preBidDate: "",
+    finalSubmissionDate: "",
+  });
+  const [documents, setDocuments] = useState<string[]>([]);
+  const [documentNames, setDocumentNames] = useState<string[]>([]);
+
+  const [evaluationMethod, setEvaluationMethod] = useState<EvaluationMethod>("QCBS");
+  const [l1TechnicalCutoff, setL1TechnicalCutoff] = useState("");
+  const [qcbsWeights, setQcbsWeights] = useState({
+    technical: 70,
+    commercial: 30,
+  });
+  const [technicalCriteria, setTechnicalCriteria] = useState<QcbsCriterion[]>([emptyQcbsCriterion()]);
+
+  const [milestones, setMilestones] = useState<MilestoneData[]>([emptyMilestone()]);
+  const hasMilestones = milestones.some((m) => m.title.trim() !== "");
+
+  const qcbsWeightTotal = qcbsWeights.technical + qcbsWeights.commercial;
+  const l1CutoffValue = Number(l1TechnicalCutoff);
+  const isL1Valid = isValidPercentage(l1TechnicalCutoff);
+  const hasTechnicalCriteria = technicalCriteria.some((criterion) => criterion.name.trim() !== "");
+  const technicalCriteriaComplete = technicalCriteria.every((criterion) => {
+    if (!criterion.name.trim()) return false;
+    const marks = Number(criterion.maxMarks);
+    return Number.isFinite(marks) && marks > 0;
+  });
+  const isQcbsValid =
+    qcbsWeightTotal === 100 &&
+    hasTechnicalCriteria &&
+    technicalCriteriaComplete;
+  const isEvaluationValid = evaluationMethod === "L1" ? isL1Valid : isQcbsValid;
+
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const categoryLabelMap: Record<string, string> = {
+    supply: "Supply",
+    work: "Work",
+    service: "Service",
+    general: "General",
+  };
+
+  const addTechnicalCriterion = () => {
+    setTechnicalCriteria((prev) => [...prev, emptyQcbsCriterion()]);
+  };
+
+  const removeTechnicalCriterion = (index: number) => {
+    setTechnicalCriteria((prev) => prev.filter((_, idx) => idx !== index));
+  };
+
+  const updateTechnicalCriterion = (index: number, field: keyof QcbsCriterion, value: string) => {
+    setTechnicalCriteria((prev) =>
+      prev.map((item, idx) => (idx === index ? { ...item, [field]: value } : item))
+    );
+  };
+
+  const addMilestone = () => {
+    setMilestones((prev) => [...prev, emptyMilestone()]);
+  };
+
+  const removeMilestone = (index: number) => {
+    setMilestones((prev) => prev.filter((_, idx) => idx !== index));
+  };
+
+  const updateMilestone = (index: number, field: keyof Omit<MilestoneData, "checklistItems">, value: string) => {
+    setMilestones((prev) =>
+      prev.map((item, idx) => (idx === index ? { ...item, [field]: value } : item))
+    );
+  };
+
+  const addChecklistItem = (milestoneIndex: number) => {
+    setMilestones((prev) =>
+      prev.map((item, idx) =>
+        idx === milestoneIndex ? { ...item, checklistItems: [...item.checklistItems, ""] } : item
+      )
+    );
+  };
+
+  const updateChecklistItem = (milestoneIndex: number, itemIndex: number, value: string) => {
+    setMilestones((prev) =>
+      prev.map((item, idx) =>
+        idx === milestoneIndex
+          ? { ...item, checklistItems: item.checklistItems.map((ci, ci_idx) => (ci_idx === itemIndex ? value : ci)) }
+          : item
+      )
+    );
+  };
+
+  const removeChecklistItem = (milestoneIndex: number, itemIndex: number) => {
+    setMilestones((prev) =>
+      prev.map((item, idx) =>
+        idx === milestoneIndex
+          ? { ...item, checklistItems: item.checklistItems.filter((_, ci_idx) => ci_idx !== itemIndex) }
+          : item
+      )
+    );
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!documents.length) {
+      setError("Upload at least one tender document before publishing");
+      return;
+    }
+
+    if (evaluationMethod === "L1") {
+      if (!isL1Valid) {
+        setError("L1 technical cutoff must be a number between 0 and 100");
+        return;
+      }
+    }
+
+    if (evaluationMethod === "QCBS") {
+      const qcbsWeightTotal = qcbsWeights.technical + qcbsWeights.commercial;
+      if (qcbsWeightTotal !== 100) {
+        setError("QCBS technical and commercial weights must total 100%");
+        return;
+      }
+
+      const hasCriteria = technicalCriteria.some((criterion) => criterion.name.trim() !== "");
+      if (!hasCriteria) {
+        setError("Add at least one technical criterion for QCBS evaluation");
+        return;
+      }
+
+      const invalidCriterion = technicalCriteria.some((criterion) => {
+        if (!criterion.name.trim()) return true;
+        const marks = Number(criterion.maxMarks);
+        return !Number.isFinite(marks) || marks <= 0;
+      });
+
+      if (invalidCriterion) {
+        setError("Each technical criterion needs a name and max marks");
+        return;
+      }
+    }
+    if (!hasMilestones) {
+      setError("At least one milestone is required");
+      return;
+    }
+
+    const hasInvalidMilestone = milestones.some(
+      (item) => !item.title.trim() || !item.plannedStartDate || !item.plannedEndDate
+    );
+
+    if (hasInvalidMilestone) {
+      setError("Each milestone requires title, planned start date, and planned end date");
+      return;
+    }
+
+    setError("");
+    setLoading(true);
+    try {
+      const qcbsSettings =
+        evaluationMethod === "QCBS"
+          ? {
+              technicalWeight: qcbsWeights.technical,
+              commercialWeight: qcbsWeights.commercial,
+              technicalCriteria: technicalCriteria.map((criterion) => ({
+                name: criterion.name.trim(),
+                maxMarks: Number(criterion.maxMarks),
+              })),
+            }
+          : undefined;
+      const l1Config =
+        evaluationMethod === "L1"
+          ? {
+              technicalCutoff: l1CutoffValue,
+            }
+          : undefined;
+      const technicalDocs =
+        evaluationMethod === "QCBS"
+          ? technicalCriteria
+              .map((criterion) => criterion.name.trim())
+              .filter(Boolean)
+              .map((label) => ({ label, category: "Technical" as const }))
+          : [];
+      const requiredDocuments = [
+        ...technicalDocs,
+        { label: "Eligibility Proof", category: "Technical" as const },
+        { label: "Commercial Bid Document", category: "Commercial" as const },
+      ].filter(
+        (item, index, self) =>
+          self.findIndex((entry) => entry.label === item.label && entry.category === item.category) === index
+      );
+
+      await apiRequest("/api/tenders", {
+        method: "POST",
+        body: {
+          title: formData.title,
+          description: formData.description,
+          category: categoryLabelMap[formData.category] || "General",
+          budget: Number(formData.budget),
+          preBidDate: formData.preBidDate,
+          finalSubmissionDate: formData.finalSubmissionDate,
+          evaluationMethod,
+          l1Config,
+          qcbsSettings,
+          requiredDocuments,
+          documents,
+          milestones: milestones.filter((m) => m.title.trim() !== ""),
+        },
+      });
+      navigate("/po");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to publish tender");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="flex h-screen bg-[#F4F6F9]">
+      <Sidebar role="po" />
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <Header role="po" userName="Rajesh Kumar" />
+        <div className="flex-1 overflow-auto p-6">
+          <div className="mb-6">
+            <h1 className="text-2xl text-[#0B3C5D] mb-1">Publish Tender</h1>
+            <p className="text-sm text-gray-600">Define tender specifications and publish it immediately</p>
+          </div>
+
+          <form onSubmit={handleSubmit} className="max-w-4xl">
+            {/* Basic Information */}
+            <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-100 mb-6">
+              <h3 className="text-lg text-[#0B3C5D] mb-4">Basic Information</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="md:col-span-2">
+                  <label className="block text-sm text-gray-700 mb-2">Tender Title</label>
+                  <input
+                    type="text"
+                    value={formData.title}
+                    onChange={(e) => setFormData({ ...formData, title: e.target.value })}
+                    className="w-full px-4 py-2.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89] bg-white"
+                    placeholder="e.g., IT Infrastructure Upgrade Phase 2"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm text-gray-700 mb-2">Category</label>
+                  <select
+                    value={formData.category}
+                    onChange={(e) => setFormData({ ...formData, category: e.target.value })}
+                    className="w-full px-4 py-2.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89] bg-white"
+                    required
+                  >
+                    <option value="supply">Supply</option>
+                    <option value="work">Work</option>
+                    <option value="service">Service</option>
+                    <option value="general">General</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm text-gray-700 mb-2">Budget (₹)</label>
+                  <input
+                    type="number"
+                    value={formData.budget}
+                    onChange={(e) => setFormData({ ...formData, budget: e.target.value })}
+                    className="w-full px-4 py-2.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89] bg-white"
+                    placeholder="e.g., 500000"
+                    required
+                  />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-sm text-gray-700 mb-2">Tender Description</label>
+                  <textarea
+                    value={formData.description}
+                    onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                    className="w-full px-4 py-2.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89] bg-white"
+                    placeholder="Scope of work, mandatory requirements, and deliverables"
+                    rows={4}
+                    required
+                  />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-sm text-gray-700 mb-2">Pre-bid Meeting Date & Time</label>
+                  <input
+                    type="datetime-local"
+                    value={formData.preBidDate}
+                    onChange={(e) => setFormData({ ...formData, preBidDate: e.target.value })}
+                    className="w-full px-4 py-2.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89] bg-white"
+                    required
+                  />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-sm text-gray-700 mb-2">Final Submission Date & Time</label>
+                  <input
+                    type="datetime-local"
+                    value={formData.finalSubmissionDate}
+                    onChange={(e) => setFormData({ ...formData, finalSubmissionDate: e.target.value })}
+                    className="w-full px-4 py-2.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89] bg-white"
+                    required
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Document Upload */}
+            <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-100 mb-6">
+              <h3 className="text-lg text-[#0B3C5D] mb-4">Tender Documents</h3>
+              <label className="block border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-[#1D4E89] transition-colors cursor-pointer">
+                <Upload className="w-10 h-10 text-gray-400 mx-auto mb-3" />
+                <p className="text-sm text-gray-600 mb-1">Upload at least one bid document, specification, or compliance sheet</p>
+                <p className="text-xs text-gray-500">PDF, DOC, DOCX (Max 10MB)</p>
+                <input
+                  type="file"
+                  className="hidden"
+                  accept=".pdf,.doc,.docx"
+                  multiple
+                  onChange={async (e) => {
+                    const files = e.target.files;
+                    if (!files?.length) return;
+
+                    const selectedFiles = Array.from(files);
+
+                    const oversizedFile = selectedFiles.find((file) => file.size > maxIndividualDocumentSizeBytes);
+                    if (oversizedFile) {
+                      setError(`${oversizedFile.name} exceeds the 10MB limit`);
+                      return;
+                    }
+
+                    const totalSelectedSize = selectedFiles.reduce((sum, file) => sum + file.size, 0);
+                    if (totalSelectedSize > maxCombinedDocumentSizeBytes) {
+                      setError("Combined file size is too large. Keep total uploads under 35MB.");
+                      return;
+                    }
+
+                    try {
+                      setError("");
+                      const encodedDocuments = await encodeFilesToStoredDocuments(files);
+                      setDocuments(encodedDocuments);
+                      setDocumentNames(selectedFiles.map((file) => file.name));
+                    } catch {
+                      setError("Failed to process uploaded tender documents");
+                    }
+                  }}
+                />
+              </label>
+              {!!documentNames.length && (
+                <div className="mt-4 space-y-2">
+                  {documentNames.map((name) => (
+                    <div key={name} className="flex items-center gap-2 text-sm text-gray-700">
+                      <FileText className="w-4 h-4 text-[#1D4E89]" />
+                      <span>{name}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Evaluation Method */}
+            <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-100 mb-6">
+              <h3 className="text-lg text-[#0B3C5D] mb-4">Evaluation Method</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <label className="flex items-center gap-2 text-sm text-gray-700">
+                  <input
+                    type="radio"
+                    name="evaluationMethod"
+                    value="L1"
+                    checked={evaluationMethod === "L1"}
+                    onChange={() => setEvaluationMethod("L1")}
+                    className="text-[#1D4E89]"
+                  />
+                  L1 (Lowest Price)
+                </label>
+                <label className="flex items-center gap-2 text-sm text-gray-700">
+                  <input
+                    type="radio"
+                    name="evaluationMethod"
+                    value="QCBS"
+                    checked={evaluationMethod === "QCBS"}
+                    onChange={() => setEvaluationMethod("QCBS")}
+                    className="text-[#1D4E89]"
+                  />
+                  QCBS (Quality and Cost Based Selection)
+                </label>
+              </div>
+
+              {evaluationMethod === "QCBS" && (
+                <div className="mt-5 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-sm font-semibold text-[#0B3C5D]">QCBS Weights</h4>
+                    <span
+                      className={`px-3 py-1 rounded-md text-xs ${
+                        qcbsWeightTotal === 100 ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"
+                      }`}
+                    >
+                      Total: {qcbsWeightTotal}%
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm text-gray-700 mb-2">Technical Weight (%)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        value={qcbsWeights.technical}
+                        onChange={(e) =>
+                          setQcbsWeights((prev) => ({
+                            ...prev,
+                            technical: Number(e.target.value || 0),
+                          }))
+                        }
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89]"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm text-gray-700 mb-2">Commercial Weight (%)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        value={qcbsWeights.commercial}
+                        onChange={(e) =>
+                          setQcbsWeights((prev) => ({
+                            ...prev,
+                            commercial: Number(e.target.value || 0),
+                          }))
+                        }
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89]"
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h4 className="text-sm font-semibold text-[#0B3C5D]">Technical Criteria</h4>
+                      <p className="text-xs text-gray-500">Set maximum marks for each required document.</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={addTechnicalCriterion}
+                      className="px-3 py-2 text-xs rounded bg-[#1D4E89] text-white hover:bg-[#154068] transition-colors"
+                    >
+                      + Add Criterion
+                    </button>
+                  </div>
+
+                  <div className="space-y-3">
+                    {technicalCriteria.map((criterion, index) => (
+                      <div key={index} className="p-4 border border-gray-200 rounded-md bg-gray-50">
+                        <div className="flex items-center justify-between mb-3">
+                          <p className="text-xs font-medium text-gray-700">Criterion {index + 1}</p>
+                          {technicalCriteria.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => removeTechnicalCriterion(index)}
+                              className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-red-100 text-red-700 hover:bg-red-200 transition-colors"
+                            >
+                              <X className="w-3 h-3" />
+                              Remove
+                            </button>
+                          )}
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <div>
+                            <label className="block text-xs text-gray-600 mb-1">Criterion Name</label>
+                            <input
+                              type="text"
+                              value={criterion.name}
+                              onChange={(e) => updateTechnicalCriterion(index, "name", e.target.value)}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89]"
+                              placeholder="e.g., Methodology"
+                              required
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs text-gray-600 mb-1">Max Marks</label>
+                            <input
+                              type="number"
+                              min="1"
+                              value={criterion.maxMarks}
+                              onChange={(e) => updateTechnicalCriterion(index, "maxMarks", e.target.value)}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89]"
+                              required
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {evaluationMethod === "L1" && (
+                <div className="mt-5 space-y-3 rounded-lg border border-amber-200 bg-amber-50 p-4">
+                  <div>
+                    <h4 className="text-sm font-semibold text-[#0B3C5D]">L1 Technical Cutoff</h4>
+                    <p className="text-xs text-gray-600">Committee members score technical marks out of 100. Bids must meet this cutoff before commercial comparison.</p>
+                  </div>
+                  <div className="max-w-xs">
+                    <label className="block text-sm text-gray-700 mb-2">Minimum technical marks (%)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      value={l1TechnicalCutoff}
+                      onChange={(e) => setL1TechnicalCutoff(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89]"
+                      placeholder="0 - 100"
+                      required
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Milestones (Required) */}
+            <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-100 mb-6">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h3 className="text-lg text-[#0B3C5D]">Project Milestones</h3>
+                  <p className="text-xs text-gray-500 mt-1">Define at least one milestone. These will be tracked after contract award.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={addMilestone}
+                  className="px-3 py-2 text-xs rounded bg-[#1D4E89] text-white hover:bg-[#154068] transition-colors"
+                >
+                  + Add Milestone
+                </button>
+              </div>
+
+              {!hasMilestones && (
+                <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-md flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-amber-700" />
+                  <p className="text-sm text-amber-800">At least one milestone is required</p>
+                </div>
+              )}
+
+              <div className="space-y-4">
+                {milestones.map((milestone, index) => (
+                  <div key={index} className="p-4 border border-gray-200 rounded-md space-y-3 bg-gray-50">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-medium text-gray-700">Milestone {index + 1}</p>
+                      {milestones.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => removeMilestone(index)}
+                          className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-red-100 text-red-700 hover:bg-red-200 transition-colors"
+                        >
+                          <X className="w-3 h-3" />
+                          Remove
+                        </button>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="block text-sm text-gray-700 mb-2">Title *</label>
+                      <input
+                        type="text"
+                        value={milestone.title}
+                        onChange={(e) => updateMilestone(index, "title", e.target.value)}
+                        placeholder="e.g., Design Phase, Development Phase 1"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89]"
+                        required
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm text-gray-700 mb-2">Description</label>
+                      <textarea
+                        value={milestone.description}
+                        onChange={(e) => updateMilestone(index, "description", e.target.value)}
+                        placeholder="Describe deliverables and objectives"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89]"
+                        rows={2}
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-sm text-gray-700 mb-2">Planned Start Date *</label>
+                        <input
+                          type="date"
+                          value={milestone.plannedStartDate}
+                          onChange={(e) => updateMilestone(index, "plannedStartDate", e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89]"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm text-gray-700 mb-2">Planned End Date *</label>
+                        <input
+                          type="date"
+                          value={milestone.plannedEndDate}
+                          onChange={(e) => updateMilestone(index, "plannedEndDate", e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1D4E89]"
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-3">
+                        <label className="block text-sm text-gray-700">Verification Checklist</label>
+                        <button
+                          type="button"
+                          onClick={() => addChecklistItem(index)}
+                          className="text-xs px-2 py-1 rounded bg-blue-50 text-[#1D4E89] border border-blue-100 hover:bg-blue-100 transition-colors"
+                        >
+                          + Add Item
+                        </button>
+                      </div>
+                      {milestone.checklistItems.length === 0 && (
+                        <p className="text-xs text-gray-400 italic mb-2">No checklist items yet. Add items that the committee will verify.</p>
+                      )}
+                      <div className="space-y-2">
+                        {milestone.checklistItems.map((item, itemIndex) => (
+                          <div key={itemIndex} className="flex items-center gap-2">
+                            <input
+                              type="text"
+                              value={item}
+                              onChange={(e) => updateChecklistItem(index, itemIndex, e.target.value)}
+                              placeholder={`Checklist item ${itemIndex + 1}`}
+                              className="flex-1 px-3 py-1.5 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-[#1D4E89]"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => removeChecklistItem(index, itemIndex)}
+                              className="flex items-center justify-center w-7 h-7 rounded bg-red-50 text-red-600 border border-red-100 hover:bg-red-100 transition-colors"
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Submit Buttons */}
+            <div className="flex items-center gap-4">
+              {error && <p className="text-sm text-red-600">{error}</p>}
+              <button
+                type="submit"
+                disabled={!isEvaluationValid || !hasMilestones || loading}
+                className={`px-6 py-3 rounded-md transition-colors ${
+                  isEvaluationValid && hasMilestones && !loading
+                    ? "bg-[#1D4E89] hover:bg-[#154068] text-white"
+                    : "bg-gray-300 text-gray-500 cursor-not-allowed"
+                }`}
+              >
+                {loading ? "Publishing..." : "Publish Tender"}
+              </button>
+              <button
+                type="button"
+                onClick={() => navigate("/po")}
+                className="px-6 py-3 border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+      <AIAssistant role="po" />
+    </div>
+  );
+}

@@ -1,6 +1,6 @@
 IntelliTender – Intelligent Tender & Contract Management System
 
-This platform is used by large government organizations for procurement lifecycle management including tender publishing, AI-assisted evaluation, contract monitoring, and bidder profiling.
+This platform is used by organizations for procurement lifecycle management including tender publishing, AI-assisted evaluation, contract monitoring, and bidder profiling.
 
 The system has 4 distinct user entities with role-based dashboards and permissions:
 
@@ -14,7 +14,7 @@ Bidder – Tender participation & submission
 
 The design must look:
 
-Government-grade
+Enterprise-grade
 
 Enterprise secure
 
@@ -24,7 +24,7 @@ Data-driven
 
 Authoritative
 
-🎨 Professional Color Coding (Government Style)
+🎨 Professional Color Coding (Enterprise Style)
 
 Use consistent enterprise colors:
 
@@ -72,7 +72,7 @@ Bidder
 
 Two-factor verification UI placeholder
 
-Footer: © Government Procurement Authority
+Footer: © IntelliTender
 
 2️⃣ CPO Dashboard (Chief Procurement Officer)
 

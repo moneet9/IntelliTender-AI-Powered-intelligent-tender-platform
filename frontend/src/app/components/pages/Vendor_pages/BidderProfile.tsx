@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { Sidebar } from "../layout/Sidebar";
-import { Header } from "../layout/Header";
-import { AIAssistant } from "../AIAssistant";
-import { apiRequest, getAuthUser } from "../../api";
+import { Sidebar } from "../../layout/Sidebar";
+import { Header } from "../../layout/Header";
+import { AIAssistant } from "../../AIAssistant";
+import { apiRequest, getAuthUser } from "../../../api";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -12,7 +12,7 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-} from "../ui/alert-dialog";
+} from "../../ui/alert-dialog";
 
 export function BidderProfile() {
   const authUser = getAuthUser();
@@ -71,11 +71,11 @@ export function BidderProfile() {
     setIsDeleting(true);
     try {
       await apiRequest(`/api/admin/vendors/${deleteVendorTarget.id}`, { method: "DELETE" });
-      setSuccess("Vendor account deleted");
+      setSuccess("Vendor account suspended");
       await loadVendors();
       setDeleteVendorTarget(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to delete vendor");
+      setError(err instanceof Error ? err.message : "Failed to suspend vendor");
     } finally {
       setIsDeleting(false);
     }
@@ -85,8 +85,8 @@ export function BidderProfile() {
     const total = vendors.length;
     const active = vendors.filter((v) => v.accountStatus === "Active").length;
     const frozen = vendors.filter((v) => v.accountStatus === "Frozen").length;
-    const deleted = vendors.filter((v) => v.accountStatus === "Deleted").length;
-    return { total, active, frozen, deleted };
+    const suspended = vendors.filter((v) => v.accountStatus === "Suspended" || v.accountStatus === "Deleted").length;
+    return { total, active, frozen, suspended };
   }, [vendors]);
 
   return (
@@ -117,8 +117,8 @@ export function BidderProfile() {
               <p className="text-2xl text-yellow-700">{vendorStats.frozen}</p>
             </div>
             <div className="bg-white rounded-lg border border-gray-100 p-4">
-              <p className="text-sm text-gray-600">Deleted</p>
-              <p className="text-2xl text-red-700">{vendorStats.deleted}</p>
+              <p className="text-sm text-gray-600">Suspended</p>
+              <p className="text-2xl text-red-700">{vendorStats.suspended}</p>
             </div>
           </div>
 
@@ -153,7 +153,7 @@ export function BidderProfile() {
                             : "bg-red-100 text-red-800"
                         }`}
                       >
-                        {vendor.accountStatus}
+                        {vendor.accountStatus === "Deleted" ? "Suspended" : vendor.accountStatus}
                       </span>
                     </td>
                     <td className="px-6 py-4 text-sm text-gray-600">
@@ -170,16 +170,16 @@ export function BidderProfile() {
                         <button
                           onClick={() => freezeVendor(vendor._id)}
                           className="px-3 py-1 text-xs rounded bg-yellow-100 text-yellow-800 hover:bg-yellow-200"
-                          disabled={vendor.accountStatus === "Deleted"}
+                          disabled={vendor.accountStatus === "Suspended"}
                         >
                           Freeze
                         </button>
                         <button
                           onClick={() => setDeleteVendorTarget({ id: vendor._id, name: vendor.name })}
                           className="px-3 py-1 text-xs rounded bg-red-100 text-red-800 hover:bg-red-200"
-                          disabled={vendor.accountStatus === "Deleted"}
+                          disabled={vendor.accountStatus === "Suspended"}
                         >
-                          Delete
+                          Suspend
                         </button>
                       </div>
                     </td>
@@ -193,12 +193,12 @@ export function BidderProfile() {
       <AlertDialog open={!!deleteVendorTarget} onOpenChange={(open) => !open && !isDeleting && setDeleteVendorTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle className="text-red-700">Delete Vendor Account?</AlertDialogTitle>
+            <AlertDialogTitle className="text-red-700">Suspend Vendor Account?</AlertDialogTitle>
             <AlertDialogDescription className="space-y-2">
               <span className="block">
-                You are deleting <span className="font-semibold text-gray-900">{deleteVendorTarget?.name || "this vendor"}</span>.
+                You are suspending <span className="font-semibold text-gray-900">{deleteVendorTarget?.name || "this vendor"}</span>.
               </span>
-              <span className="block text-red-700">Deleted vendors cannot log in.</span>
+              <span className="block text-red-700">Suspended vendors can still log in, but actions are limited.</span>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -208,7 +208,7 @@ export function BidderProfile() {
               disabled={isDeleting}
               className="bg-red-600 hover:bg-red-700 focus:ring-red-500"
             >
-              {isDeleting ? "Deleting..." : "Yes, Delete"}
+              {isDeleting ? "Suspending..." : "Yes, Suspend"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -217,3 +217,4 @@ export function BidderProfile() {
     </div>
   );
 }
+

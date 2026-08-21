@@ -24,11 +24,11 @@ export function HomePage() {
       <section className="bg-gradient-to-br from-[#0B3C5D] to-[#1D4E89] text-white py-20">
         <div className="container mx-auto px-6 text-center">
           <h2 className="text-4xl md:text-5xl mb-6">
-            Government-Grade Tender & Contract Management
+            Tender & Contract Management
           </h2>
           <p className="text-xl text-white/90 mb-8 max-w-3xl mx-auto">
             Streamline procurement with AI-powered evaluation, comprehensive audit logging,
-            and role-based dashboards for transparent government contracting.
+            and role-based dashboards for transparent contract operations.
           </p>
           <div className="flex items-center justify-center gap-4">
             <Link
@@ -169,7 +169,7 @@ export function HomePage() {
         <div className="container mx-auto px-6 text-center">
           <h3 className="text-3xl mb-4">Ready to Transform Your Procurement Process?</h3>
           <p className="text-lg text-white/90 mb-8 max-w-2xl mx-auto">
-            Join government agencies worldwide using IntelliTender for transparent,
+            Join organizations worldwide using IntelliTender for transparent,
             efficient, and compliant tender management.
           </p>
           <Link
@@ -191,7 +191,7 @@ export function HomePage() {
                 <span className="text-white">IntelliTender</span>
               </div>
               <p className="text-sm text-gray-400">
-                Government-grade procurement platform with AI-powered evaluation and comprehensive audit trails.
+                Procurement platform with AI-powered evaluation and comprehensive audit trails.
               </p>
             </div>
             <div>
@@ -214,7 +214,7 @@ export function HomePage() {
             </div>
           </div>
           <div className="border-t border-gray-700 mt-8 pt-8 text-center text-sm text-gray-400">
-            © 2026 IntelliTender. All rights reserved. Government Procurement Solution.
+            © 2026 IntelliTender. All rights reserved. Tender procurement solution.
           </div>
         </div>
       </footer>

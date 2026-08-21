@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { Sidebar } from "../layout/Sidebar";
-import { Header } from "../layout/Header";
-import { AIAssistant } from "../AIAssistant";
+import { Sidebar } from "../../layout/Sidebar";
+import { Header } from "../../layout/Header";
+import { AIAssistant } from "../../AIAssistant";
 import { Download, Filter } from "lucide-react";
 
 const auditLogs = [

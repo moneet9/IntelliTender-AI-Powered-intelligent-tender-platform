@@ -1,8 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, Link } from "react-router";
+import { GoogleLogin, type CredentialResponse } from "@react-oauth/google";
 import { Lock, Shield } from "lucide-react";
 import { ApiError, apiRequest, saveAuthUser } from "../../api";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "../ui/card";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
@@ -30,6 +37,7 @@ export function Login() {
   const [newPassword, setNewPassword] = useState("");
   const [confirmNewPassword, setConfirmNewPassword] = useState("");
   const [forgotMessage, setForgotMessage] = useState("");
+  const [otpExpiresAt, setOtpExpiresAt] = useState<Date | null>(null);
 
   const roleMap = {
     cpo: "CPO",
@@ -42,14 +50,16 @@ export function Login() {
     CPO: "/cpo",
     PO: "/po",
     Committee: "/committee",
-    Vendor: "/bidder",
+    Vendor: "/vendor",
   } as const;
 
+  const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+
   useEffect(() => {
-    if (!frozenUntil) return;
+    if (!frozenUntil && !otpExpiresAt) return;
     const id = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [frozenUntil]);
+  }, [frozenUntil, otpExpiresAt]);
 
   const countdown = useMemo(() => {
     if (!frozenUntil) return "";
@@ -60,6 +70,19 @@ export function Login() {
     const seconds = Math.floor((remaining % (1000 * 60)) / 1000);
     return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
   }, [frozenUntil, nowMs]);
+
+  const otpCountdown = useMemo(() => {
+    if (!otpExpiresAt) return "";
+    const remaining = new Date(otpExpiresAt).getTime() - nowMs;
+    if (remaining <= 0) return "00:00";
+    const minutes = Math.floor(remaining / (1000 * 60));
+    const seconds = Math.floor((remaining % (1000 * 60)) / 1000);
+    return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }, [otpExpiresAt, nowMs]);
+
+  const isOtpExpired = otpExpiresAt
+    ? new Date(otpExpiresAt).getTime() < nowMs
+    : false;
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -74,6 +97,8 @@ export function Login() {
         name: string;
         email: string;
         role: "CPO" | "PO" | "Committee" | "Vendor";
+        accountStatus?: "Active" | "Frozen" | "Suspended" | "Deleted";
+        frozenUntil?: string | null;
         token: string;
       }>("/api/auth/login", {
         method: "POST",
@@ -115,15 +140,60 @@ export function Login() {
         name: string;
         email: string;
         role: "Vendor";
+        accountStatus?: "Active" | "Frozen" | "Suspended" | "Deleted";
+        frozenUntil?: string | null;
         token: string;
       }>("/api/auth/signup-vendor", {
         method: "POST",
         body: { name: fullName, email: username, password },
       });
       saveAuthUser(data);
-      navigate("/bidder");
+      navigate("/vendor");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Signup failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleGoogleLogin = async (credentialResponse: CredentialResponse) => {
+    if (!credentialResponse.credential) {
+      setError("Google login failed. Please try again.");
+      return;
+    }
+
+    setError("");
+    setWarningType("");
+    setFrozenUntil(null);
+    setLoading(true);
+
+    try {
+      const data = await apiRequest<{
+        _id: string;
+        name: string;
+        email: string;
+        role: "CPO" | "PO" | "Committee" | "Vendor";
+        accountStatus?: "Active" | "Frozen" | "Suspended" | "Deleted";
+        frozenUntil?: string | null;
+        token: string;
+      }>("/api/auth/google", {
+        method: "POST",
+        body: { idToken: credentialResponse.credential },
+      });
+
+      saveAuthUser(data);
+      navigate(routeMap[data.role]);
+    } catch (err) {
+      if (err instanceof ApiError && err.code === "ACCOUNT_DELETED") {
+        setWarningType("deleted");
+        setError(err.message);
+      } else if (err instanceof ApiError && err.code === "ACCOUNT_FROZEN") {
+        setWarningType("frozen");
+        setFrozenUntil(err.frozenUntil || null);
+        setError(err.message);
+      } else {
+        setError(err instanceof Error ? err.message : "Google login failed");
+      }
     } finally {
       setLoading(false);
     }
@@ -140,11 +210,15 @@ export function Login() {
 
     setLoading(true);
     try {
-      const response = await apiRequest<{ message: string }>("/api/auth/forgot-password/request-otp", {
-        method: "POST",
-        body: { email: forgotEmail },
-      });
-      setForgotMessage(response.message || "OTP sent.");
+      const response = await apiRequest<{ message: string }>(
+        "/api/auth/forgot-password/request-otp",
+        {
+          method: "POST",
+          body: { email: forgotEmail },
+        },
+      );
+      setForgotMessage(response.message || "OTP sent to your email");
+      setOtpExpiresAt(new Date(Date.now() + 2 * 60 * 1000));
       setShowOtp(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to send OTP");
@@ -167,17 +241,28 @@ export function Login() {
       return;
     }
 
+    if (isOtpExpired) {
+      setError("OTP has expired. Please request a new one.");
+      return;
+    }
+
     setLoading(true);
     try {
-      const response = await apiRequest<{ message: string }>("/api/auth/forgot-password/reset", {
-        method: "POST",
-        body: {
-          email: forgotEmail,
-          otp,
-          newPassword,
+      const response = await apiRequest<{ message: string }>(
+        "/api/auth/forgot-password/reset",
+        {
+          method: "POST",
+          body: {
+            email: forgotEmail,
+            otp,
+            newPassword,
+          },
         },
-      });
-      setForgotMessage(response.message || "Password updated.");
+      );
+      setForgotMessage(
+        response.message ||
+          "Password updated. Please login with your new password.",
+      );
       setShowOtp(false);
       setShowForgotRequest(false);
       setMode("login");
@@ -186,6 +271,7 @@ export function Login() {
       setConfirmNewPassword("");
       setPassword("");
       setUsername(forgotEmail);
+      setOtpExpiresAt(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "OTP verification failed");
     } finally {
@@ -206,14 +292,22 @@ export function Login() {
           <CardContent>
             <form onSubmit={handleVerifyOtp} className="space-y-4">
               <div className="space-y-2">
-                <Label htmlFor="otp">Verification Code</Label>
+                <div className="flex justify-between items-center">
+                  <Label htmlFor="otp">Verification Code</Label>
+                  <span
+                    className={`text-sm font-semibold ${isOtpExpired ? "text-red-600" : "text-orange-600"}`}
+                  >
+                    {otpCountdown}
+                  </span>
+                </div>
                 <Input
                   id="otp"
                   placeholder="000000"
                   value={otp}
-                  onChange={(e) => setOtp(e.target.value)}
+                  onChange={(e) => setOtp(e.target.value.replace(/\D/g, ""))}
                   maxLength={6}
-                  className="text-center text-2xl tracking-widest"
+                  className="text-center text-2xl tracking-widest font-bold"
+                  disabled={isOtpExpired}
                 />
               </div>
 
@@ -225,6 +319,7 @@ export function Login() {
                   placeholder="Enter new password"
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
+                  disabled={isOtpExpired}
                 />
               </div>
 
@@ -236,22 +331,44 @@ export function Login() {
                   placeholder="Confirm new password"
                   value={confirmNewPassword}
                   onChange={(e) => setConfirmNewPassword(e.target.value)}
+                  disabled={isOtpExpired}
                 />
               </div>
 
-              {error && <p className="text-sm text-red-600">{error}</p>}
-              {forgotMessage && <p className="text-sm text-green-700">{forgotMessage}</p>}
+              {isOtpExpired && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-md">
+                  <p className="text-sm text-red-700">
+                    OTP has expired. Please request a new one.
+                  </p>
+                </div>
+              )}
 
-              <Button type="submit" className="w-full bg-[#0B3C5D] hover:bg-[#1D4E89]" disabled={loading}>
-                {loading ? "Verifying..." : "Verify & Continue"}
+              {error && <p className="text-sm text-red-600">{error}</p>}
+              {forgotMessage && (
+                <p className="text-sm text-green-700">{forgotMessage}</p>
+              )}
+
+              <Button
+                type="submit"
+                className="w-full bg-[#0B3C5D] hover:bg-[#1D4E89]"
+                disabled={loading || isOtpExpired}
+              >
+                {loading ? "Verifying..." : "Verify & Change Password"}
               </Button>
               <Button
                 type="button"
                 variant="ghost"
                 className="w-full"
-                onClick={() => setShowOtp(false)}
+                onClick={() => {
+                  setShowOtp(false);
+                  setOtp("");
+                  setNewPassword("");
+                  setConfirmNewPassword("");
+                  setOtpExpiresAt(null);
+                  setError("");
+                }}
               >
-                Back to Login
+                Request New OTP
               </Button>
             </form>
           </CardContent>
@@ -284,9 +401,15 @@ export function Login() {
               </div>
 
               {error && <p className="text-sm text-red-600">{error}</p>}
-              {forgotMessage && <p className="text-sm text-green-700">{forgotMessage}</p>}
+              {forgotMessage && (
+                <p className="text-sm text-green-700">{forgotMessage}</p>
+              )}
 
-              <Button type="submit" className="w-full bg-[#0B3C5D] hover:bg-[#1D4E89]" disabled={loading}>
+              <Button
+                type="submit"
+                className="w-full bg-[#0B3C5D] hover:bg-[#1D4E89]"
+                disabled={loading}
+              >
                 {loading ? "Sending..." : "Send OTP"}
               </Button>
               <Button
@@ -308,9 +431,21 @@ export function Login() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: '#F4F6F9' }}>
+    <div
+      className="min-h-screen flex items-center justify-center"
+      style={{ backgroundColor: "#F4F6F9" }}
+    >
       <div className="w-full max-w-md">
         <div className="bg-white rounded-lg shadow-lg p-8">
+          <div className="flex justify-end mb-4">
+            <button
+              type="button"
+              onClick={() => navigate("/")}
+              className="inline-flex items-center gap-2 rounded-md border border-[#1D4E89] px-3 py-2 text-sm font-medium text-[#1D4E89] transition hover:bg-[#1D4E89] hover:text-white"
+            >
+              ← Back to Home
+            </button>
+          </div>
           <div className="text-center mb-8">
             <div className="flex items-center justify-center mb-4">
               <div className="bg-[#0B3C5D] p-3 rounded-lg">
@@ -318,10 +453,15 @@ export function Login() {
               </div>
             </div>
             <h1 className="text-2xl text-[#0B3C5D] mb-2">IntelliTender</h1>
-            <p className="text-sm text-gray-600">Intelligent Tender & Contract Management System</p>
+            <p className="text-sm text-gray-600">
+              Intelligent Tender & Contract Management System
+            </p>
           </div>
 
-          <form onSubmit={mode === "login" ? handleLogin : handleVendorSignup} className="space-y-5">
+          <form
+            onSubmit={mode === "login" ? handleLogin : handleVendorSignup}
+            className="space-y-5"
+          >
             <div className="flex items-center gap-2">
               <button
                 type="button"
@@ -343,7 +483,9 @@ export function Login() {
             </div>
 
             <div className={mode === "signup" ? "hidden" : "block"}>
-              <label className="block text-sm mb-2 text-gray-700">Select Role</label>
+              <label className="block text-sm mb-2 text-gray-700">
+                Select Role
+              </label>
               <select
                 value={selectedRole}
                 onChange={(e) => setSelectedRole(e.target.value as Role)}
@@ -358,7 +500,9 @@ export function Login() {
 
             {mode === "signup" && (
               <div>
-                <label className="block text-sm mb-2 text-gray-700">Vendor Name</label>
+                <label className="block text-sm mb-2 text-gray-700">
+                  Vendor Name
+                </label>
                 <input
                   type="text"
                   value={fullName}
@@ -383,7 +527,9 @@ export function Login() {
             </div>
 
             <div>
-              <label className="block text-sm mb-2 text-gray-700">Password</label>
+              <label className="block text-sm mb-2 text-gray-700">
+                Password
+              </label>
               <input
                 type="password"
                 value={password}
@@ -411,26 +557,34 @@ export function Login() {
 
             {warningType === "deleted" && (
               <div className="p-4 rounded-md border-2 border-red-500 bg-red-50">
-                <p className="text-red-800 text-sm font-medium">⚠ Account Deleted</p>
+                <p className="text-red-800 text-sm font-medium">
+                  ⚠ Account Deleted
+                </p>
                 <p className="text-red-700 text-sm">{error}</p>
               </div>
             )}
 
             {warningType === "frozen" && (
               <div className="p-4 rounded-md border-2 border-yellow-500 bg-yellow-50">
-                <p className="text-yellow-900 text-sm font-medium">⚠ Account Frozen</p>
+                <p className="text-yellow-900 text-sm font-medium">
+                  ⚠ Account Frozen
+                </p>
                 <p className="text-yellow-800 text-sm">{error}</p>
-                <p className="text-yellow-900 text-lg mt-2">Remaining freeze time: {countdown}</p>
+                <p className="text-yellow-900 text-lg mt-2">
+                  Remaining freeze time: {countdown}
+                </p>
               </div>
             )}
 
-            {error && !warningType && <p className="text-sm text-red-600">{error}</p>}
+            {error && !warningType && (
+              <p className="text-sm text-red-600">{error}</p>
+            )}
 
             {mode === "login" && (
-              <div className="flex items-center justify-between text-sm">
+              <div className="text-center">
                 <button
                   type="button"
-                  className="text-[#1D4E89] hover:underline"
+                  className="text-[#1D4E89] hover:underline text-sm"
                   onClick={() => {
                     setShowForgotRequest(true);
                     setForgotEmail(username);
@@ -440,9 +594,36 @@ export function Login() {
                 >
                   Forgot Password?
                 </button>
-                <Link to="/change-password" className="text-[#1D4E89] hover:underline">
-                  Change Password
-                </Link>
+              </div>
+            )}
+
+            {mode === "login" && googleClientId && (
+              <div className="space-y-3">
+                <div className="relative">
+                  <div className="absolute inset-0 flex items-center">
+                    <span className="w-full border-t border-gray-200" />
+                  </div>
+                  <div className="relative flex justify-center text-xs uppercase">
+                    <span className="bg-white px-2 text-gray-500">
+                      Or continue with
+                    </span>
+                  </div>
+                </div>
+                <div className="flex justify-center">
+                  <GoogleLogin
+                    onSuccess={(credentialResponse) => {
+                      void handleGoogleLogin(credentialResponse);
+                    }}
+                    onError={() =>
+                      setError("Google login was cancelled or failed")
+                    }
+                    useOneTap={false}
+                    theme="outline"
+                    size="large"
+                    text="continue_with"
+                    shape="rectangular"
+                  />
+                </div>
               </div>
             )}
 
@@ -451,12 +632,18 @@ export function Login() {
               disabled={loading}
               className="w-full bg-[#0B3C5D] hover:bg-[#1D4E89] text-white py-3 rounded-md transition-colors duration-200"
             >
-              {loading ? (mode === "login" ? "Logging in..." : "Creating account...") : (mode === "login" ? "Secure Login" : "Create Vendor Account")}
+              {loading
+                ? mode === "login"
+                  ? "Logging in..."
+                  : "Creating account..."
+                : mode === "login"
+                  ? "Secure Login"
+                  : "Create Vendor Account"}
             </button>
           </form>
 
           <div className="mt-8 text-center text-xs text-gray-500 border-t border-gray-200 pt-6">
-            © 2026 Government Procurement Authority
+            © 2026 IntelliTender
           </div>
         </div>
       </div>

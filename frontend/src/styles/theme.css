@@ -26,13 +26,13 @@
   --font-weight-normal: 400;
   --ring: #1D4E89;
   
-  /* Government-grade colors */
-  --gov-primary: #0B3C5D;
-  --gov-secondary: #1D4E89;
-  --gov-success: #2E8B57;
-  --gov-warning: #F4A300;
-  --gov-danger: #B22222;
-  --gov-bg: #F4F6F9;
+  /* Procurement platform colors */
+  --procurement-primary: #0B3C5D;
+  --procurement-secondary: #1D4E89;
+  --procurement-success: #2E8B57;
+  --procurement-warning: #F4A300;
+  --procurement-danger: #B22222;
+  --procurement-bg: #F4F6F9;
   
   /* Chart colors */
   --chart-1: #0B3C5D;
@@ -112,13 +112,13 @@
   --color-switch-background: var(--switch-background);
   --color-ring: var(--ring);
   
-  /* Government colors */
-  --color-gov-primary: var(--gov-primary);
-  --color-gov-secondary: var(--gov-secondary);
-  --color-gov-success: var(--gov-success);
-  --color-gov-warning: var(--gov-warning);
-  --color-gov-danger: var(--gov-danger);
-  --color-gov-bg: var(--gov-bg);
+  /* Procurement colors */
+  --color-procurement-primary: var(--procurement-primary);
+  --color-procurement-secondary: var(--procurement-secondary);
+  --color-procurement-success: var(--procurement-success);
+  --color-procurement-warning: var(--procurement-warning);
+  --color-procurement-danger: var(--procurement-danger);
+  --color-procurement-bg: var(--procurement-bg);
   
   --color-chart-1: var(--chart-1);
   --color-chart-2: var(--chart-2);

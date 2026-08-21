@@ -1,5 +1,6 @@
-import { Sidebar } from "../layout/Sidebar";
-import { AIAssistant } from "../AIAssistant";
+import { Sidebar } from "../../layout/Sidebar";
+import { Header } from "../../layout/Header";
+import { AIAssistant } from "../../AIAssistant";
 import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 import { TrendingUp, Users, FileText, CheckCircle, AlertTriangle } from "lucide-react";
 
@@ -103,8 +104,9 @@ export function DepartmentPerformance() {
   return (
     <div className="flex h-screen bg-[#F4F6F9]">
       <Sidebar role="cpo" />
-      <div className="flex-1 overflow-auto">
-        <div className="p-8">
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <Header role="cpo" userName="Priya Sharma" />
+        <div className="flex-1 overflow-auto p-8">
           <div className="mb-8">
             <h1 className="text-2xl text-[#0B3C5D] mb-2">Department Performance Overview</h1>
             <p className="text-sm text-gray-600">Monitor procurement officer performance across all departments</p>

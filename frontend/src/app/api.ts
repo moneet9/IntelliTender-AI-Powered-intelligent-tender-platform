@@ -4,6 +4,7 @@ type RequestOptions = {
   method?: string;
   body?: unknown;
   token?: string;
+  timeoutMs?: number;
 };
 
 export class ApiError extends Error {
@@ -25,6 +26,8 @@ export type AuthUser = {
   name: string;
   email: string;
   role: "CPO" | "PO" | "Committee" | "Vendor";
+  accountStatus?: "Active" | "Frozen" | "Suspended" | "Deleted";
+  frozenUntil?: string | null;
   token: string;
 };
 
@@ -49,15 +52,29 @@ export const clearAuthUser = () => {
 export const apiRequest = async <T>(path: string, options: RequestOptions = {}): Promise<T> => {
   const authUser = getAuthUser();
   const token = options.token || authUser?.token;
+  const controller = new AbortController();
+  const timeoutMs = options.timeoutMs ?? 20000;
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    method: options.method || "GET",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: options.body ? JSON.stringify(options.body) : undefined,
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      method: options.method || "GET",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new ApiError(`Request timed out after ${Math.round(timeoutMs / 1000)} seconds`, { code: "REQUEST_TIMEOUT" });
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
