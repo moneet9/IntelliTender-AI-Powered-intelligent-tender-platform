@@ -33,11 +33,12 @@ type AiNotification = {
   createdAt?: string;
 };
 
-export function Header({ role, userName = "Vikram Patel" }: HeaderProps) {
+export function Header({ role, userName }: HeaderProps) {
   const navigate = useNavigate();
   const badge = roleBadges[role];
   const authUser = getAuthUser();
-  const resolvedUserName = userName || authUser?.name || "User";
+  const resolvedUserName =
+    (userName && userName.trim()) || authUser?.name || "User";
   const [notifications, setNotifications] = useState<AiNotification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [showNotifications, setShowNotifications] = useState(false);
@@ -46,7 +47,10 @@ export function Header({ role, userName = "Vikram Patel" }: HeaderProps) {
     if (role !== "po") return;
     const loadNotifications = async () => {
       try {
-        const data = await apiRequest<{ items: AiNotification[]; unreadCount: number }>("/api/ai/milestones/notifications");
+        const data = await apiRequest<{
+          items: AiNotification[];
+          unreadCount: number;
+        }>("/api/ai/milestones/notifications");
         setNotifications(data.items || []);
         setUnreadCount(data.unreadCount || 0);
       } catch {
@@ -91,12 +95,18 @@ export function Header({ role, userName = "Vikram Patel" }: HeaderProps) {
             {showNotifications && (
               <div className="absolute right-0 mt-2 w-80 bg-white border border-gray-200 rounded-lg shadow-lg z-20">
                 <div className="px-4 py-3 border-b border-gray-100">
-                  <p className="text-sm font-semibold text-[#0B3C5D]">AI Milestone Alerts</p>
-                  <p className="text-xs text-gray-500">Latest updates from committee reports</p>
+                  <p className="text-sm font-semibold text-[#0B3C5D]">
+                    AI Milestone Alerts
+                  </p>
+                  <p className="text-xs text-gray-500">
+                    Latest updates from committee reports
+                  </p>
                 </div>
                 <div className="max-h-72 overflow-auto">
                   {!notifications.length && (
-                    <p className="px-4 py-4 text-sm text-gray-500">No alerts yet.</p>
+                    <p className="px-4 py-4 text-sm text-gray-500">
+                      No alerts yet.
+                    </p>
                   )}
                   {notifications.map((item) => (
                     <button
@@ -104,8 +114,12 @@ export function Header({ role, userName = "Vikram Patel" }: HeaderProps) {
                       onClick={() => navigate(item.link || "/po/ai-alerts")}
                       className="w-full text-left px-4 py-3 border-b border-gray-100 hover:bg-gray-50"
                     >
-                      <p className="text-sm font-medium text-[#0B3C5D]">{item.title}</p>
-                      <p className="text-xs text-gray-500 mt-1 line-clamp-2">{item.message}</p>
+                      <p className="text-sm font-medium text-[#0B3C5D]">
+                        {item.title}
+                      </p>
+                      <p className="text-xs text-gray-500 mt-1 line-clamp-2">
+                        {item.message}
+                      </p>
                     </button>
                   ))}
                 </div>
