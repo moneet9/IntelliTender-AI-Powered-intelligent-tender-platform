@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Bot, Clock, MessageSquare, Plus, Send, Trash2, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
+import { Bot, Clock, Maximize2, MessageSquare, Minimize2, Plus, Send, Trash2, X } from "lucide-react";
 import { apiRequest } from "../api";
 
 type Role = "cpo" | "po" | "committee" | "vendor" | "bidder";
@@ -207,8 +207,45 @@ function renderRecordCards(message: ChatMessage) {
   );
 }
 
+function formatInlineMarkdown(value: string, keyPrefix: string) {
+  const parts = value.split(/(\*\*[^*]+\*\*)/g).filter(Boolean);
+  return parts.map((part, index) => part.startsWith("**") && part.endsWith("**")
+    ? <strong key={`${keyPrefix}-bold-${index}`}>{part.slice(2, -2)}</strong>
+    : <span key={`${keyPrefix}-text-${index}`}>{part}</span>);
+}
+
+function FormattedAssistantMessage({ content }: { content: string }) {
+  const lines = String(content || "").replace(/\r\n/g, "\n").split("\n");
+  return (
+    <div className="space-y-2 text-sm leading-6">
+      {lines.map((line, index) => {
+        const trimmed = line.trim();
+        if (!trimmed) return <div key={`space-${index}`} className="h-1" />;
+        if (/^-{3,}$/.test(trimmed)) return <hr key={`rule-${index}`} className="my-2 border-slate-200" />;
+        if (/^\*\*[^*]+\*\*$/.test(trimmed)) {
+          return <h4 key={`heading-${index}`} className="pt-1 text-xs font-bold uppercase tracking-[0.12em] text-[#0B3C5D]">{trimmed.slice(2, -2)}</h4>;
+        }
+        if (/^[-*]\s+/.test(trimmed)) {
+          return <div key={`bullet-${index}`} className="flex gap-2 pl-2"><span className="text-[#1D4E89]">•</span><span>{formatInlineMarkdown(trimmed.replace(/^[-*]\s+/, ""), `line-${index}`)}</span></div>;
+        }
+        if (/^\d+[.)]\s+/.test(trimmed)) {
+          const match = trimmed.match(/^(\d+)[.)]\s+(.*)$/);
+          return <div key={`number-${index}`} className="flex gap-2 pl-2"><span className="font-semibold text-[#1D4E89]">{match?.[1]}.</span><span>{formatInlineMarkdown(match?.[2] || trimmed, `line-${index}`)}</span></div>;
+        }
+        if (trimmed.startsWith(">")) {
+          return <blockquote key={`quote-${index}`} className="border-l-2 border-amber-400 bg-amber-50 px-3 py-1 text-slate-700">{formatInlineMarkdown(trimmed.replace(/^>\s?/, ""), `line-${index}`)}</blockquote>;
+        }
+        return <p key={`paragraph-${index}`}>{formatInlineMarkdown(trimmed, `line-${index}`)}</p>;
+      })}
+    </div>
+  );
+}
+
 export function AIAssistant({ role }: AIAssistantProps) {
   const [isOpen, setIsOpen] = useState(false);
+  const [isFullScreen, setIsFullScreen] = useState(false);
+  const [modalPosition, setModalPosition] = useState({ x: 0, y: 0 });
+  const [dragState, setDragState] = useState<{ startX: number; startY: number; originX: number; originY: number } | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [isLoadingChats, setIsLoadingChats] = useState(false);
   const [chats, setChats] = useState<ChatSession[]>([]);
@@ -420,10 +457,29 @@ export function AIAssistant({ role }: AIAssistantProps) {
 
   const questions = quickQuestions[role];
 
+  const beginModalDrag = (event: PointerEvent<HTMLDivElement>) => {
+    if (isFullScreen || event.button !== 0) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setDragState({
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: modalPosition.x,
+      originY: modalPosition.y,
+    });
+  };
+
+  const moveModal = (event: PointerEvent<HTMLDivElement>) => {
+    if (!dragState || isFullScreen) return;
+    setModalPosition({
+      x: dragState.originX + event.clientX - dragState.startX,
+      y: dragState.originY + event.clientY - dragState.startY,
+    });
+  };
+
   if (!isOpen) {
     return (
       <button
-        onClick={() => setIsOpen(true)}
+        onClick={() => { setIsOpen(true); setIsFullScreen(true); }}
         className="fixed bottom-6 right-6 z-50 flex h-14 w-14 items-center justify-center rounded-full bg-[#0B3C5D] text-white shadow-lg transition-transform hover:scale-105 hover:bg-[#154068]"
         aria-label="Open IntelliTender assistant"
       >
@@ -433,8 +489,16 @@ export function AIAssistant({ role }: AIAssistantProps) {
   }
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 flex h-[min(88vh,44rem)] w-[min(94vw,60rem)] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
-      <div className="flex items-center justify-between border-b border-slate-200 bg-[#0B3C5D] px-4 py-3 text-white">
+    <div style={!isFullScreen ? { transform: `translate(${modalPosition.x}px, ${modalPosition.y}px)` } : undefined} className={isFullScreen
+      ? "fixed inset-0 z-50 flex h-screen w-screen flex-col overflow-hidden bg-white"
+      : "fixed bottom-4 right-4 z-50 flex h-[min(88vh,44rem)] w-[min(94vw,60rem)] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"}>
+      <div
+        className={`flex items-center justify-between border-b border-slate-200 bg-[#0B3C5D] px-4 py-3 text-white ${isFullScreen ? "" : "cursor-move select-none"}`}
+        onPointerDown={beginModalDrag}
+        onPointerMove={moveModal}
+        onPointerUp={() => setDragState(null)}
+        onPointerCancel={() => setDragState(null)}
+      >
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-full bg-white/10">
             <Bot className="h-5 w-5" />
@@ -446,13 +510,23 @@ export function AIAssistant({ role }: AIAssistantProps) {
             </p>
           </div>
         </div>
-        <button
-          onClick={() => setIsOpen(false)}
-          className="rounded-full p-1.5 transition-colors hover:bg-white/10"
-          aria-label="Close assistant"
-        >
-          <X className="h-5 w-5" />
-        </button>
+        <div className="flex items-center gap-1" onPointerDown={(event) => event.stopPropagation()}>
+          <button
+            onClick={() => setIsFullScreen((current) => !current)}
+            className="rounded-full p-1.5 transition-colors hover:bg-white/10"
+            aria-label={isFullScreen ? "Minimize assistant" : "Maximize assistant"}
+            title={isFullScreen ? "Minimize" : "Full screen"}
+          >
+            {isFullScreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+          </button>
+          <button
+            onClick={() => { setIsOpen(false); setIsFullScreen(false); }}
+            className="rounded-full p-1.5 transition-colors hover:bg-white/10"
+            aria-label="Close assistant"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
       </div>
 
       <div className="border-b border-slate-200 bg-slate-50 px-4 py-3">
@@ -582,9 +656,9 @@ export function AIAssistant({ role }: AIAssistantProps) {
                         : "border border-slate-200 bg-white text-slate-800"
                   }`}
                 >
-                  <p className={`whitespace-pre-line text-sm leading-6 ${message.pending ? "animate-pulse" : ""}`}>
-                    {message.content}
-                  </p>
+                  {message.role === "assistant" && !message.pending
+                    ? <FormattedAssistantMessage content={message.content} />
+                    : <p className={`whitespace-pre-line text-sm leading-6 ${message.pending ? "animate-pulse" : ""}`}>{message.content}</p>}
                   {message.pending && (
                     <p className="mt-2 text-xs text-slate-400">Looking through your records...</p>
                   )}

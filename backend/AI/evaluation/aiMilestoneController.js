@@ -33,6 +33,40 @@ const normalizeReport = (parsed) => ({
         : null,
 });
 
+const asText = (value) => String(value || '').trim();
+const hasPenaltyClause = (text) => /penalt|liquidated damages|damages|delay compensation|deduct|withhold|replacement|rework|rejection/i.test(text);
+
+// Deterministic guardrail: the model may be unavailable or may not return a complete
+// decision, so backlog and penalty guidance must still be based on supplied evidence.
+const buildEvidenceAnalysis = ({ tender, milestone, update, report }) => {
+    const committee = update?.committeeReport || report?.committeeReport || {};
+    const checklist = Array.isArray(update?.checklist) ? update.checklist : (milestone?.checklist || []);
+    const incomplete = checklist.filter((item) => !item?.checked).map((item) => item?.label).filter(Boolean);
+    const plannedEnd = milestone?.plannedEndDate ? new Date(milestone.plannedEndDate) : null;
+    const actualEnd = update?.actualEndDate || milestone?.actualEndDate;
+    const end = actualEnd ? new Date(actualEnd) : null;
+    const delayed = milestone?.status === 'Delayed' || (plannedEnd && !Number.isNaN(plannedEnd.getTime()) && !end && plannedEnd < new Date());
+    const tenderText = JSON.stringify(tender?.documents || []) + ' ' + JSON.stringify(tender?.requiredDocuments || []);
+    const clauseFound = hasPenaltyClause(tenderText) || hasPenaltyClause(asText(committee.clauseReference));
+    const items = [];
+    if (delayed) items.push('Milestone is behind its planned end date.');
+    if (incomplete.length) items.push(`Incomplete checklist items: ${incomplete.join(', ')}.`);
+    if (Number(update?.progress ?? milestone?.progress ?? 0) < 100 && (update?.status || milestone?.status) === 'Completed') items.push('Status is Completed but reported progress is below 100%.');
+    if (!asText(committee.workDone) && !asText(report?.description)) items.push('Committee work-done evidence is missing.');
+    if (!asText(committee.materialQuality)) items.push('Material or quality verification is not recorded.');
+    const queries = [];
+    if (delayed) queries.push({ priority: 'high', question: 'What is the contractual cause of the delay, and what recovery date and supporting evidence can the committee provide?', evidence: 'Planned/actual milestone dates' });
+    incomplete.forEach((item) => queries.push({ priority: 'high', question: `Has “${item}” been completed? Upload the inspection, measurement, or acceptance evidence.`, evidence: 'Milestone checklist' }));
+    if (!asText(committee.materialQuality)) queries.push({ priority: 'medium', question: 'What inspection result confirms that the delivered work/material meets the tender specification?', evidence: 'Committee material-quality field is empty' });
+    if (!clauseFound && delayed) queries.push({ priority: 'high', question: 'Which tender or contract clause authorizes a delay deduction? If none applies, confirm that no penalty should be imposed.', evidence: 'No penalty clause identified in available tender context' });
+    const penaltyNeeded = clauseFound && delayed ? 'yes' : (delayed ? 'review' : 'no');
+    return {
+        backlog: { exists: items.length > 0, items, reason: items.length ? 'A milestone obligation is delayed, incomplete, or unsupported by evidence.' : 'No backlog signal was found in the supplied milestone and committee data.' },
+        penaltyDecision: { needed: penaltyNeeded, basis: clauseFound ? 'A penalty/deduction clause signal was found in the available tender or committee clause reference.' : 'No applicable penalty clause was found in the available tender context.', action: penaltyNeeded === 'yes' ? 'Verify the clause and calculate only according to the contract formula before approval.' : penaltyNeeded === 'review' ? 'Ask the committee to identify the governing clause before applying any deduction.' : 'Do not apply a penalty based on this review.' },
+        queries,
+    };
+};
+
 export const evaluateMilestoneWithAi = async ({ contract, milestone, update, report }) => {
     const startedAt = Date.now();
     const tender = await Tender.findById(contract.tenderId).lean();
@@ -40,6 +74,18 @@ export const evaluateMilestoneWithAi = async ({ contract, milestone, update, rep
 
     const result = await runMilestoneAiReview({ tender, contract, milestone, update, report });
     const normalized = normalizeReport(result.parsed);
+    const evidenceAnalysis = buildEvidenceAnalysis({ tender, milestone, update, report });
+    normalized.aiAssessment = {
+        ...(normalized.aiAssessment || {}),
+        ...evidenceAnalysis,
+        // Prefer the model's clause-grounded decision when it returned one after
+        // reading extracted tender text; retain deterministic fallback otherwise.
+        penaltyDecision: normalized.aiAssessment?.penaltyDecision || evidenceAnalysis.penaltyDecision,
+        queries: [
+            ...evidenceAnalysis.queries,
+            ...(Array.isArray(normalized.aiAssessment?.queries) ? normalized.aiAssessment.queries : []),
+        ].filter((item, index, all) => item?.question && all.findIndex((candidate) => candidate?.question === item.question) === index),
+    };
 
     const saved = await AIMilestoneReport.findOneAndUpdate(
         { contractId: contract._id, milestoneId: milestone._id },

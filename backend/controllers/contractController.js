@@ -275,7 +275,10 @@ const createDelayAnalysis = (contract) => {
         if (!plannedEnd) return;
 
         const isCompleted = milestone.status === 'Completed';
-        const baselineDate = isCompleted && milestone.actualEndDate ? new Date(milestone.actualEndDate) : now;
+        // A completed milestone without an actual end date is missing metadata,
+        // not proof that it finished late. Keep it out of delay totals.
+        if (isCompleted && !milestone.actualEndDate) return;
+        const baselineDate = isCompleted ? new Date(milestone.actualEndDate) : now;
         const delayMs = baselineDate.getTime() - plannedEnd.getTime();
 
         if (delayMs > 0) {

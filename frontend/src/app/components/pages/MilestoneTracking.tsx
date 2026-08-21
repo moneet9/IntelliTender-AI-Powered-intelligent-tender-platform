@@ -81,6 +81,9 @@ type AiMilestoneReport = {
   };
   committeeReport?: Record<string, unknown> | null;
   aiAssessment?: {
+    backlog?: { exists?: boolean; items?: string[]; reason?: string };
+    penaltyDecision?: { needed?: "yes" | "no" | "review"; basis?: string; action?: string };
+    queries?: Array<{ priority?: "high" | "medium" | "low"; question?: string; evidence?: string }>;
     clauseReferences?: string[];
     documentSignals?: string[];
     qualityNotes?: string[];
@@ -1087,6 +1090,27 @@ export function MilestoneTracking({ userRole = "committee" }: MilestoneTrackingP
                     </div>
                   </div>
                   {selectedAiReport.summary && <p className="text-sm text-gray-700 mb-3">{selectedAiReport.summary}</p>}
+                  {selectedAiReport.aiAssessment?.backlog && (
+                    <div className={`mb-4 rounded-md border p-4 ${selectedAiReport.aiAssessment.backlog.exists ? "border-amber-200 bg-amber-50" : "border-green-200 bg-green-50"}`}>
+                      <p className="text-xs uppercase tracking-wide text-gray-500">Backlog decision</p>
+                      <p className="text-sm font-medium text-[#0B3C5D] mt-1">{selectedAiReport.aiAssessment.backlog.exists ? "Backlog found" : "No backlog found"}</p>
+                      <p className="text-xs text-gray-700 mt-1">{selectedAiReport.aiAssessment.backlog.reason}</p>
+                      {!!selectedAiReport.aiAssessment.backlog.items?.length && <ul className="mt-2 list-disc pl-5 text-xs text-amber-900">{selectedAiReport.aiAssessment.backlog.items.map((item, index) => <li key={index}>{item}</li>)}</ul>}
+                    </div>
+                  )}
+                  {selectedAiReport.aiAssessment?.penaltyDecision && (
+                    <div className="mb-4 rounded-md border border-blue-100 bg-blue-50 p-4">
+                      <p className="text-xs uppercase tracking-wide text-gray-500">Penalty decision</p>
+                      <p className="text-sm font-medium text-[#0B3C5D] mt-1">{selectedAiReport.aiAssessment.penaltyDecision.needed === "yes" ? "Potentially required" : selectedAiReport.aiAssessment.penaltyDecision.needed === "review" ? "Clause review required" : "Not required"}</p>
+                      <p className="text-xs text-gray-700 mt-1">{selectedAiReport.aiAssessment.penaltyDecision.action}</p>
+                    </div>
+                  )}
+                  {!!selectedAiReport.aiAssessment?.queries?.length && (
+                    <div className="mb-4">
+                      <p className="text-xs uppercase tracking-wide text-gray-500 mb-2">Queries for committee member</p>
+                      <div className="space-y-2">{selectedAiReport.aiAssessment.queries.map((query, index) => <div key={index} className="rounded-md border border-gray-200 bg-white px-3 py-2"><p className="text-sm text-[#0B3C5D]">{query.question}</p><p className="text-xs text-gray-500 mt-1">Priority: {query.priority || "medium"} · Evidence: {query.evidence || "Not specified"}</p></div>)}</div>
+                    </div>
+                  )}
                   {!!selectedAiReport.alerts?.length && (
                     <div className="mb-4">
                       <p className="text-xs uppercase tracking-wide text-gray-500 mb-2">Alerts</p>

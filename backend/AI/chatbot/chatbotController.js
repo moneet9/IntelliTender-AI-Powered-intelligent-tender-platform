@@ -1,5 +1,6 @@
-import { User, Tender, Contract, AIBidSummary, AIChatSession } from '../../models/model.js';
+import { User, Tender, Contract, AIBidSummary, AIChatSession, AIMilestoneReport } from '../../models/model.js';
 import { sensitiveVendorPattern } from './retrievalEngine.js';
+import { getIndexedDocumentGroups } from '../documents/documentEmbeddingService.js';
 import { callLocalChat, LOCAL_AI_CHAT_MODEL } from '../localModelClient.js';
 import { recordResearchMetric } from '../../utils/researchMetrics.js';
 
@@ -20,6 +21,7 @@ const awardedContractDetailPattern = /(?:\b(recent|recently|latest|most recent|n
 const bidRejectionPattern = /\b(why|explain|reason)\b[\s\S]*\b(bid|bidder|rejected|reject)\b/i;
 const awardDecisionPattern = /\b(selected|winner|winning|second\s+bidder|second\s+bid|fair|fairness)\b[\s\S]*\b(bid|bidder|reject|reason|score|fair)|\b(which|what)\s+bid\b[\s\S]*\b(selected|won|winner)\b/i;
 const emptyAwardAnswerPattern = /\b(no bids? available|no bids? (were|was) found|no bid has been selected|no bid.*rejected|no bids? in the system)\b/i;
+const milestoneBacklogPenaltyPattern = /\b(milestone|backlog|back log|delayed|delay|penalt|penalty|needed or not)\b/i;
 
 const buildSmallTalkReply = ({ role, message }) => {
     const query = String(message || '').trim().toLowerCase();
@@ -89,10 +91,14 @@ const isSimpleLocalReply = (message) => {
 };
 
 const shouldUseFastLocalReply = (message) => {
-    // Route all procurement/data questions through the agent. Only greetings
-    // and capability help are safe to answer without a database plan.
-    return isSimpleLocalReply(message);
+    // Milestone delay questions have a deterministic, role-scoped database
+    // answer. Do not let the language-model planner replace it with an
+    // unrelated bid/tender answer.
+    return isSimpleLocalReply(message)
+        || (milestoneBacklogPenaltyPattern.test(message) && !isDetailedMilestoneQuery(message));
 };
+
+const isDetailedMilestoneQuery = (message) => /penalt|clause|violat|backlog|committee|evidence|penalty needed|detail|research|analys|report|recommend|action/i.test(String(message || '').toLowerCase());
 
 function scoreAwardedBids(tender) {
     const bids = Array.isArray(tender?.bids) ? tender.bids : [];
@@ -758,6 +764,51 @@ async function runMongoAgent({ role, userId, message, history, localFacts }) {
         telemetry.tokensPerSecond = Number(stats.tokens_per_second || telemetry.tokensPerSecond || 0);
         telemetry.source = item?.source || telemetry.source;
     };
+
+    // Agentic milestone path: the database/document collector has already
+    // gathered role-scoped facts. Qwen acts as the research analyst and must
+    // synthesize only from those facts, cite the supplied tender references,
+    // and state uncertainty instead of inventing a clause or penalty.
+    if (isDetailedMilestoneQuery(message) && localFacts.length) {
+        const analystReply = await callLocalChat({
+            model: LOCAL_AI_CHAT_MODEL,
+            temperature: 0.15,
+            maxTokens: CHAT_MAX_TOKENS,
+            onTelemetry: collectTelemetry,
+            messages: [
+                {
+                    role: 'system',
+                    content: [
+                        'You are the IntelliTender procurement research analyst.',
+                        'Use only the role-scoped milestone and tender-document facts supplied below.',
+                        'Answer with clear sections: Finding, Tender clause references, Missing evidence, Penalty decision, Recommended actions, Limitations.',
+                        'A delay is not automatically a breach. Mark a clause as unconfirmed when no exact clause reference is supplied.',
+                        'Recommend a penalty only when the supplied evidence identifies an applicable contractual clause and a calculation basis.',
+                        'Do not discuss bids or claim that no tenders exist when milestone facts are supplied.',
+                    ].join('\n'),
+                },
+                {
+                    role: 'user',
+                    content: `User question: ${message}\n\nRole: ${role}\n\nCollected records and document evidence:\n${localFacts.join('\n\n')}`,
+                },
+            ],
+        });
+
+        return {
+            reply: String(analystReply || '').trim(),
+            model: LOCAL_AI_CHAT_MODEL,
+            responseMode: 'agentic-milestone-research',
+            plan: { action: 'research', steps: ['scope records', 'retrieve tender references', 'check evidence', 'assess penalty', 'synthesize answer'] },
+            records: [],
+            count: 0,
+            collection: 'Contract',
+            telemetry: {
+                ...telemetry,
+                totalTokens: telemetry.totalTokens || telemetry.promptTokens + telemetry.completionTokens,
+            },
+        };
+    }
+
     let planResponse = await callLocalChat({
         model: LOCAL_AI_CHAT_MODEL,
         temperature: 0,
@@ -1071,7 +1122,8 @@ function buildAssistantMeta(agentResult, localFacts = []) {
 
 async function loadChatSession(chatId, userId) {
     if (!chatId) return null;
-    const session = await AIChatSession.findOne({ _id: chatId, userId }).lean();
+    // Keep this as a Mongoose document because messages are appended and saved.
+    const session = await AIChatSession.findOne({ _id: chatId, userId });
     return session || null;
 }
 
@@ -1153,6 +1205,11 @@ async function collectLocalFacts({ role, userId, message }) {
     const lower = query.toLowerCase();
     const facts = [];
 
+    if (milestoneBacklogPenaltyPattern.test(lower)) {
+        const milestoneFact = await buildMilestoneBacklogPenaltyReply({ role, userId, message });
+        if (milestoneFact) facts.push(milestoneFact);
+    }
+
     if (awardedContractDetailPattern.test(lower) || awardDecisionPattern.test(lower)) {
         facts.push(await buildAwardedContractDetailReply({ role, userId }));
     }
@@ -1199,6 +1256,84 @@ async function collectLocalFacts({ role, userId, message }) {
     }
 
     return facts.filter(Boolean);
+}
+
+async function buildMilestoneBacklogPenaltyReply({ role, userId, message }) {
+    const contracts = await fetchVisibleContracts(role, userId);
+    if (!contracts.length) return 'I could not find any contracts with milestones in your scope.';
+
+    const reports = await AIMilestoneReport.find({ contractId: { $in: contracts.map((contract) => contract._id) } })
+        .sort({ generatedAt: -1 }).lean();
+    const tenderIds = contracts.map((contract) => contract.tenderId?._id || contract.tenderId).filter(Boolean);
+    const tenderDocumentGroups = await getIndexedDocumentGroups({
+        tenderIds,
+        sourceKinds: ['tender-document'],
+        limit: 100,
+    }).catch(() => []);
+    const reportByMilestone = new Map(reports.map((report) => [String(report.milestoneId), report]));
+    const delayedItems = [];
+    const pendingItems = [];
+    const penaltyDecisions = [];
+    const clauseFindings = [];
+    const detailedAnalysis = isDetailedMilestoneQuery(message);
+
+    contracts.forEach((contract) => {
+        (contract.milestones || []).forEach((milestone) => {
+            const report = reportByMilestone.get(String(milestone._id));
+            const plannedEnd = milestone.plannedEndDate ? new Date(milestone.plannedEndDate) : null;
+            const completed = String(milestone.status || '').toLowerCase() === 'completed';
+            const overdue = !completed && plannedEnd && !Number.isNaN(plannedEnd.getTime()) && !milestone.actualEndDate && plannedEnd < new Date();
+            const incomplete = Number(milestone.progress || 0) < 100 && String(milestone.status || '').toLowerCase() !== 'not started';
+            const isDelayed = String(milestone.status || '').toLowerCase() === 'delayed' || overdue;
+            const delayDays = plannedEnd && isDelayed
+                ? Math.max(1, Math.ceil((new Date().getTime() - plannedEnd.getTime()) / (1000 * 60 * 60 * 24)))
+                : 0;
+            const item = `${contract.tenderId?.title || 'Untitled tender'} — ${milestone.title}: planned ${plannedEnd ? plannedEnd.toLocaleDateString('en-GB') : 'date not set'}, ${Number(milestone.progress || 0)}% complete`;
+            if (isDelayed) delayedItems.push(`${item}, ${delayDays} day(s) late`);
+            else if (incomplete || String(milestone.status || '').toLowerCase() === 'not started') pendingItems.push(item);
+            const decision = report?.aiAssessment?.penaltyDecision?.needed;
+            if (decision) penaltyDecisions.push(decision);
+            if (isDelayed) {
+                const clauseReferences = Array.isArray(report?.aiAssessment?.clauseReferences)
+                    ? report.aiAssessment.clauseReferences.filter(Boolean)
+                    : [];
+                const documentSignals = Array.isArray(report?.aiAssessment?.documentSignals)
+                    ? report.aiAssessment.documentSignals.filter(Boolean)
+                    : [];
+                const tenderId = String(contract.tenderId?._id || contract.tenderId || '');
+                const documentGroup = tenderDocumentGroups.find((group) => String(group.tenderId || group.sourceId || '') === tenderId);
+                const documentText = String(documentGroup?.text || '').replace(/\s+/g, ' ').trim();
+                const clauseSignal = documentText.match(/.{0,100}(penalt|liquidated damages|delay|late delivery|deduct|withhold|extension|completion).{0,220}/i)?.[0]?.trim();
+                const clauseText = clauseReferences.length
+                    ? clauseReferences.join(', ')
+                    : clauseSignal
+                        ? `Tender document reference (${documentGroup?.sourceName || 'tender document'}): ${clauseSignal}`
+                        : 'No confirmed clause violation; no specific penalty/delay clause was identified in the saved review';
+                clauseFindings.push(`${contract.tenderId?.title || 'Untitled tender'} — ${milestone.title}: ${clauseText}${documentSignals.length ? `; submitted evidence: ${documentSignals.slice(0, 2).join(' | ')}` : ''}`);
+            }
+        });
+    });
+
+    const backlogCount = delayedItems.length + pendingItems.length;
+    if (!detailedAnalysis) {
+        if (!delayedItems.length) return `No delayed milestones were found across ${contracts.length} contract${contracts.length === 1 ? '' : 's'}.`;
+        return `Yes. ${delayedItems.length} delayed milestone${delayedItems.length === 1 ? '' : 's'} found: ${delayedItems.slice(0, 8).join('; ')}.`;
+    }
+
+    const penalty = penaltyDecisions.includes('yes') ? 'potentially required under the identified clause' : penaltyDecisions.includes('review') || delayedItems.length ? 'clause review required' : 'not required based on current milestone data';
+    if (!backlogCount) return `No delayed or pending milestones were found across ${contracts.length} contract${contracts.length === 1 ? '' : 's'}. Penalty is not required based on the current milestone data, unless a tender clause says otherwise.`;
+    const questions = delayedItems.slice(0, 8).map((item) => `For ${item.split(': planned')[0]}, which tender/contract clause was violated by this delay, what is the contractual reason, and what recovery date is committed?`);
+    questions.push('For each delayed milestone, provide the exact tender/contract clause number and text authorizing a delay deduction. Do not apply a penalty without that clause.');
+    questions.push('Please provide inspection, measurement, acceptance, or completion evidence for each incomplete milestone.');
+    const sections = [`I found ${delayedItems.length} delayed milestone${delayedItems.length === 1 ? '' : 's'} and ${pendingItems.length} other pending/backlog milestone${pendingItems.length === 1 ? '' : 's'}.`, `Penalty status: ${penalty}.`];
+    sections.push(`Research basis: analyzed ${contracts.length} role-scoped contract${contracts.length === 1 ? '' : 's'}, their milestone records, ${tenderDocumentGroups.length} indexed tender document group${tenderDocumentGroups.length === 1 ? '' : 's'}, and ${reports.length} saved AI milestone review${reports.length === 1 ? '' : 's'}.`);
+    if (delayedItems.length) sections.push(`Delayed: ${delayedItems.slice(0, 8).join('; ')}.`);
+    if (clauseFindings.length) sections.push(`Clause review by milestone: ${clauseFindings.slice(0, 8).join('; ')}.`);
+    if (pendingItems.length) sections.push(`Pending/backlog: ${pendingItems.slice(0, 8).join('; ')}.`);
+    sections.push(`Recommended action: ${penalty.includes('potentially required') ? 'verify the cited clause, establish excusable/non-excusable delay, calculate the contractual formula, and obtain approval before deduction.' : 'request the exact governing clause and supporting evidence; do not impose a penalty until the clause, delay responsibility, and calculation basis are verified.'}`);
+    sections.push('Research limitation: a delayed milestone is not by itself proof of a contractual breach; the tender clause, approved extension, cause of delay, and committee evidence must be verified.');
+    sections.push(`Committee queries: ${questions.join(' ')}`);
+    return sections.join(' ');
 }
 
 const buildFallbackReply = ({ role, message, context }) => {

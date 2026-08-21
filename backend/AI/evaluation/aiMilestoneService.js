@@ -139,7 +139,15 @@ export const runMilestoneAiReview = async ({ tender, contract, milestone, update
     const attachments = indexedAttachments.length ? indexedAttachments : await collectAssetTexts(attachmentIds);
     const indexedTenderDocs = await collectIndexedTenderDocuments(tender);
     const tenderDocs = indexedTenderDocs.length ? indexedTenderDocs : await collectTenderDocuments(tender);
-    const prompt = buildPrompt({ tender, contract, milestone, update, report, tenderDocs, attachments });
+    const prompt = `${buildPrompt({ tender, contract, milestone, update, report, tenderDocs, attachments })}
+
+Additional required analysis:
+- Compare every committee report statement and progress update with the tender documents and milestone checklist.
+- Return aiAssessment.backlog with exists, items, and reason.
+- Return aiAssessment.penaltyDecision with needed set to yes, no, or review. Never invent a penalty without an identifiable tender or contract clause.
+- Return aiAssessment.queries as specific questions for the committee member, each with priority and the evidence needed to close the question.
+- Return aiAssessment.comparison rows with requirement, committeeSubmission, and result (met, partly_met, not_met, or not_evidenced).
+`;
 
     const responseText = await callLocalModel(prompt);
     let parsed = null;
