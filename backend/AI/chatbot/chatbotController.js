@@ -1,5 +1,6 @@
 import { User, Tender, Contract, AIBidSummary, AIChatSession, AIMilestoneReport } from '../../models/model.js';
 import { sensitiveVendorPattern } from './retrievalEngine.js';
+import { buildHybridAssistantContext } from './retrievalEngine.js';
 import { getIndexedDocumentGroups } from '../documents/documentEmbeddingService.js';
 import { callLocalChat, LOCAL_AI_CHAT_MODEL } from '../localModelClient.js';
 import { recordResearchMetric } from '../../utils/researchMetrics.js';
@@ -19,6 +20,11 @@ const contractPattern = /\b(contract|contracts)\b/i;
 const bidPattern = /\b(bid|bids|submission|submissions)\b/i;
 const awardedContractDetailPattern = /(?:\b(recent|recently|latest|most recent|newest)\b[\s\S]*\b(contract|award|aw[a-z]*ed|awrded)\b)|(?:\b(contract|award)\b[\s\S]*\b(to\s*whom|towhom|who|top\s*2|scores?|rejected|reject)\b)|(?:\b(contract|award)\b[\s\S]*\b(bidder|winner|selected)\b)/i;
 const bidRejectionPattern = /\b(why|explain|reason)\b[\s\S]*\b(bid|bidder|rejected|reject)\b/i;
+const recentRejectionPattern = /\b(recent|recently|latest|most recent|newest)\b[\s\S]*\b(reject|rejected|rejection|bidder|bid)s?\b|\b(reject|rejected|rejection|bidder|bid)s?\b[\s\S]*\b(recent|recently|latest|most recent|newest)\b/i;
+const qcbsPattern = /\bqcbs\b|quality\s*(?:and|&)\s*cost\s*based\s*selection/i;
+const fraudPattern = /\b(fraud|fraudulent|fake|forgery|forged|genuine|genuity|scam|manipulat|suspicious)\b/i;
+const nameMismatchPattern = /\b(name|vendor|bidder)\b[\s\S]*\b(mismatch|different|inconsisten|variation|alias|spelling)\b|\b(mismatch|different|inconsisten|variation|alias|spelling)\b[\s\S]*\b(name|vendor|bidder)\b/i;
+const scoreFollowUpPattern = /\b(how many|what|which|show|tell|give)\b[\s\S]*\b(mark|marks|score|scores|points)\b/i;
 const awardDecisionPattern = /\b(selected|winner|winning|second\s+bidder|second\s+bid|fair|fairness)\b[\s\S]*\b(bid|bidder|reject|reason|score|fair)|\b(which|what)\s+bid\b[\s\S]*\b(selected|won|winner)\b/i;
 const emptyAwardAnswerPattern = /\b(no bids? available|no bids? (were|was) found|no bid has been selected|no bid.*rejected|no bids? in the system)\b/i;
 const milestoneBacklogPenaltyPattern = /\b(milestone|backlog|back log|delayed|delay|penalt|penalty|needed or not)\b/i;
@@ -217,6 +223,145 @@ async function buildBidRejectionReply({ role, userId, message }) {
     const cutoffReason = tender.evaluationMethod === 'L1' && Number(bid.technicalScore || 0) < cutoff
         ? `technical score ${bid.technicalScore || 0} was below the required cutoff of ${cutoff}` : '';
     return `The bid from ${bid.vendorName || searchName} was rejected for the tender "${tender.title}". Recorded reason: ${reasons[0] || cutoffReason || 'the bid was not selected after evaluation'}. Its status is ${bid.status}; technical score: ${bid.technicalScore ?? '-'}, financial score: ${bid.financialScore ?? bid.proposedAmount ?? '-'}.`;
+}
+
+async function buildRecentRejectedBidsReply({ role, userId }) {
+    const tenderFilter = await getTenderScopeQuery(role, userId);
+    const tenders = await Tender.find(tenderFilter)
+        .select('title status bids updatedAt createdAt')
+        .sort({ updatedAt: -1, createdAt: -1 })
+        .limit(50)
+        .lean();
+
+    const rejected = tenders.flatMap((tender) => (tender.bids || [])
+        .filter((bid) => String(bid.status || '').toLowerCase() === 'rejected')
+        .map((bid) => ({ tender, bid })));
+
+    if (!rejected.length) {
+        return 'I could not find any recently rejected bids in your scope.';
+    }
+
+    const summaries = await AIBidSummary.find({
+        tenderId: { $in: tenders.map((tender) => tender._id) },
+        bidId: { $in: rejected.map(({ bid }) => bid._id) },
+    }).select('tenderId bidId eligibility rationale summary').lean();
+    const summaryByBid = new Map(summaries.map((summary) => [String(summary.bidId), summary]));
+    const items = rejected.slice(0, 8).map(({ tender, bid }) => {
+        const summary = summaryByBid.get(String(bid._id));
+        const reason = [
+            ...(summary?.eligibility?.reasons || []),
+            ...(summary?.rationale || []),
+            summary?.summary,
+            bid.comments,
+        ].filter(Boolean)[0] || 'the bid was not selected after evaluation';
+        return `${bid.vendorName || 'Unknown bidder'} was rejected for "${tender.title}" because ${reason}`;
+    });
+
+    return `Yes. I found ${rejected.length} rejected bid${rejected.length === 1 ? '' : 's'} in your scope. ${items.join('; ')}.`;
+}
+
+async function buildQcbsReply({ role, userId }) {
+    const tenders = await fetchRoleScopedTenders(role, userId, { evaluationMethod: 'QCBS' });
+    const configured = tenders.filter((tender) => tender.qcbsConfig);
+    const definition = 'QCBS means Quality and Cost Based Selection. It evaluates technical quality and price together, using the tender\'s configured technical and commercial weights.';
+
+    if (!configured.length) {
+        return `${definition} I could not find a QCBS tender with saved weights or criteria in your scope.`;
+    }
+
+    const details = configured.slice(0, 8).map((tender) => {
+        const config = tender.qcbsConfig || {};
+        const criteria = Array.isArray(config.technicalCriteria)
+            ? config.technicalCriteria.map((criterion) => `${criterion.name} (${criterion.maxMarks} marks)`).join(', ')
+            : '';
+        return `"${tender.title}": technical ${config.technicalWeight ?? '-'}%, commercial ${config.commercialWeight ?? '-'}%${criteria ? `; criteria: ${criteria}` : ''}`;
+    });
+
+    return `${definition} In your scope, the configured QCBS tender${configured.length === 1 ? ' is' : 's are'}: ${details.join('; ')}.`;
+}
+
+function extractPreviousAwardReference(history) {
+    const previousAssistant = [...(Array.isArray(history) ? history : [])]
+        .reverse()
+        .find((entry) => entry?.role === 'assistant' && typeof entry.content === 'string');
+    const content = previousAssistant?.content || '';
+    const tenderMatch = content.match(/(?:tender|contract)\s*["“]([^"”]+)["”]/i);
+    const bidderMatch = content.match(/(?:selected bidder was|won by|submitted by)\s+(.+?)(?=\.?\s+Recorded marks|\s+who|$)/i);
+    return {
+        tenderTitle: tenderMatch?.[1]?.trim() || '',
+        bidderName: bidderMatch?.[1]?.trim() || '',
+    };
+}
+
+async function buildRecentAwardedBidScoreReply({ role, userId, history }) {
+    const previousReference = extractPreviousAwardReference(history);
+    const visibleTenders = await fetchRoleScopedTenders(role, userId, {});
+    const referencedTender = previousReference.tenderTitle
+        ? visibleTenders.find((tender) => String(tender.title || '').trim().toLowerCase() === previousReference.tenderTitle.toLowerCase())
+        : null;
+    const contracts = await fetchVisibleContracts(role, userId);
+    const awarded = contracts
+        .filter((contract) => String(contract.status || '').toLowerCase() === 'awarded')
+        .sort((left, right) => new Date(right.createdAt || 0) - new Date(left.createdAt || 0));
+    const tenderId = referencedTender?._id || awarded[0]?.tenderId?._id;
+    if (!tenderId) return 'I could not find a recent awarded tender with recorded bidder scores in your scope.';
+
+    const tender = await Tender.findById(tenderId).select('title evaluationMethod qcbsConfig bids').lean();
+    const scoredBids = scoreAwardedBids(tender);
+    const referencedBid = previousReference.bidderName
+        ? scoredBids.find((bid) => bid.vendor.toLowerCase() === previousReference.bidderName.toLowerCase())
+        : null;
+    const winner = referencedBid || scoredBids.find((bid) => bid.status === 'Selected') || scoredBids[0];
+    if (!tender || !winner) return 'I found the recent award, but no bidder marks or scores were recorded for it.';
+
+    return `For the recent awarded tender "${tender.title}", the selected bidder was ${winner.vendor}. Recorded marks: technical ${winner.technicalScore}, financial ${winner.financialScore ?? '-'}, and calculated overall score ${winner.overallScore}.`;
+}
+
+async function buildFraudCheckReply({ role, userId }) {
+    const tenders = await fetchRoleScopedTenders(role, userId, {});
+    const rejectedBids = tenders.flatMap((tender) => (tender.bids || [])
+        .filter((bid) => String(bid.status || '').toLowerCase() === 'rejected')
+        .map((bid) => ({ tender, bid })));
+    const summaries = await AIBidSummary.find({
+        tenderId: { $in: tenders.map((tender) => tender._id) },
+        bidId: { $in: rejectedBids.map(({ bid }) => bid._id) },
+    }).select('bidId tenderId genuityChecks eligibility rationale summary').lean();
+    const summaryByBid = new Map(summaries.map((summary) => [String(summary.bidId), summary]));
+    const warnings = rejectedBids.flatMap(({ tender, bid }) => {
+        const summary = summaryByBid.get(String(bid._id));
+        const evidence = [
+            ...(summary?.genuityChecks?.warnings || []),
+            ...(summary?.eligibility?.reasons || []),
+            ...(summary?.rationale || []),
+            summary?.summary,
+            bid.comments,
+        ].filter((item) => /fraud|fake|forg|genu|scam|suspicious|document/i.test(String(item)));
+        return evidence.slice(0, 2).map((item) => `${bid.vendorName || 'Unknown bidder'} in "${tender.title}": ${item}`);
+    });
+
+    if (!warnings.length) {
+        return `I found no recorded fraud or genuity warning in the ${tenders.length} tender${tenders.length === 1 ? '' : 's'} in your scope. This is not proof that no fraud occurred; it means no matching warning was saved in the available bid evaluations.`;
+    }
+
+    return `I found ${warnings.length} recorded fraud or genuity warning${warnings.length === 1 ? '' : 's'}: ${warnings.join('; ')}. These are database findings for review, not a legal finding that fraud occurred.`;
+}
+
+async function buildNameMismatchReply({ role, userId }) {
+    const tenders = await fetchRoleScopedTenders(role, userId, {});
+    const bids = tenders.flatMap((tender) => (tender.bids || []).map((bid) => ({ tender, bid })));
+    const vendorIds = [...new Set(bids.map(({ bid }) => String(bid.vendorId || '')).filter((id) => /^[a-f0-9]{24}$/i.test(id)))];
+    const users = await User.find({ _id: { $in: vendorIds } }).select('name').lean();
+    const namesById = new Map(users.map((user) => [String(user._id), user.name]));
+    const mismatches = bids.flatMap(({ tender, bid }) => {
+        const recorded = String(bid.vendorName || '').trim();
+        const canonical = String(namesById.get(String(bid.vendorId)) || '').trim();
+        if (!recorded || !canonical || recorded === canonical) return [];
+        const kind = recorded.toLowerCase() === canonical.toLowerCase() ? 'capitalization difference' : 'different spelling';
+        return [`${recorded} vs ${canonical} in "${tender.title}" (${kind})`];
+    });
+
+    if (!mismatches.length) return 'I found no mismatch between recorded bidder names and their linked vendor profiles in your scope.';
+    return `I found ${mismatches.length} bidder name mismatch${mismatches.length === 1 ? '' : 'es'}: ${mismatches.join('; ')}. Please verify the vendor profile before treating this as an identity issue.`;
 }
 
 function inferTenderStatus(query) {
@@ -489,7 +634,7 @@ function extractJsonCandidate(content) {
     return text;
 }
 
-function buildAgentMessages({ role, userId, message, history, localFacts }) {
+function buildAgentMessages({ role, userId, message, history, localFacts, hybridContext }) {
     const conversation = Array.isArray(history)
         ? history
             .filter((entry) => entry && typeof entry.content === 'string' && (entry.role === 'user' || entry.role === 'assistant'))
@@ -507,6 +652,8 @@ function buildAgentMessages({ role, userId, message, history, localFacts }) {
                 `Current user id: ${String(userId)}`,
                 'Known local facts:',
                 Array.isArray(localFacts) && localFacts.length ? localFacts.map((fact) => `- ${fact}`).join('\n') : '- none',
+                'Intent-router context from the role-scoped database and documents:',
+                hybridContext ? JSON.stringify(hybridContext) : '- unavailable',
             ].join('\n'),
         },
         ...conversation,
@@ -609,6 +756,8 @@ function summarizeMongoRecord(collection, record) {
             category: record.category,
             finalSubmissionDate: record.finalSubmissionDate ? new Date(record.finalSubmissionDate).toISOString().slice(0, 10) : null,
             budget: record.budget,
+            evaluationMethod: record.evaluationMethod,
+            qcbsConfig: record.qcbsConfig || null,
             createdAt: record.createdAt,
             bids: scoreAwardedBids(record).map((bid) => ({
                 id: bid.id,
@@ -675,7 +824,7 @@ function summarizeMongoRecord(collection, record) {
     };
 }
 
-function buildFinalAnswerPrompt({ role, message, plan, records, count, collection }) {
+function buildFinalAnswerPrompt({ role, message, plan, records, count, collection, hybridContext }) {
     return [
         `You are answering the user as IntelliTender AI for the ${role} role.`,
         'Use the MongoDB results below and answer naturally in one short paragraph unless a list is needed.',
@@ -687,6 +836,7 @@ function buildFinalAnswerPrompt({ role, message, plan, records, count, collectio
         `Collection: ${collection}`,
         `Count: ${typeof count === 'number' ? count : 'n/a'}`,
         `Results: ${JSON.stringify(records, null, 2)}`,
+        `Additional intent-router context: ${JSON.stringify(hybridContext || {})}`,
     ].join('\n');
 }
 
@@ -765,6 +915,19 @@ async function runMongoAgent({ role, userId, message, history, localFacts }) {
         telemetry.source = item?.source || telemetry.source;
     };
 
+    const hybridContext = await buildHybridAssistantContext({
+        role,
+        userId,
+        query: [
+            ...(Array.isArray(history) ? history.filter((entry) => entry?.role === 'user').slice(-2).map((entry) => entry.content) : []),
+            message,
+        ].join('\n'),
+        localFacts,
+    }).catch((error) => {
+        console.error('[AI chat] Hybrid intent-router retrieval failed:', error instanceof Error ? error.message : error);
+        return null;
+    });
+
     // Agentic milestone path: the database/document collector has already
     // gathered role-scoped facts. Qwen acts as the research analyst and must
     // synthesize only from those facts, cite the supplied tender references,
@@ -815,7 +978,7 @@ async function runMongoAgent({ role, userId, message, history, localFacts }) {
         ...(CHAT_STRUCTURED_OUTPUT ? { responseFormat: { type: 'json_object' } } : {}),
         maxTokens: CHAT_MAX_TOKENS,
         onTelemetry: collectTelemetry,
-        messages: buildAgentMessages({ role, userId, message, history, localFacts }),
+        messages: buildAgentMessages({ role, userId, message, history, localFacts, hybridContext }),
     });
 
     let plan = normalizeMongoPlan(planResponse);
@@ -870,7 +1033,7 @@ async function runMongoAgent({ role, userId, message, history, localFacts }) {
             temperature: 0.2,
             messages: [
                 { role: 'system', content: AGENT_SCHEMA_GUIDE },
-                { role: 'system', content: buildFinalAnswerPrompt({ role, message, plan, records, count, collection: plan.collection }) },
+                { role: 'system', content: buildFinalAnswerPrompt({ role, message, plan, records, count, collection: plan.collection, hybridContext }) },
             ],
             maxTokens: CHAT_MAX_TOKENS,
             onTelemetry: collectTelemetry,
@@ -1200,10 +1363,30 @@ export const deleteChatSession = async (req, res) => {
     }
 };
 
-async function collectLocalFacts({ role, userId, message }) {
+async function collectLocalFacts({ role, userId, message, history = [] }) {
     const query = String(message || '').trim();
     const lower = query.toLowerCase();
     const facts = [];
+
+    if (qcbsPattern.test(lower)) {
+        facts.push(await buildQcbsReply({ role, userId }));
+    }
+
+    if (scoreFollowUpPattern.test(lower) && role !== 'Vendor') {
+        facts.push(await buildRecentAwardedBidScoreReply({ role, userId, history }));
+    }
+
+    if (fraudPattern.test(lower) && role !== 'Vendor') {
+        facts.push(await buildFraudCheckReply({ role, userId }));
+    }
+
+    if (nameMismatchPattern.test(lower) && role !== 'Vendor') {
+        facts.push(await buildNameMismatchReply({ role, userId }));
+    }
+
+    if (recentRejectionPattern.test(lower)) {
+        facts.push(await buildRecentRejectedBidsReply({ role, userId }));
+    }
 
     if (milestoneBacklogPenaltyPattern.test(lower)) {
         const milestoneFact = await buildMilestoneBacklogPenaltyReply({ role, userId, message });
@@ -1475,7 +1658,7 @@ export const chatWithAssistant = async (req, res) => {
             : Array.isArray(req.body?.messages)
                 ? req.body.messages
                 : [];
-        const localFacts = await collectLocalFacts({ role, userId, message });
+        const localFacts = await collectLocalFacts({ role, userId, message, history });
 
         let reply = '';
         let model = 'fallback';
@@ -1495,7 +1678,12 @@ export const chatWithAssistant = async (req, res) => {
             source: 'estimated-local-rules',
         };
 
-        if (localFacts.length && shouldUseFastLocalReply(message)) {
+        const deterministicFactQuery = qcbsPattern.test(message)
+            || scoreFollowUpPattern.test(message)
+            || fraudPattern.test(message)
+            || nameMismatchPattern.test(message)
+            || recentRejectionPattern.test(message);
+        if (localFacts.length && (shouldUseFastLocalReply(message) || deterministicFactQuery)) {
             reply = localFacts.join(' ');
             model = 'local-rules';
             responseMode = 'local';
