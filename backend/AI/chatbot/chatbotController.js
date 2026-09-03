@@ -1,6 +1,5 @@
 import { User, Tender, Contract, AIBidSummary, AIChatSession, AIMilestoneReport } from '../../models/model.js';
-import { sensitiveVendorPattern } from './retrievalEngine.js';
-import { buildHybridAssistantContext } from './retrievalEngine.js';
+import { buildHybridAssistantContext, sensitiveVendorPattern } from './retrievalEngine.js';
 import { getIndexedDocumentGroups } from '../documents/documentEmbeddingService.js';
 import { callLocalChat, LOCAL_AI_CHAT_MODEL } from '../localModelClient.js';
 import { recordResearchMetric } from '../../utils/researchMetrics.js';
@@ -901,7 +900,7 @@ async function executeMongoPlan(plan, role, userId) {
     return { count: records.length, records };
 }
 
-async function runMongoAgent({ role, userId, message, history, localFacts }) {
+async function runMongoAgent({ role, userId, message, history, localFacts, lmStudioUrl }) {
     const telemetry = { promptTokens: 0, completionTokens: 0, totalTokens: 0, generationTimeSeconds: 0, timeToFirstTokenSeconds: 0, tokensPerSecond: 0, source: 'unavailable' };
     const collectTelemetry = (item) => {
         const usage = item?.usage || {};
@@ -935,6 +934,7 @@ async function runMongoAgent({ role, userId, message, history, localFacts }) {
     if (isDetailedMilestoneQuery(message) && localFacts.length) {
         const analystReply = await callLocalChat({
             model: LOCAL_AI_CHAT_MODEL,
+            baseUrl: lmStudioUrl,
             temperature: 0.15,
             maxTokens: CHAT_MAX_TOKENS,
             onTelemetry: collectTelemetry,
@@ -974,6 +974,7 @@ async function runMongoAgent({ role, userId, message, history, localFacts }) {
 
     let planResponse = await callLocalChat({
         model: LOCAL_AI_CHAT_MODEL,
+        baseUrl: lmStudioUrl,
         temperature: 0,
         ...(CHAT_STRUCTURED_OUTPUT ? { responseFormat: { type: 'json_object' } } : {}),
         maxTokens: CHAT_MAX_TOKENS,
@@ -987,6 +988,7 @@ async function runMongoAgent({ role, userId, message, history, localFacts }) {
         // repair attempt instead of exposing raw planning text to the user.
         planResponse = await callLocalChat({
             model: LOCAL_AI_CHAT_MODEL,
+            baseUrl: lmStudioUrl,
             temperature: 0,
             maxTokens: 500,
             onTelemetry: collectTelemetry,
@@ -1030,6 +1032,7 @@ async function runMongoAgent({ role, userId, message, history, localFacts }) {
     try {
         finalReply = await callLocalChat({
             model: LOCAL_AI_CHAT_MODEL,
+            baseUrl: lmStudioUrl,
             temperature: 0.2,
             messages: [
                 { role: 'system', content: AGENT_SCHEMA_GUIDE },
@@ -1658,6 +1661,10 @@ export const chatWithAssistant = async (req, res) => {
             : Array.isArray(req.body?.messages)
                 ? req.body.messages
                 : [];
+        const lmStudioUrl = typeof req.body?.lmStudioUrl === 'string'
+            && /^https?:\/\//i.test(req.body.lmStudioUrl.trim())
+            ? req.body.lmStudioUrl.trim().slice(0, 300)
+            : '';
         const localFacts = await collectLocalFacts({ role, userId, message, history });
 
         let reply = '';
@@ -1697,6 +1704,7 @@ export const chatWithAssistant = async (req, res) => {
                 message,
                 history,
                 localFacts,
+                lmStudioUrl,
             });
 
             reply = agentResult.reply || buildFallbackReply({ role, message, context: null });
@@ -1789,7 +1797,12 @@ export const chatWithAssistant = async (req, res) => {
             const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
             const role = req.user?.role;
             const userId = req.user?.id;
-            const localFacts = message && role && userId ? await collectLocalFacts({ role, userId, message }) : [];
+            const fallbackHistory = Array.isArray(session?.messages)
+                ? session.messages.slice(-8).map((entry) => ({ role: entry.role, content: entry.content }))
+                : [];
+            const localFacts = message && role && userId
+                ? await collectLocalFacts({ role, userId, message, history: fallbackHistory })
+                : [];
             const reply = message && role && userId
                 ? buildFallbackReply({
                     role,

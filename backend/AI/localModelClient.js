@@ -6,10 +6,12 @@ const execFileAsync = promisify(execFile);
 const trimTrailingSlash = (value) => String(value || '').replace(/\/+$/, '');
 
 const DEFAULT_BASE_URL = 'http://localhost:1234/v1';
+const normalizeBaseUrl = (value) => {
+    const trimmed = trimTrailingSlash(value);
+    return trimmed.toLowerCase().endsWith('/v1') ? trimmed : `${trimmed}/v1`;
+};
 const rawBaseUrl = process.env.LM_STUDIO_URL || process.env.LOCAL_AI_URL || DEFAULT_BASE_URL;
-const normalizedBaseUrl = trimTrailingSlash(rawBaseUrl).endsWith('/v1')
-    ? trimTrailingSlash(rawBaseUrl)
-    : `${trimTrailingSlash(rawBaseUrl)}/v1`;
+const normalizedBaseUrl = normalizeBaseUrl(rawBaseUrl);
 
 const LOCAL_MODEL = process.env.LM_STUDIO_MODEL || process.env.OLLAMA_MODEL || 'qwen3.5:9b';
 const LOCAL_CHAT_MODEL = process.env.LM_STUDIO_CHAT_MODEL || LOCAL_MODEL;
@@ -60,8 +62,8 @@ export async function checkLocalAiConnection({ timeoutMs = 5000 } = {}) {
     return { online: false, endpoint: configuredUrl, modelCount: 0 };
 }
 
-const buildNativeUrl = (path) => {
-    const origin = normalizedBaseUrl.replace(/\/v1$/i, '');
+const buildNativeUrl = (path, baseUrl = normalizedBaseUrl) => {
+    const origin = baseUrl.replace(/\/v1$/i, '');
     return `${origin}/api/v1${path}`;
 };
 
@@ -92,7 +94,7 @@ const buildHeaders = () => {
     return headers;
 };
 
-const buildUrl = (path) => `${LOCAL_AI_BASE_URL}${path}`;
+const buildUrl = (path, baseUrl = LOCAL_AI_BASE_URL) => `${baseUrl}${path}`;
 
 const safeJsonParse = async (response) => {
     const text = await response.text();
@@ -202,8 +204,14 @@ export const callLocalChat = async ({
     maxTokens = null,
     onTelemetry = null,
     useNativeApi = false,
+    baseUrl = '',
 }) => {
     const requestStartedAt = Date.now();
+    const candidateBaseUrls = Array.from(new Set([
+        DEFAULT_BASE_URL,
+        baseUrl ? normalizeBaseUrl(baseUrl) : '',
+        LOCAL_AI_BASE_URL,
+    ].filter(Boolean)));
     const requestBody = {
         model,
         messages,
@@ -213,13 +221,13 @@ export const callLocalChat = async ({
         ...(maxTokens ? { max_tokens: maxTokens } : {}),
     };
 
-    const sendChatRequest = async (modelId) => {
+    const sendChatRequest = async (modelId, requestBaseUrl) => {
         if (useNativeApi && LM_STUDIO_NATIVE_API) {
             const systemMessage = messages.find((item) => item?.role === 'system')?.content;
             const inputMessages = messages
                 .filter((item) => item?.role !== 'system')
                 .map((item) => ({ type: 'message', content: String(item?.content || '') }));
-            return fetch(buildNativeUrl('/chat'), {
+            return fetch(buildNativeUrl('/chat', requestBaseUrl), {
                 method: 'POST',
                 signal,
                 headers: buildHeaders(),
@@ -234,7 +242,7 @@ export const callLocalChat = async ({
             });
         }
 
-        return fetch(buildUrl('/chat/completions'), {
+        return fetch(buildUrl('/chat/completions', requestBaseUrl), {
             method: 'POST',
             signal,
             headers: buildHeaders(),
@@ -242,7 +250,7 @@ export const callLocalChat = async ({
         });
     };
 
-    const sendCompatibilityRequest = (modelId) => fetch(buildUrl('/chat/completions'), {
+    const sendCompatibilityRequest = (modelId, requestBaseUrl) => fetch(buildUrl('/chat/completions', requestBaseUrl), {
         method: 'POST',
         signal,
         headers: buildHeaders(),
@@ -250,30 +258,34 @@ export const callLocalChat = async ({
     });
 
     const tryModels = Array.from(new Set([
-        await resolveChatModel(model),
-        await resolveChatModel(LOCAL_AI_MODEL),
+        model,
+        LOCAL_AI_CHAT_MODEL,
+        LOCAL_AI_MODEL,
     ])).filter(Boolean);
 
     let lastError = null;
-    for (const modelId of tryModels) {
+        for (const modelId of tryModels) {
+            for (const requestBaseUrl of candidateBaseUrls) {
         let response;
         let responseSource = useNativeApi && LM_STUDIO_NATIVE_API ? 'lm-studio-native-v1' : 'openai-compatible-v1';
         try {
-            response = await sendChatRequest(modelId);
+            response = await sendChatRequest(modelId, requestBaseUrl);
         } catch (error) {
             lastError = error;
-            if (!(useNativeApi && LM_STUDIO_NATIVE_API)) {
-                throw new Error(`Local AI request failed: ${error instanceof Error ? error.message : 'fetch failed'}`);
-            }
-            try {
-                response = await sendCompatibilityRequest(modelId);
-                responseSource = 'openai-compatible-v1-fallback';
-            } catch (fallbackError) {
-                throw new Error(`Local AI request failed on native and compatibility v1 APIs: ${fallbackError instanceof Error ? fallbackError.message : 'fetch failed'}`);
+            if (useNativeApi && LM_STUDIO_NATIVE_API) {
+              try {
+                  response = await sendCompatibilityRequest(modelId, requestBaseUrl);
+                  responseSource = 'openai-compatible-v1-fallback';
+              } catch (fallbackError) {
+                  lastError = fallbackError;
+                  continue;
+              }
+            } else {
+                continue;
             }
         }
         if (!response.ok && useNativeApi && LM_STUDIO_NATIVE_API && [400, 404, 405].includes(response.status)) {
-            const fallbackResponse = await sendCompatibilityRequest(modelId);
+            const fallbackResponse = await sendCompatibilityRequest(modelId, requestBaseUrl);
             responseSource = 'openai-compatible-v1-fallback';
             if (fallbackResponse.ok || fallbackResponse.status !== 404) {
                 if (fallbackResponse.ok) {
@@ -302,7 +314,7 @@ export const callLocalChat = async ({
                 // Some LM Studio/model combinations finish native v1 with an
                 // empty output and zero stats. Retry the compatible v1 route
                 // before allowing the evaluator to continue with blank JSON.
-                const fallbackResponse = await sendCompatibilityRequest(modelId);
+                const fallbackResponse = await sendCompatibilityRequest(modelId, requestBaseUrl);
                 if (fallbackResponse.ok) {
                     const fallbackData = await fallbackResponse.json();
                     const fallbackMessage = fallbackData?.choices?.[0]?.message || fallbackData?.message || {};
@@ -372,8 +384,10 @@ export const callLocalChat = async ({
         lastError = { response, errorBody, modelId };
 
         if (String(errorBody?.error?.code || errorBody?.code || '') !== 'model_not_found') {
-            throw new Error(`Local AI error: ${response.status} ${JSON.stringify(errorBody)}`);
+            lastError = { response, errorBody, modelId };
+            continue;
         }
+      }
     }
 
     throw new Error(`Local AI error: ${lastError?.response?.status || 500} ${JSON.stringify(lastError?.errorBody || {})}`);

@@ -11,7 +11,7 @@ import { TenderDocumentEdit } from "./components/pages/Po_pages/TenderDocumentEd
 import { AIEvaluation } from "./components/pages/Po_pages/AIEvaluation";
 import { AIEvaluationQueue } from "./components/pages/Po_pages/AIEvaluationQueue";
 import { PoAlerts } from "./components/pages/Po_pages/PoAlerts";
-import { AISettings } from "./components/pages/Po_pages/AISettings";
+import { AISettings } from "./components/pages/AISettings";
 import { BidderProfile } from "./components/pages/Vendor_pages/BidderProfile";
 import { POMilestones } from "./components/pages/Po_pages/POMilestones";
 import { CommitteeMilestones } from "./components/pages/Commitee_member_pages/CommitteeMilestones";
@@ -44,6 +44,10 @@ export const router = createBrowserRouter([
   {
     path: "/cpo/bidders",
     Component: BidderProfile,
+  },
+  {
+    path: "/cpo/ai-settings",
+    Component: AISettings,
   },
   {
     path: "/cpo/bid-comparison",
@@ -119,6 +123,10 @@ export const router = createBrowserRouter([
     path: "/committee/milestones",
     Component: CommitteeMilestones,
   },
+  {
+    path: "/committee/ai-settings",
+    Component: AISettings,
+  },
   // Vendor Routes
   {
     path: "/vendor",
@@ -135,6 +143,14 @@ export const router = createBrowserRouter([
   {
     path: "/vendor/contracts",
     Component: VendorContracts,
+  },
+  {
+    path: "/vendor/ai-settings",
+    Component: AISettings,
+  },
+  {
+    path: "/bidder/ai-settings",
+    Component: AISettings,
   },
 
   // Legacy Bidder Routes (compatibility)

@@ -3,6 +3,8 @@ const structuredKeywords = [
     'my tenders', 'my bids', 'my contracts', 'assigned', 'published', 'awarded', 'completed',
     'latest', 'recent', 'newest', 'most recent', 'by me', 'mine',
     'pending', 'rejected', 'signed', 'frozen', 'active', 'overdue', 'delayed', 'budget', 'category',
+    'bidder', 'winner', 'winning', 'marks', 'score', 'scores', 'qcbs', 'l1', 'fraud', 'fake', 'forgery',
+    'mismatch', 'inconsistency', 'genuity', 'eligibility',
 ];
 
 const semanticKeywords = [
@@ -13,6 +15,7 @@ const semanticKeywords = [
 const knowledgeKeywords = [
     'policy', 'guide', 'guideline', 'how do i', 'workflow', 'process', 'documentation', 'docs',
     'system overview', 'contract clause', 'evaluation rule', 'committee rule', 'what is the process',
+    'what is qcbs', 'quality and cost based selection', 'how does qcbs work',
 ];
 
 const toolKeywords = [
@@ -75,6 +78,10 @@ export function classifyIntent(message) {
     }
 
     if (scores.documents > 0 || /\b(pdf|ocr|attachment|attachments|document|documents|file|files|report|reports|scan|scanned|upload|uploaded)\b/i.test(normalizedMessage)) {
+        branches.add('documents');
+    }
+
+    if (/\b(fraud|fraudulent|fake|forgery|forged|genuity|suspicious|mismatch|inconsisten|alias|spelling)\b/i.test(normalizedMessage)) {
         branches.add('documents');
     }
 

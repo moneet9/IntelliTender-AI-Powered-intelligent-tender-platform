@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { Bot, Clock, Maximize2, MessageSquare, Minimize2, Plus, Send, Trash2, X } from "lucide-react";
-import { apiRequest } from "../api";
+import { apiRequest, getLmStudioUrl } from "../api";
 
 type Role = "cpo" | "po" | "committee" | "vendor" | "bidder";
 
@@ -398,6 +398,7 @@ export function AIAssistant({ role }: AIAssistantProps) {
         body: {
           message: messageText,
           chatId: currentChatId || undefined,
+          lmStudioUrl: getLmStudioUrl() || undefined,
         },
       });
 

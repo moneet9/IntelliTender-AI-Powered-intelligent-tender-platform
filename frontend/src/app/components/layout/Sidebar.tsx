@@ -57,6 +57,7 @@ export function Sidebar({ role }: SidebarProps) {
       aliases: ["/bidder/contracts"],
       disabled: vendorRestricted,
     },
+    { path: "/vendor/ai-settings", icon: Settings, label: "AI Settings", aliases: ["/bidder/ai-settings"] },
   ];
 
   const roleConfig: Record<SidebarProps["role"], { items: NavItem[] }> = {
@@ -67,6 +68,7 @@ export function Sidebar({ role }: SidebarProps) {
         { path: "/cpo/bid-comparison", icon: BarChart2, label: "Bid Comparison" },
         { path: "/cpo/contracts", icon: FileCheck, label: "Contract Status" },
         { path: "/cpo/bidders", icon: Users, label: "Vendor Management" },
+        { path: "/cpo/ai-settings", icon: Settings, label: "AI Settings" },
       ],
     },
     po: {
@@ -87,6 +89,7 @@ export function Sidebar({ role }: SidebarProps) {
       items: [
         { path: "/committee", icon: LayoutDashboard, label: "Dashboard", aliases: ["/committee/evaluation"] },
         { path: "/committee/milestones", icon: Calendar, label: "Milestones", aliases: ["/committee/monitoring"] },
+        { path: "/committee/ai-settings", icon: Settings, label: "AI Settings" },
       ],
     },
     vendor: {
