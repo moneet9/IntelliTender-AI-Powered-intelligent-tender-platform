@@ -55,14 +55,21 @@ export function useVendorData(vendorId?: string) {
             tenderId: tender._id,
             title: tender.title,
             category: tender.category || "General",
-            amount: Number(bid.proposedAmount),
+            amount: Number(bid.proposedAmount || 0),
             status: bid.status,
             submittedAt: bid.createdAt,
             submittedDate: formatDate(bid.createdAt),
             proposalDocument: bid.proposalDocument,
             comments: bid.comments,
+            proposalDocumentId: bid.proposalDocumentId,
+            bidDocuments: bid.bidDocuments,
             technicalScore: bid.technicalScore,
             financialScore: bid.financialScore,
+            technicalWeight: tender.qcbsConfig?.technicalWeight,
+            commercialWeight: tender.qcbsConfig?.commercialWeight,
+            evaluationSummary: bid.evaluationSummary,
+            committeeEvaluations: bid.committeeEvaluations,
+            aiEvaluation: bid.aiEvaluation,
           }))
       )
       .sort((left, right) => new Date(right.submittedAt || 0).getTime() - new Date(left.submittedAt || 0).getTime());

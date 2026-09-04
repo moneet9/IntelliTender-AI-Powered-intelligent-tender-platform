@@ -11,6 +11,44 @@ export type TenderBid = {
   technicalScore?: number;
   financialScore?: number;
   comments?: string;
+  proposalDocumentId?: string;
+  bidDocuments?: BidDocumentReference[];
+  committeeEvaluations?: CommitteeEvaluation[];
+  aiEvaluation?: AIEvaluation;
+  evaluationSummary?: EvaluationSummary;
+};
+
+export type CommitteeEvaluation = {
+  committeeMemberId?: string | { name?: string };
+  technicalScore?: number;
+  financialScore?: number;
+  criteriaScores?: Array<{ criterion?: string; documentLabel?: string; maxMarks?: number; awardedMarks?: number }>;
+  comments?: string;
+  evaluatedDate?: string;
+};
+
+export type AIEvaluation = {
+  status?: string;
+  eligibility?: { passed?: boolean; reasons?: string[] };
+  criteriaScores?: Array<{ criterion?: string; documentLabel?: string; maxMarks?: number; awardedMarks?: number; evidence?: string[] }>;
+  aiScores?: { technicalScore?: number; financialScore?: number; overallScore?: number };
+  summary?: string;
+  rationale?: string[];
+  generatedAt?: string;
+};
+
+export type BidDocumentReference = {
+  label?: string;
+  category?: "Technical" | "Commercial";
+  documentId?: string;
+};
+
+export type EvaluationSummary = {
+  technicalScore?: number;
+  financialScore?: number;
+  overallScore?: number;
+  technicalWeight?: number;
+  commercialWeight?: number;
 };
 
 export type TenderRecord = {
@@ -23,6 +61,7 @@ export type TenderRecord = {
   status: "Draft" | "Published" | "Closed" | "Awarded" | "Completed";
   documents?: string[];
   bids?: TenderBid[];
+  qcbsConfig?: { technicalWeight?: number; commercialWeight?: number };
   requiredDocuments?: Array<{ label: string; category: "Technical" | "Commercial" }>;
 };
 
@@ -81,8 +120,15 @@ export type BidView = {
   submittedDate: string;
   proposalDocument?: string;
   comments?: string;
+  proposalDocumentId?: string;
+  bidDocuments?: BidDocumentReference[];
   technicalScore?: number;
   financialScore?: number;
+  committeeEvaluations?: CommitteeEvaluation[];
+  aiEvaluation?: AIEvaluation | null;
+  technicalWeight?: number;
+  commercialWeight?: number;
+  evaluationSummary?: EvaluationSummary;
 };
 
 export function resolveBidVendorId(vendorId?: string | { _id?: string }): string {

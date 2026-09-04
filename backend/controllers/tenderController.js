@@ -448,18 +448,95 @@ export const getTenders = async (req, res) => {
                 'evaluationMethod',
                 'qcbsConfig',
                 'requiredDocuments',
-                'bids._id bids.vendorId',
+                'bids._id bids.vendorId bids.technicalScore bids.financialScore bids.status bids.comments bids.proposalDocumentId bids.bidDocuments bids.committeeEvaluations',
             ].join(' ');
             const tenders = await Tender.find(filter)
                 .select(summaryFields)
                 .populate('createdBy', 'name')
                 .lean();
 
+            const tenderIds = tenders.map((tender) => tender._id);
+            const aiSummaries = await AIBidSummary.find({ tenderId: { $in: tenderIds } })
+                .select('tenderId bidId status eligibility criteriaScores aiScores summary rationale generatedAt')
+                .lean();
+            const aiSummaryByBidId = new Map(
+                aiSummaries.map((summary) => [String(summary.bidId), summary])
+            );
+
             return res.json(tenders.map((tender) => ({
                 ...tender,
                 documents: [],
                 bids: Array.isArray(tender.bids)
-                    ? tender.bids.map((bid) => ({ _id: bid._id, vendorId: bid.vendorId }))
+                    ? (() => {
+                        const evaluationMethod = tender.evaluationMethod || 'QCBS';
+                        const technicalMaximum = (tender.qcbsConfig?.technicalCriteria || [])
+                            .reduce((sum, criterion) => sum + Number(criterion?.maxMarks || 0), 0);
+                        const technicalWeight = Number(tender.qcbsConfig?.technicalWeight);
+                        const commercialWeight = Number(tender.qcbsConfig?.commercialWeight);
+                        const hasWeights = Number.isFinite(technicalWeight)
+                            && Number.isFinite(commercialWeight)
+                            && technicalWeight + commercialWeight > 0;
+                        const resolvedTechnicalWeight = hasWeights ? technicalWeight : 50;
+                        const resolvedCommercialWeight = hasWeights ? commercialWeight : 50;
+                        const rawFinancialByBidId = new Map(tender.bids.map((item) => {
+                            const evaluations = Array.isArray(item.committeeEvaluations) ? item.committeeEvaluations : [];
+                            const evaluatedFinancial = evaluations.length
+                                ? evaluations.reduce((sum, evaluation) => sum + Number(evaluation.financialScore || 0), 0) / evaluations.length
+                                : Number(item.financialScore || 0);
+                            const rawFinancial = evaluationMethod === 'L1'
+                                ? Number(item.proposedAmount || evaluatedFinancial || 0)
+                                : evaluatedFinancial || Number(item.proposedAmount || 0);
+                            return [String(item._id), rawFinancial];
+                        }));
+                        const validFinancialValues = Array.from(rawFinancialByBidId.values())
+                            .filter((value) => Number.isFinite(value) && value > 0);
+                        const lowestFinancialValue = validFinancialValues.length ? Math.min(...validFinancialValues) : 0;
+
+                        return tender.bids
+                        .filter((bid) => req.user?.role !== 'Vendor'
+                            || String(bid.vendorId) === String(req.user.id))
+                        .map((bid) => ({
+                            _id: bid._id,
+                            vendorId: bid.vendorId,
+                            proposedAmount: bid.proposedAmount,
+                            status: bid.status,
+                            technicalScore: bid.technicalScore,
+                            financialScore: bid.financialScore,
+                            comments: bid.comments,
+                            proposalDocumentId: bid.proposalDocumentId,
+                            bidDocuments: Array.isArray(bid.bidDocuments)
+                                ? bid.bidDocuments.map((document) => ({
+                                    label: document.label,
+                                    category: document.category,
+                                    documentId: document.documentId,
+                                }))
+                                : [],
+                            committeeEvaluations: bid.committeeEvaluations || [],
+                            aiEvaluation: aiSummaryByBidId.get(String(bid._id)) || null,
+                            evaluationSummary: (() => {
+                                const evaluations = Array.isArray(bid.committeeEvaluations) ? bid.committeeEvaluations : [];
+                                const rawTechnical = evaluations.length
+                                    ? evaluations.reduce((sum, evaluation) => sum + Number(evaluation.technicalScore || 0), 0) / evaluations.length
+                                    : Number(bid.technicalScore || 0);
+                                const technicalScore = technicalMaximum > 0
+                                    ? Math.min(100, Math.max(0, (rawTechnical / technicalMaximum) * 100))
+                                    : Math.min(100, Math.max(0, rawTechnical));
+                                const rawFinancial = rawFinancialByBidId.get(String(bid._id)) || 0;
+                                const financialScore = lowestFinancialValue > 0 && rawFinancial > 0
+                                    ? Math.min(100, (lowestFinancialValue / rawFinancial) * 100)
+                                    : 0;
+                                const overallScore = (technicalScore * resolvedTechnicalWeight + financialScore * resolvedCommercialWeight)
+                                    / (resolvedTechnicalWeight + resolvedCommercialWeight);
+                                return {
+                                    technicalScore: Number(technicalScore.toFixed(2)),
+                                    financialScore: Number(financialScore.toFixed(2)),
+                                    overallScore: Number(overallScore.toFixed(2)),
+                                    technicalWeight: resolvedTechnicalWeight,
+                                    commercialWeight: resolvedCommercialWeight,
+                                };
+                            })(),
+                        }));
+                    })()
                     : [],
             })));
         }
