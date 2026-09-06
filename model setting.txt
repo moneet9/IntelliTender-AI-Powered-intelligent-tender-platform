@@ -1,0 +1,78 @@
+IntelliTender Local Model Settings
+=================================
+
+Purpose
+-------
+Personal workstation settings for running IntelliTender AI locally through
+LM Studio or an equivalent OpenAI-compatible local model server.
+
+These values are recommended operational settings, not application secrets.
+The backend runtime remains controlled by backend/.env variables such as
+LM_STUDIO_URL, LM_STUDIO_MODEL, AI_SCORING_MAX_TOKENS, and the document
+embedding settings.
+
+Inference settings
+------------------
+Setting                  Normal value       Fast-run value     Notes
+-----------------------  -----------------  ----------------  -----------------------------
+Context window           16,384 tokens      8,192 tokens      Keep enough room for documents.
+GPU offload layers       36 layers          36 layers         Offload all model layers to VRAM.
+Flash attention          Enabled            Enabled           Use when supported by the model.
+Prompt batch size        512                512               Reduce if VRAM is limited.
+Temperature              0.1                0.1               Stable scoring and JSON output.
+Chat temperature         0.2                0.2               More natural chatbot replies.
+Top-K                    20                 20                Moderate token selection range.
+Top-P                    0.90               0.90              Nucleus sampling limit.
+Min-P                    0.05               0.05              Filters very low-probability tokens.
+Structured output        Enabled            Enabled           Use JSON mode/schema when supported.
+Repetition penalty      1.05               1.05              Reduces repeated wording.
+Maximum output tokens    1,500              1,500             Keep responses bounded.
+
+Recommended model roles
+-----------------------
+Chat model       qwen3.5:9b, or the locally available chat model.
+Embedding model  bge-m3, or the locally available embedding model.
+Bid scoring      The model configured by AI_SCORING_MODEL.
+Milestone AI     The model configured by AI_MILESTONE_MODEL.
+
+How these settings are used
+----------------------------
+1. The backend connects to the local server configured by LM_STUDIO_URL or
+   LOCAL_AI_URL. The default endpoint is http://localhost:1234/v1.
+2. Chat requests use the local chat model and normally allow up to 1,200 output
+   tokens through LM_STUDIO_CHAT_MAX_TOKENS.
+3. Bid scoring requests use low temperature and strict JSON instructions. The
+   output is validated and normalized by aiScoringService.js.
+4. Milestone reviews use strict JSON and a larger output allowance because the
+   result contains alerts, timeline analysis, evidence, and recommendations.
+5. Document chunks are embedded with the local embedding model, normally bge-m3.
+6. If the local server does not report token usage, IntelliTender estimates
+   tokens from text length. This is useful for research telemetry but is not an
+   exact tokenizer count.
+
+Practical personal workflow
+----------------------------
+For bid scoring:
+- Keep temperature at 0.1.
+- Keep structured output enabled when the model server supports JSON schema.
+- Use the 16,384-token context for normal document packs.
+- Use the 8,192-token context only for quick tests or smaller documents.
+- Keep GPU offload at 100% when VRAM allows it.
+- Reduce prompt batch size before reducing context if memory pressure occurs.
+
+For chatbot testing:
+- Use temperature 0.2 for a natural but controlled conversation.
+- Keep the same embedding model for indexing and query search.
+- Restart or rebuild document embeddings after changing the embedding model.
+
+For reproducible experiments, record the model name, context size, temperature,
+output limit, document scope, and whether token/GPU telemetry was available.
+
+Important limitations
+---------------------
+- These are workstation preferences; they are not loaded automatically unless
+  the same values are configured in LM Studio and backend/.env.
+- Structured output support varies by local model server. IntelliTender retries
+  invalid bid JSON once and records a failure if it remains invalid.
+- GPU energy values are estimates based on two NVIDIA power samples.
+- Do not place API keys, passwords, or private credentials in this file.

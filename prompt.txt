@@ -1,0 +1,181 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "IntelliTender AI Bid Evaluation Result",
+  "description": "Structured JSON contract for the local AI bid-scoring prompt. The backend validates and normalizes this result before saving AIBidSummary.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "eligibility",
+    "criteriaScores",
+    "commercialAnalysis",
+    "genuityChecks",
+    "aiScores",
+    "summary",
+    "rationale"
+  ],
+  "properties": {
+    "eligibility": {
+      "type": "object",
+      "description": "Whether the bid passed the document and requirement eligibility gate.",
+      "additionalProperties": false,
+      "required": ["passed", "reasons"],
+      "properties": {
+        "passed": {
+          "type": "boolean",
+          "description": "True only when the bid has sufficient readable evidence and meets the eligibility checks."
+        },
+        "reasons": {
+          "type": "array",
+          "description": "Short evidence-based reasons for the eligibility result.",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 4
+        }
+      }
+    },
+    "criteriaScores": {
+      "type": "array",
+      "description": "Technical marks awarded against the tender criteria.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "criterion",
+          "documentLabel",
+          "maxMarks",
+          "awardedMarks",
+          "ruleType",
+          "evidence"
+        ],
+        "properties": {
+          "criterion": {
+            "type": "string",
+            "description": "The tender criterion being assessed."
+          },
+          "documentLabel": {
+            "type": "string",
+            "description": "The uploaded bid document used as evidence."
+          },
+          "maxMarks": {
+            "type": "number",
+            "description": "Maximum marks configured for this criterion."
+          },
+          "awardedMarks": {
+            "type": "number",
+            "description": "Marks awarded from the evidence; never exceed maxMarks."
+          },
+          "ruleType": {
+            "type": "string",
+            "description": "How the criterion was interpreted.",
+            "enum": [
+              "binary",
+              "ratio",
+              "numeric",
+              "textual"
+            ]
+          },
+          "evidence": {
+            "type": "array",
+            "description": "One concise sentence citing the relevant document evidence.",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 1
+          }
+        }
+      }
+    },
+    "commercialAnalysis": {
+      "type": "object",
+      "description": "Evidence-based commercial or price analysis.",
+      "additionalProperties": false,
+      "required": [
+        "statedValue",
+        "adjustedValue",
+        "rationale",
+        "risks"
+      ],
+      "properties": {
+        "statedValue": {
+          "type": ["number", "null"],
+          "description": "Verified amount found in the bid document, including applicable taxes where stated."
+        },
+        "adjustedValue": {
+          "type": ["number", "null"],
+          "description": "Adjusted amount only when the tender rules provide a justified adjustment."
+        },
+        "rationale": {
+          "type": "string",
+          "description": "Short explanation of the commercial interpretation."
+        },
+        "risks": {
+          "type": "array",
+          "description": "Commercial inconsistencies or risks that require review.",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 3
+        }
+      }
+    },
+    "genuityChecks": {
+      "type": "object",
+      "description": "Warnings about document authenticity, inconsistency, or suspicious evidence.",
+      "additionalProperties": false,
+      "required": [
+        "warnings",
+        "confidence"
+      ],
+      "properties": {
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Specific warnings found in the submitted evidence."
+        },
+        "confidence": {
+          "type": ["number", "null"],
+          "description": "Model confidence in the genuity review, normally expressed from 0 to 1."
+        }
+      }
+    },
+    "aiScores": {
+      "type": "object",
+      "description": "Model-proposed scores. The backend recalculates technical and overall scores from the saved criteria and tender weights.",
+      "additionalProperties": false,
+      "required": [
+        "technicalScore",
+        "financialScore",
+        "overallScore"
+      ],
+      "properties": {
+        "technicalScore": {
+          "type": ["number", "null"],
+          "description": "Technical score on a 0-100 scale."
+        },
+        "financialScore": {
+          "type": ["number", "null"],
+          "description": "Financial score on a 0-100 scale for QCBS; do not use 100 merely because a bid is within budget."
+        },
+        "overallScore": {
+          "type": ["number", "null"],
+          "description": "Overall score proposal; the backend recalculates it using the configured evaluation method and weights."
+        }
+      }
+    },
+    "summary": {
+      "type": "string",
+      "description": "A concise decision summary grounded only in the tender and bid documents."
+    },
+    "rationale": {
+      "type": "array",
+      "description": "The main evidence-based reasons supporting the result.",
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 5
+    }
+  }
+}
