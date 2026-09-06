@@ -1,7 +1,8 @@
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:5000";
 const LM_STUDIO_URL_KEY = "intellitender.lmStudioUrl";
+const DEFAULT_LM_STUDIO_URL = import.meta.env.VITE_LM_STUDIO_URL || "http://localhost:1234/v1";
 
-export const getLmStudioUrl = () => localStorage.getItem(LM_STUDIO_URL_KEY) || "";
+export const getLmStudioUrl = () => localStorage.getItem(LM_STUDIO_URL_KEY) || DEFAULT_LM_STUDIO_URL;
 
 export const saveLmStudioUrl = (value: string) => {
   const normalized = value.trim();

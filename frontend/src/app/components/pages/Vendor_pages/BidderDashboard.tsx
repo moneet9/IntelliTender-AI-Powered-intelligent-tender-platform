@@ -11,6 +11,7 @@ import {
   getStoredDocumentUrl,
 } from "../../../document-utils";
 import { requiredDocumentsForDisplay } from "./vendorHelpers";
+import { DocumentLink } from "./vendorShared";
 
 type BidStatus = "Pending" | "Evaluated" | "Selected" | "Rejected";
 type ContractStatus = "Awarded" | "Signed" | "Completed" | "Cancelled";
@@ -82,6 +83,7 @@ type BidView = {
   status: BidStatus;
   submittedDate: string;
   proposalDocument?: string;
+  proposalDocumentId?: string;
   comments?: string;
   technicalScore?: number;
   financialScore?: number;
@@ -424,13 +426,7 @@ export function BidderDashboard() {
                       </div>
                       <div className="p-3 rounded-md bg-gray-50 border border-gray-100">
                         <p className="text-gray-500">Uploaded Proposal</p>
-                        {proposalUrl ? (
-                          <a href={proposalUrl} target="_blank" rel="noreferrer" className="text-[#1D4E89] hover:underline mt-1 inline-block">
-                            {proposalName}
-                          </a>
-                        ) : (
-                          <p className="text-[#0B3C5D] mt-1">{proposalName}</p>
-                        )}
+                        <div className="mt-1"><DocumentLink documentContent={bid.proposalDocumentId ? `/api/tenders/${bid.tenderId}/bid-documents/${bid.proposalDocumentId}` : proposalUrl} name={proposalName} /></div>
                       </div>
                     </div>
 

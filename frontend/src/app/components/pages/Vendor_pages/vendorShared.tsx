@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type MouseEvent } from "react";
-import { apiRequest } from "../../../api";
+import { apiRequest, getAuthUser } from "../../../api";
 import { getStoredDocumentName, getStoredDocumentReference, getStoredDocumentUrl } from "../../../document-utils";
 type NavigableDocumentUrl = {
   url: string;
@@ -32,8 +32,26 @@ function base64ToBlobUrl(base64Content: string, mimeType?: string): string | nul
 }
 
 async function toNavigableDocumentUrl(content: string, mimeType?: string): Promise<NavigableDocumentUrl | null> {
-  const normalized = content.trim();
+  const rawContent = content.trim();
+  const normalized = rawContent.startsWith("/api/")
+    ? getStoredDocumentUrl(rawContent) || rawContent
+    : rawContent;
   if (!normalized) return null;
+
+  if (/^https?:\/\/[^/]+\/api\//i.test(normalized)) {
+    try {
+      const response = await fetch(normalized, {
+        headers: getAuthUser()?.token ? { Authorization: `Bearer ${getAuthUser()?.token}` } : undefined,
+      });
+      if (!response.ok) return null;
+      return {
+        url: URL.createObjectURL(await response.blob()),
+        revokeAfterOpen: true,
+      };
+    } catch {
+      return null;
+    }
+  }
 
   if (isWebOrBlobUrl(normalized)) {
     return {
@@ -66,6 +84,48 @@ async function toNavigableDocumentUrl(content: string, mimeType?: string): Promi
   }
 
   return null;
+}
+
+export function DocumentLink({
+  documentContent,
+  name,
+  mimeType,
+}: {
+  documentContent?: string | null;
+  name: string;
+  mimeType?: string;
+}) {
+  const [loading, setLoading] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  if (!documentContent) return <span className="text-[#0B3C5D]">{name}</span>;
+
+  const open = async () => {
+    setLoading(true);
+    setFailed(false);
+    const pendingWindow = openPendingDocumentWindow();
+    if (!pendingWindow) {
+      setLoading(false);
+      setFailed(true);
+      return;
+    }
+
+    const opened = await navigateWindowToDocument(pendingWindow, documentContent, mimeType);
+    if (!opened) {
+      pendingWindow.close();
+      setFailed(true);
+    }
+    setLoading(false);
+  };
+
+  return (
+    <span className="inline-flex flex-col items-start">
+      <button type="button" onClick={() => void open()} disabled={loading} className="text-[#1D4E89] hover:underline disabled:opacity-60">
+        {loading ? "Opening..." : name}
+      </button>
+      {failed && <span className="text-xs text-red-600">Document could not be opened.</span>}
+    </span>
+  );
 }
 
 function openPendingDocumentWindow(): Window | null {
@@ -192,7 +252,7 @@ export function DocumentLinks({
     const isLoading = cacheKey && loadingDocumentKey === cacheKey;
 
     if (url) {
-      const useDirectAnchor = isWebOrBlobUrl(url);
+      const useDirectAnchor = isWebOrBlobUrl(url) && !/^https?:\/\/[^/]+\/api\//i.test(url);
       return {
         key: `${name}-${index}`,
         node: useDirectAnchor ? (

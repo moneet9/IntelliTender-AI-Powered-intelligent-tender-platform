@@ -77,6 +77,13 @@ export function decodeStoredDocument(value?: string | null): StoredDocument | nu
     };
   }
 
+  if (value.startsWith("/api/")) {
+    return {
+      name: "Document",
+      content: value,
+    };
+  }
+
   if (looksLikeMongoObjectId(value)) {
     return {
       name: "Proposal document",

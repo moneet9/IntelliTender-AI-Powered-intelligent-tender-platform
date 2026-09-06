@@ -589,10 +589,16 @@ export const getTenderDocument = async (req, res) => {
 
 export const getBidDocument = async (req, res) => {
     try {
-        const bidDocument = await BidDocument.findOne({
+        const query = {
             _id: req.params.documentId,
             tenderId: req.params.id,
-        }).select('name content mimeType');
+        };
+
+        if (req.user?.role === 'Vendor') {
+            query.vendorId = req.user.id;
+        }
+
+        const bidDocument = await BidDocument.findOne(query).select('name content mimeType');
 
         if (!bidDocument) {
             return res.status(404).json({ message: 'Document not found' });

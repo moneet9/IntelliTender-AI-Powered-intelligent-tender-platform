@@ -10,7 +10,7 @@ import {
 router.post('/', auth(['CPO', 'PO']), createTender);
 router.get('/', auth(['Vendor', 'CPO', 'PO', 'Committee']), getTenders);
 router.get('/:id/documents/:docIndex', auth(['Vendor', 'CPO', 'PO', 'Committee']), getTenderDocument);
-router.get('/:id/bid-documents/:documentId', getBidDocument);
+router.get('/:id/bid-documents/:documentId', auth(['Vendor', 'CPO', 'PO', 'Committee']), getBidDocument);
 router.get('/:id', getTenderById);
 router.put('/:id', auth(['CPO', 'PO']), editTender);
 router.put('/:id/publish', auth(['CPO', 'PO']), publishTender);

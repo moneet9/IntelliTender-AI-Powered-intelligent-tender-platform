@@ -23,6 +23,7 @@ import { ChangePassword } from "./components/pages/ChangePassword";
 import { VendorDashboard } from "./components/pages/Vendor_pages/VendorDashboard";
 import { VendorBids } from "./components/pages/Vendor_pages/VendorBids";
 import { VendorContracts } from "./components/pages/Vendor_pages/VendorContracts";
+import { RouteFallback } from "./components/RouteFallback";
 
 export const router = createBrowserRouter([
   {
@@ -49,6 +50,10 @@ export const router = createBrowserRouter([
   {
     path: "/cpo/ai-settings",
     Component: ProcessingAISettings,
+  },
+  {
+    path: "/cpo/ai-connector",
+    Component: AISettings,
   },
   {
     path: "/cpo/bid-comparison",
@@ -94,6 +99,10 @@ export const router = createBrowserRouter([
   {
     path: "/po/ai-settings",
     Component: ProcessingAISettings,
+  },
+  {
+    path: "/po/ai-connector",
+    Component: AISettings,
   },
   {
     path: "/po/bidders",
@@ -170,5 +179,9 @@ export const router = createBrowserRouter([
   {
     path: "/bidder/contracts",
     Component: VendorContracts,
+  },
+  {
+    path: "*",
+    Component: RouteFallback,
   },
 ]);

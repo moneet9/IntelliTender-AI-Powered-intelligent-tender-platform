@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { BrainCircuit, FileText, RefreshCw, Settings2, Sparkles, ShieldAlert, Filter, type LucideIcon } from "lucide-react";
-import { Link } from "react-router";
+import { Link, useLocation } from "react-router";
 import { Sidebar } from "../../layout/Sidebar";
 import { Header } from "../../layout/Header";
 import { AIAssistant } from "../../AIAssistant";
@@ -81,6 +81,8 @@ const scopeCards: ScopeConfig[] = [
 
 export function AISettings() {
   const authUser = getAuthUser();
+  const location = useLocation();
+  const shellRole = location.pathname.startsWith("/cpo") ? "cpo" : "po";
   const [aiStatus, setAiStatus] = useState<AiStatus>({});
   const [loadingStatus, setLoadingStatus] = useState(false);
   const [runningScope, setRunningScope] = useState<DocumentScope | "all" | "">("");
@@ -187,9 +189,9 @@ export function AISettings() {
 
   return (
     <div className="flex h-screen bg-[#F4F6F9]">
-      <Sidebar role="po" />
+      <Sidebar role={shellRole} />
       <div className="flex-1 flex flex-col overflow-hidden">
-        <Header role="po" userName={authUser?.name || ""} />
+        <Header role={shellRole} userName={authUser?.name || ""} />
         <div className="flex-1 overflow-auto p-6">
           <div className="mb-6">
             <div className="inline-flex items-center gap-2 rounded-full bg-[#0B3C5D] px-3 py-1 text-xs text-white mb-3">
@@ -397,7 +399,7 @@ export function AISettings() {
           </div>
         </div>
       </div>
-      <AIAssistant role="po" />
+      <AIAssistant role={shellRole} />
     </div>
   );
 }

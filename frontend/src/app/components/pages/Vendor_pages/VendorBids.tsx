@@ -9,6 +9,7 @@ import {
   getBidStatusClass,
   type BidView,
 } from "./vendorHelpers";
+import { DocumentLink } from "./vendorShared";
 import { useVendorData } from "./vendorData";
 
 type EvaluationRow = {
@@ -175,13 +176,7 @@ export function VendorBids() {
                       </div>
                       <div className="p-3 rounded-md bg-gray-50 border border-gray-100">
                         <p className="text-gray-500">Uploaded Proposal</p>
-                        {proposalUrl ? (
-                          <a href={proposalUrl} target="_blank" rel="noreferrer" className="text-[#1D4E89] hover:underline mt-1 inline-block">
-                            {proposalName}
-                          </a>
-                        ) : (
-                          <p className="text-[#0B3C5D] mt-1">{proposalName}</p>
-                        )}
+                        <div className="mt-1"><DocumentLink documentContent={bid.proposalDocumentId ? `/api/tenders/${bid.tenderId}/bid-documents/${bid.proposalDocumentId}` : proposalUrl} name={proposalName} /></div>
                       </div>
                     </div>
 
@@ -266,7 +261,7 @@ export function VendorBids() {
                                       <td className="px-3 py-3 whitespace-nowrap"><strong>{committeeAverage !== undefined ? committeeAverage.toFixed(2) : "Pending"}</strong>{committeeAverage !== undefined ? ` / ${row.maxMarks || "-"} (${row.committeeMarks.length} review${row.committeeMarks.length === 1 ? "" : "s"})` : ""}</td>
                                       <td className="px-3 py-3 min-w-[240px] text-xs text-gray-700">{row.aiEvidence.length ? row.aiEvidence.join(" ") : "No AI comment or evidence returned."}</td>
                                       <td className="px-3 py-3 min-w-[220px] text-xs text-gray-700">{row.committeeComments.length ? row.committeeComments.join(" ") : "No committee comment."}</td>
-                                      <td className="px-3 py-3 min-w-[150px]">{source?.documentId ? <a href={`/api/tenders/${bid.tenderId}/bid-documents/${source.documentId}`} target="_blank" rel="noreferrer" className="text-[#1D4E89] hover:underline">Open document</a> : <span className="text-xs text-gray-400">Not available</span>}</td>
+                                      <td className="px-3 py-3 min-w-[150px]">{source?.documentId ? <DocumentLink documentContent={`/api/tenders/${bid.tenderId}/bid-documents/${source.documentId}`} name="Open document" /> : <span className="text-xs text-gray-400">Not available</span>}</td>
                                     </tr>
                                   );
                                 }) : <tr><td colSpan={7} className="px-3 py-4 text-sm text-gray-500">No document-level marks are available yet.</td></tr>}

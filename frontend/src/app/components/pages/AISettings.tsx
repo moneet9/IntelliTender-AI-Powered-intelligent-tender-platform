@@ -36,8 +36,8 @@ export function AISettings() {
             <div className="mb-5 flex items-center gap-3">
               <BrainCircuit className="h-6 w-6 text-[#0B3C5D]" />
               <div>
-                <h1 className="text-xl text-[#0B3C5D]">AI connection</h1>
-                <p className="text-sm text-gray-600">Optional LM Studio address for this browser.</p>
+                <h1 className="text-xl text-[#0B3C5D]">AI Link Connection</h1>
+                <p className="text-sm text-gray-600">Override the .env link for this browser, or use the local default.</p>
               </div>
             </div>
             <label className="block text-sm font-medium text-gray-700" htmlFor="lm-studio-url">LM Studio URL</label>
@@ -48,7 +48,7 @@ export function AISettings() {
               placeholder="http://localhost:1234/v1"
               className="mt-2 w-full rounded-md border border-gray-300 px-3 py-2 text-sm outline-none focus:border-[#1D4E89]"
             />
-            <p className="mt-2 text-xs text-gray-500">Leave blank to try localhost:1234 first. Include the optional /v1 path.</p>
+            <p className="mt-2 text-xs text-gray-500">Default: http://localhost:1234/v1. Include the optional /v1 path when using another address.</p>
             <div className="mt-5 flex items-center gap-3">
               <button type="button" onClick={save} className="inline-flex items-center gap-2 rounded-md bg-[#0B3C5D] px-4 py-2 text-sm text-white hover:bg-[#1D4E89]">
                 <Save className="h-4 w-4" /> Save
