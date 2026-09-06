@@ -15,6 +15,7 @@ const helpPattern = /\b(what can you do|help|capabilities|commands|options|how d
 const personLookupPattern = /\b(who is|who was|tell me about|show profile of|show details of)\b/i;
 const countPattern = /\b(total|how many|count|number of)\b/i;
 const tenderPattern = /\b(tender|tenders)\b/i;
+const poTenderComparisonPattern = /(?=.*\b(which|what)\b)(?=.*\bpo\b)(?=.*\btenders?\b)(?=.*\b(more|most|highest)\b)(?=.*\b(recent|recnt|latest|newest)\b)/i;
 const contractPattern = /\b(contract|contracts)\b/i;
 const bidPattern = /\b(bid|bids|submission|submissions)\b/i;
 const awardedContractDetailPattern = /(?:\b(recent|recently|latest|most recent|newest)\b[\s\S]*\b(contract|award|aw[a-z]*ed|awrded)\b)|(?:\b(contract|award)\b[\s\S]*\b(to\s*whom|towhom|who|top\s*2|scores?|rejected|reject)\b)|(?:\b(contract|award)\b[\s\S]*\b(bidder|winner|selected)\b)/i;
@@ -504,6 +505,7 @@ async function buildScopedCommitteeMemberReply({ role, userId, message }) {
 }
 
 const AGENT_COLLECTIONS = new Set(['Tender', 'Contract', 'User']);
+const AGENT_TOOLS = new Set(['compare_po_tenders']);
 const AGENT_MAX_LIMIT = 10;
 const AGENT_ALLOWED_OPERATORS = new Set(['$and', '$or', '$in', '$ne', '$gte', '$lte', '$gt', '$lt', '$exists', '$regex', '$options']);
 
@@ -521,6 +523,8 @@ const AGENT_PROMPT = [
     'Your job is to decide whether the user needs a MongoDB query or a direct answer.',
     'If MongoDB is needed, return JSON only in this shape:',
     '{ "action": "query", "collection": "Tender|Contract|User", "operation": "find|count", "filter": {...}, "sort": {...}, "limit": number, "reason": "..." }',
+    'For a CPO question comparing POs by tender count and recency, return JSON only in this shape:',
+    '{ "action": "tool", "tool": "compare_po_tenders", "arguments": {} }',
     'If no database query is needed, return JSON only in this shape:',
     '{ "action": "direct", "answer": "..." }',
     'Rules:',
@@ -533,6 +537,7 @@ const AGENT_PROMPT = [
     '- Do not fabricate ids, dates, counts, or records.',
     '- For award/winner/top bidder/score/rejection questions, query Tender records and use the embedded bids and committeeEvaluations. Do not answer from generic knowledge.',
     '- When the user gives a bidder name, search bids.vendorName with a case-insensitive regex. Never put a plain name such as "technova" into bids.vendorId; vendorId is an ObjectId and must not be fabricated.',
+    '- Use compare_po_tenders only for a CPO. It returns authoritative PO names, tender counts, and each PO latest tender.',
 ].join('\n');
 
 function isPlainObject(value) {
@@ -593,6 +598,14 @@ function normalizeMongoPlan(content) {
 
         if (parsed.action === 'direct' && typeof parsed.answer === 'string' && parsed.answer.trim()) {
             return { action: 'direct', answer: parsed.answer.trim() };
+        }
+
+        if (parsed.action === 'tool' && AGENT_TOOLS.has(parsed.tool)) {
+            return {
+                action: 'tool',
+                tool: parsed.tool,
+                arguments: isPlainObject(parsed.arguments) ? parsed.arguments : {},
+            };
         }
 
         if (parsed.action !== 'query') return null;
@@ -703,12 +716,16 @@ async function resolveRoleScopedFilter(collection, role, userId) {
     if (collection === 'Contract') {
         if (role === 'CPO') return {};
         if (role === 'Vendor') return { vendorId: userId };
-        if (role === 'PO') return { 'tenderId.createdBy': userId };
+        if (role === 'PO') {
+            const tenders = await Tender.find({ createdBy: userId }).select('_id').lean();
+            return { tenderId: { $in: tenders.map((tender) => tender._id) } };
+        }
         if (role === 'Committee') {
             const user = await User.findById(userId).select('managerPo').lean();
             const managerPo = String(user?.managerPo || '');
             if (!managerPo) return { _id: { $exists: false } };
-            return { 'tenderId.createdBy': managerPo };
+            const tenders = await Tender.find({ createdBy: managerPo }).select('_id').lean();
+            return { tenderId: { $in: tenders.map((tender) => tender._id) } };
         }
     }
 
@@ -823,13 +840,24 @@ function summarizeMongoRecord(collection, record) {
     };
 }
 
-function buildFinalAnswerPrompt({ role, message, plan, records, count, collection, hybridContext }) {
+function buildFinalAnswerPrompt({ role, message, history, plan, records, count, collection, hybridContext }) {
+    const conversation = Array.isArray(history)
+        ? history
+            .filter((entry) => entry && (entry.role === 'user' || entry.role === 'assistant') && typeof entry.content === 'string')
+            .slice(-6)
+            .map((entry) => `${entry.role}: ${entry.content}`)
+            .join('\n')
+        : '';
+
     return [
         `You are answering the user as IntelliTender AI for the ${role} role.`,
         'Use the MongoDB results below and answer naturally in one short paragraph unless a list is needed.',
         'If the results are empty, say that clearly.',
         'If the request is beyond the role, say that clearly.',
+        'Treat database results as authoritative. Never invent names, counts, dates, ownership, or access.',
+        'Use the conversation history to resolve references such as "that PO", "the latest one", or "same tender".',
         'Do not mention JSON, tools, or internal execution steps.',
+        `Conversation history:\n${conversation || 'none'}`,
         `User question: ${message}`,
         `Plan summary: ${plan ? JSON.stringify(plan) : 'none'}`,
         `Collection: ${collection}`,
@@ -898,6 +926,32 @@ async function executeMongoPlan(plan, role, userId) {
     const docs = await finder.sort(sort).limit(plan.limit).lean();
     const records = docs.map((doc) => summarizeMongoRecord(plan.collection, doc));
     return { count: records.length, records };
+}
+
+async function executeAgentTool(plan, role) {
+    if (plan.tool !== 'compare_po_tenders' || role !== 'CPO') {
+        return { count: 0, records: [], collection: plan.tool || null };
+    }
+
+    const { comparisons } = await getCpoPoTenderComparisonData();
+    const records = comparisons.map(({ po, tenders }) => ({
+        poId: String(po._id),
+        poName: po.name,
+        tenderCount: tenders.length,
+        latestTender: tenders[0]
+            ? {
+                title: tenders[0].title,
+                status: tenders[0].status,
+                createdAt: tenders[0].createdAt,
+            }
+            : null,
+    }));
+
+    return {
+        count: records.length,
+        records,
+        collection: plan.tool,
+    };
 }
 
 async function runMongoAgent({ role, userId, message, history, localFacts, lmStudioUrl }) {
@@ -992,11 +1046,10 @@ async function runMongoAgent({ role, userId, message, history, localFacts, lmStu
             temperature: 0,
             maxTokens: 500,
             onTelemetry: collectTelemetry,
-            messages: [
-                { role: 'system', content: `${AGENT_PROMPT}\nReturn only one valid JSON object. No markdown and no explanation.` },
-                { role: 'system', content: AGENT_SCHEMA_GUIDE },
-                { role: 'user', content: message },
-            ],
+                messages: [
+                    ...buildAgentMessages({ role, userId, message, history, localFacts, hybridContext }),
+                    { role: 'system', content: 'Return only one valid JSON object. No markdown and no explanation.' },
+                ],
         });
         plan = normalizeMongoPlan(planResponse);
     }
@@ -1026,7 +1079,11 @@ async function runMongoAgent({ role, userId, message, history, localFacts, lmStu
         };
     }
 
-    const { count, records } = await executeMongoPlan(plan, role, userId);
+    const result = plan.action === 'tool'
+        ? await executeAgentTool(plan, role)
+        : await executeMongoPlan(plan, role, userId);
+    const { count, records } = result;
+    const resultCollection = plan.action === 'tool' ? result.collection : plan.collection;
 
     let finalReply = '';
     try {
@@ -1036,7 +1093,7 @@ async function runMongoAgent({ role, userId, message, history, localFacts, lmStu
             temperature: 0.2,
             messages: [
                 { role: 'system', content: AGENT_SCHEMA_GUIDE },
-                { role: 'system', content: buildFinalAnswerPrompt({ role, message, plan, records, count, collection: plan.collection, hybridContext }) },
+                { role: 'system', content: buildFinalAnswerPrompt({ role, message, history, plan, records, count, collection: resultCollection, hybridContext }) },
             ],
             maxTokens: CHAT_MAX_TOKENS,
             onTelemetry: collectTelemetry,
@@ -1061,7 +1118,7 @@ async function runMongoAgent({ role, userId, message, history, localFacts, lmStu
         plan,
         records,
         count,
-        collection: plan.collection,
+        collection: resultCollection,
         telemetry: {
             ...telemetry,
             totalTokens: telemetry.totalTokens || telemetry.promptTokens + telemetry.completionTokens,
@@ -1120,6 +1177,70 @@ async function buildRoleAwareTenderCountReply({ role, userId, query }) {
     return role === 'Vendor'
         ? `There are ${count} tender${count === 1 ? '' : 's'} visible to you.`
         : `There are ${count} tender${count === 1 ? '' : 's'} in your scope.`;
+}
+
+async function getCpoPoTenderComparisonData() {
+    const tenders = await Tender.find({})
+        .select('title createdBy createdAt finalSubmissionDate status')
+        .sort({ createdAt: -1 })
+        .lean();
+
+    if (!tenders.length) {
+        return { comparisons: [], reason: 'no-tenders' };
+    }
+
+    const poIds = [...new Set(tenders.map((tender) => String(tender.createdBy || '')).filter(Boolean))];
+    const pos = await User.find({ _id: { $in: poIds }, role: 'PO' })
+        .select('name email')
+        .lean();
+    const poById = new Map(pos.map((po) => [String(po._id), po]));
+    const grouped = new Map();
+
+    tenders.forEach((tender) => {
+        const poId = String(tender.createdBy || '');
+        const po = poById.get(poId);
+        if (!po) return;
+
+        const items = grouped.get(poId) || [];
+        items.push(tender);
+        grouped.set(poId, items);
+    });
+
+    const comparisons = [...grouped.entries()]
+        .map(([poId, items]) => ({
+            po: poById.get(poId),
+            tenders: items.sort((left, right) => new Date(right.createdAt || 0) - new Date(left.createdAt || 0)),
+        }))
+        .sort((left, right) => right.tenders.length - left.tenders.length
+            || new Date(right.tenders[0]?.createdAt || 0) - new Date(left.tenders[0]?.createdAt || 0));
+
+    if (!comparisons.length) {
+        return { comparisons: [], reason: 'no-po-owners' };
+    }
+
+    return { comparisons, reason: '' };
+}
+
+async function buildCpoPoTenderComparisonReply({ role, query }) {
+    if (role !== 'CPO' || !poTenderComparisonPattern.test(String(query || '').toLowerCase())) {
+        return null;
+    }
+
+    const { comparisons, reason } = await getCpoPoTenderComparisonData();
+    if (!comparisons.length) {
+        return reason === 'no-tenders'
+            ? 'I could not find any tenders to compare across the POs.'
+            : 'I found tenders, but none are currently linked to an active PO profile, so I could not compare PO ownership.';
+    }
+
+    const leader = comparisons[0];
+    const latest = leader.tenders[0];
+    const latestDate = latest?.createdAt ? new Date(latest.createdAt).toLocaleDateString('en-GB') : 'date unavailable';
+    const ranking = comparisons.slice(0, 5)
+        .map(({ po, tenders: poTenders }) => `${po.name}: ${poTenders.length}`)
+        .join('; ');
+
+    return `${leader.po.name} has the most tenders with ${leader.tenders.length}. Their most recent tender is "${latest.title}"${latestDate === 'date unavailable' ? '' : `, created on ${latestDate}`}. PO tender counts: ${ranking}.`;
 }
 
 async function buildRoleAwareContractCountReply({ role, userId, query }) {
@@ -1424,6 +1545,11 @@ async function collectLocalFacts({ role, userId, message, history = [] }) {
 
     if (countPattern.test(lower) && tenderPattern.test(lower)) {
         facts.push(await buildRoleAwareTenderCountReply({ role, userId, query: lower }));
+    }
+
+    const poTenderComparison = await buildCpoPoTenderComparisonReply({ role, query: lower });
+    if (poTenderComparison) {
+        facts.push(poTenderComparison);
     }
 
     if (countPattern.test(lower) && contractPattern.test(lower)) {

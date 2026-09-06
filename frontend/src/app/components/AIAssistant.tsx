@@ -241,6 +241,38 @@ function FormattedAssistantMessage({ content }: { content: string }) {
   );
 }
 
+function FormattedMilestoneAnswer({ content }: { content: string }) {
+  const match = String(content || '').match(/^(.*?delayed milestone[s]? found:?)\s*(.*)$/i);
+  if (!match || !match[2]) return null;
+
+  const items = match[2]
+    .split(/;\s*/)
+    .map((item) => item.trim().replace(/\.$/, ''))
+    .filter(Boolean);
+
+  return (
+    <div className="space-y-3 text-sm leading-6">
+      <p className="font-medium text-slate-800">{match[1]}{match[1].endsWith(":") ? "" : ":"}</p>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {items.map((item, index) => {
+          const [title, details] = item.split(/\s+\u2014\s+/, 2);
+          return (
+            <div key={`milestone-${index}`} className="rounded-xl border border-amber-100 bg-amber-50/70 p-3">
+              <div className="flex items-start gap-2">
+                <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-amber-500" />
+                <div className="min-w-0">
+                  <p className="font-semibold leading-5 text-slate-900">{title}</p>
+                  {details && <p className="mt-1 text-xs leading-5 text-slate-600">{details}</p>}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function AIAssistant({ role }: AIAssistantProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [isFullScreen, setIsFullScreen] = useState(false);
@@ -658,13 +690,19 @@ export function AIAssistant({ role }: AIAssistantProps) {
                   }`}
                 >
                   {message.role === "assistant" && !message.pending
-                    ? <FormattedAssistantMessage content={message.content} />
+                    ? <>
+                        <div className="mb-2 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-[#1D4E89]">
+                          <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[#EAF3FB]"><Bot className="h-3.5 w-3.5" /></span>
+                          IntelliTender AI
+                        </div>
+                        {FormattedMilestoneAnswer({ content: message.content }) || <FormattedAssistantMessage content={message.content} />}
+                      </>
                     : <p className={`whitespace-pre-line text-sm leading-6 ${message.pending ? "animate-pulse" : ""}`}>{message.content}</p>}
                   {message.pending && (
                     <p className="mt-2 text-xs text-slate-400">Looking through your records...</p>
                   )}
                   {!message.pending && message.role === "assistant" && message.meta?.responseMode && (
-                    <p className="mt-2 text-[11px] uppercase tracking-wide text-slate-400">
+                    <p className="mt-3 border-t border-slate-100 pt-2 text-[10px] font-medium uppercase tracking-[0.12em] text-slate-400">
                       {message.meta.responseMode === "lmstudio"
                         ? "Live AI + DB"
                         : message.meta.responseMode === "local"
