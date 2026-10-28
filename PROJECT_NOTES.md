@@ -433,6 +433,15 @@ These are approximate host telemetry values, not a calibrated energy measurement
 
 For a reliable local demo, start MongoDB and the local model server first, seed the database, start the backend, wait for document preparation to run, then start the frontend. If the model is offline, OCR/chunk persistence can still complete; embeddings and model-dependent scoring/chat will wait or fall back where the code supports it.
 
+The `test tender/` directory contains a separate, realistic document pack for manual tender demonstrations:
+
+- `TENDER/` contains the Building Renovation tender document.
+- `VENDOR_1/`, `VENDOR_2/`, and `VENDOR_3/` contain technical, eligibility, commercial, and certificate evidence for three vendors.
+- Upload the tender document first, then upload each vendor's documents to the matching bid when testing extraction, eligibility, scoring, document visibility, and vendor comparison.
+- These files are demonstration evidence only. They are not database seed data and must not be treated as production procurement records.
+
+The pack is intentionally kept outside `backend/scripts/seed.js` because its PDFs and images are used to exercise the real upload and document-processing path. The seed script remains the quickest option for role and workflow smoke tests.
+
 ## 14. Known implementation caveats
 
 - Frontend routes are mappings, not a complete route guard; backend middleware and controller filtering are the real access controls.

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "IntelliTender AI Bid Evaluation Result",
-  "description": "Structured JSON contract for the local AI bid-scoring prompt. The backend validates and normalizes this result before saving AIBidSummary.",
+  "description": "Structured JSON contract for the local AI bid-scoring prompt. Return only this JSON object. Use only evidence present in the supplied tender and bid documents; never invent missing values, documents, compliance, or scores. The backend validates and normalizes this result before saving AIBidSummary.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -26,7 +26,7 @@
         },
         "reasons": {
           "type": "array",
-          "description": "Short evidence-based reasons for the eligibility result.",
+          "description": "Short evidence-based reasons for the eligibility result. If evidence is missing or unreadable, say so explicitly.",
           "items": {
             "type": "string"
           },
@@ -77,7 +77,7 @@
           },
           "evidence": {
             "type": "array",
-            "description": "One concise sentence citing the relevant document evidence.",
+            "description": "One concise sentence citing the relevant document evidence. Use an empty array when the criterion has no supporting evidence.",
             "items": {
               "type": "string"
             },
@@ -99,11 +99,11 @@
       "properties": {
         "statedValue": {
           "type": ["number", "null"],
-          "description": "Verified amount found in the bid document, including applicable taxes where stated."
+          "description": "Verified amount found in the bid document, including applicable taxes where stated. Use null when the amount is absent or cannot be reconciled."
         },
         "adjustedValue": {
           "type": ["number", "null"],
-          "description": "Adjusted amount only when the tender rules provide a justified adjustment."
+          "description": "Adjusted amount only when the tender rules provide a justified adjustment; otherwise use the verified stated value or null."
         },
         "rationale": {
           "type": "string",
